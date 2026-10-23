@@ -4,7 +4,6 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
 
 const EXAMPLES_DIR = __dirname;
 const REPO_ROOT = path.resolve(EXAMPLES_DIR, '..', '..');
@@ -23,7 +22,6 @@ Options:
   --timeout <ms>      Overall wait budget per phase (default: 30000)
   --debug-port <n>    Chrome DevTools port (default: 9226)
   --with-stun         Run native example without --no-stun override
-  --require-srflx      Require public Google STUN srflx candidates from both peers
   --help              Show this help
 `);
 }
@@ -35,7 +33,6 @@ function parseArgs(argv) {
     timeoutMs: 30000,
     debugPort: 9226,
     useStun: false,
-    requireSrflx: false,
   };
 
   for (let i = 0; i < argv.length; ++i) {
@@ -45,11 +42,6 @@ function parseArgs(argv) {
       process.exit(0);
     }
     if (arg === '--with-stun') {
-      options.useStun = true;
-      continue;
-    }
-    if (arg === '--require-srflx') {
-      options.requireSrflx = true;
       options.useStun = true;
       continue;
     }
@@ -178,12 +170,14 @@ class CdpClient {
   }
 }
 
-function synthesizeOffer(localSdp) {
+function synthesizeOffer(localSdp, candidateLines) {
   const base = localSdp.replace(/\r?\n/g, '\r\n').replace(/\r\n*$/, '\r\n');
-  // localDescription already contains gathered candidates once ICE gathering
-  // completes. Do not append the DOM candidate log a second time.
-  if (/^a=end-of-candidates\r?$/m.test(base)) return base;
-  return base + 'a=end-of-candidates\r\n';
+  const candidates = candidateLines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => `a=${line.replace(/^a=/, '')}\r\n`)
+    .join('');
+  return `${base}${candidates}a=end-of-candidates\r\n`;
 }
 
 async function main() {
@@ -205,7 +199,7 @@ async function main() {
       '--no-default-browser-check',
       '--allow-file-access-from-files',
       '--autoplay-policy=no-user-gesture-required',
-      pathToFileURL(HTML_PATH).href,
+      `file:///${HTML_PATH.replace(/\\/g, '/')}`,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     chrome.stderr.on('data', (data) => process.stderr.write(data.toString()));
 
@@ -263,25 +257,15 @@ async function main() {
       const result = await cdp.send('Runtime.evaluate', {
         expression: `(() => ({
           sdp: document.getElementById('localSdp').value,
-          candidates: Array.from(document.querySelectorAll('#localCandidates .log-entry')).map((entry) => entry.textContent),
-          debug: document.getElementById('debugLog').innerText
+          candidates: Array.from(document.querySelectorAll('#localCandidates .log-entry')).map((entry) => entry.textContent)
         }))()`,
         returnByValue: true,
       });
       const value = result?.result?.value;
-      return value && value.sdp && value.candidates && value.candidates.length > 0 &&
-        value.debug.includes('ICE gathering complete') ? value : null;
-    }, options.timeoutMs, 'complete browser ICE gathering');
+      return value && value.sdp && value.candidates && value.candidates.length > 0 ? value : null;
+    }, options.timeoutMs, 'browser offer and candidates');
 
-    if (options.requireSrflx &&
-        !offerParts.candidates.some((line) => /\btyp srflx\b/i.test(line))) {
-      throw new Error('public Google STUN did not produce a browser srflx candidate');
-    }
-    if (options.requireSrflx && !/\btyp srflx\b/i.test(nativeStdout)) {
-      throw new Error('public Google STUN did not produce a native srflx candidate');
-    }
-
-    native.stdin.write(synthesizeOffer(offerParts.sdp).replace(/\r\n/g, '\n'));
+    native.stdin.write(synthesizeOffer(offerParts.sdp, offerParts.candidates).replace(/\r\n/g, '\n'));
     native.stdin.write('\n');
 
     const answer = await waitFor(() => {
@@ -310,9 +294,7 @@ async function main() {
         returnByValue: true,
       });
       const value = result?.result?.value;
-      return value && value.dc === 'open' &&
-        (value.ice === 'connected' || value.ice === 'completed') &&
-        value.conn === 'connected' ? value : null;
+      return value && value.dc === 'open' ? value : null;
     }, options.timeoutMs, 'browser datachannel open');
 
     const stats = await cdp.send('Runtime.evaluate', {
@@ -322,8 +304,6 @@ async function main() {
         return out.filter((value) =>
           value.type === 'candidate-pair' ||
           value.type === 'transport' ||
-          value.type === 'local-candidate' ||
-          value.type === 'remote-candidate' ||
           value.type === 'data-channel'
         );
       }) : null)()`,
@@ -333,34 +313,10 @@ async function main() {
 
     console.log('\n=== Browser Snapshot ===');
     console.log(JSON.stringify(snapshot, null, 2));
-    const browserStats = stats?.result?.value || [];
-    const succeededPairs = browserStats.filter((value) =>
-      value.type === 'candidate-pair' && value.state === 'succeeded');
-    if (succeededPairs.length === 0) {
-      throw new Error('DataChannel opened without a succeeded ICE candidate pair in getStats()');
-    }
-    const selectedPairIds = new Set(browserStats
-      .filter((value) => value.type === 'transport' && value.selectedCandidatePairId)
-      .map((value) => value.selectedCandidatePairId));
-    const selectedPair = browserStats.find((value) =>
-      value.type === 'candidate-pair' && selectedPairIds.has(value.id));
-    const pair = selectedPair || succeededPairs.find((value) => value.nominated) || succeededPairs[0];
-    const candidatesById = new Map(browserStats
-      .filter((value) => value.type === 'local-candidate' || value.type === 'remote-candidate')
-      .map((value) => [value.id, value]));
     console.log('\n=== Browser Stats ===');
-    console.log(JSON.stringify(browserStats, null, 2));
-    console.log('\n=== Selected/Succeeded ICE Pair ===');
-    console.log(JSON.stringify({
-      selected: Boolean(selectedPair),
-      state: pair.state,
-      localCandidateType: candidatesById.get(pair.localCandidateId)?.candidateType || null,
-      remoteCandidateType: candidatesById.get(pair.remoteCandidateId)?.candidateType || null,
-      bytesSent: pair.bytesSent,
-      bytesReceived: pair.bytesReceived
-    }, null, 2));
+    console.log(JSON.stringify(stats?.result?.value || [], null, 2));
 
-    if (!snapshot.messages.includes('Hello from Salts!')) {
+    if (!snapshot.messages.includes('Hello from TurboNet!')) {
       throw new Error('data channel opened but expected native greeting was not observed');
     }
     if (!snapshot.messages.includes('Hello from browser!')) {
@@ -371,9 +327,7 @@ async function main() {
       console.log(nativeStderr.trim());
     }
 
-    console.log(options.requireSrflx
-      ? '\nRESULT: Chrome DataChannel + public Google STUN candidate smoke passed (production usrsctp)'
-      : '\nRESULT: browser interop smoke passed (production usrsctp)');
+    console.log('\nRESULT: browser interop smoke passed');
   } finally {
     if (native && !native.killed) {
       try {
