@@ -214,8 +214,40 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
 
     uint16_t stream_id = rcv.rcv_sid;
     uint32_t ppid = ntohl(rcv.rcv_ppid);
+    size_t logical_length = datalen;
+    int is_binary = 0;
     if (ppid == SCTP_PPID_DCEP) {
         dcep_handle_message(peer, stream_id, (const uint8_t *)data, datalen);
+        free(data);
+        dc_peer_release(peer);
+        return 1;
+    }
+
+    if (ppid == SCTP_PPID_STRING || ppid == SCTP_PPID_BINARY) {
+        if (datalen == 0u) {
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                              "nonempty PPID carried zero octets");
+            free(data);
+            dc_peer_release(peer);
+            return 1;
+        }
+        is_binary = ppid == SCTP_PPID_BINARY;
+    } else if (ppid == SCTP_PPID_STRING_EMPTY ||
+               ppid == SCTP_PPID_BINARY_EMPTY) {
+        if (datalen != 1u || ((const uint8_t *)data)[0] != 0u) {
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                              "empty PPID requires one zero octet");
+            free(data);
+            dc_peer_release(peer);
+            return 1;
+        }
+        logical_length = 0u;
+        is_binary = ppid == SCTP_PPID_BINARY_EMPTY;
+    } else {
+        /* PPID 52/54 fragmentation and unknown PPIDs are not WebRTC user
+         * messages. SCTP DATA reassembly owns fragmentation below this layer. */
+        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                          "unsupported WebRTC PPID");
         free(data);
         dc_peer_release(peer);
         return 1;
@@ -231,8 +263,7 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         callback_data = channel->user_data;
         cmeta_mutex_unlock(&peer->operation_mutex);
         if (callback) {
-            int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
-            callback(channel, data, datalen, is_binary, callback_data);
+            callback(channel, data, logical_length, is_binary, callback_data);
         }
         dc_channel_release(channel);
     }
