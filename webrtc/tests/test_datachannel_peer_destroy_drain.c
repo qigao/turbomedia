@@ -972,11 +972,22 @@ static void test_sctp_partial_delivery_reassembly(void) {
   memset(limit, 'z', SCTP_REASSEMBLY_MESSAGE_MAX);
   deliver_webrtc_fragment(&probe, probe.sid, 15u, association_id,
                            SCTP_PPID_STRING, 0u, 0, limit,
-                           SCTP_REASSEMBLY_MESSAGE_MAX);
+                           SCTP_REASSEMBLY_MESSAGE_MAX / 2u);
   deliver_webrtc_fragment(&probe, probe.sid, 15u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR,
+                           limit + SCTP_REASSEMBLY_MESSAGE_MAX / 2u,
+                           SCTP_REASSEMBLY_MESSAGE_MAX / 2u);
+  assert(probe.messages == 5u &&
+         probe.last_length == SCTP_REASSEMBLY_MESSAGE_MAX &&
+         probe.last_byte == 'z');
+
+  deliver_webrtc_fragment(&probe, probe.sid, 16u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, limit,
+                           SCTP_REASSEMBLY_MESSAGE_MAX);
+  deliver_webrtc_fragment(&probe, probe.sid, 16u, association_id,
                            SCTP_PPID_STRING, 0u, MSG_EOR, one, sizeof(one));
   free(limit);
-  assert(probe.messages == 4u);
+  assert(probe.messages == 5u);
   assert(turbo_dc_peer_get_error(probe.peer).code ==
          TURBO_DC_ERROR_SCTP_RECEIVE);
 
@@ -991,6 +1002,7 @@ static void test_sctp_partial_delivery_reassembly(void) {
                            SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
   assert(turbo_dc_peer_get_error(probe.peer).code ==
          TURBO_DC_ERROR_SCTP_RECEIVE);
+  assert(turbo_dc_peer_get_state(probe.peer) == TURBO_DC_STATE_FAILED);
 
   turbo_dc_channel_close(probe.channel);
   turbo_dc_peer_destroy(probe.peer);
