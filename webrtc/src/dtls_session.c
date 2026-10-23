@@ -255,40 +255,22 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
         }
         /* fallthrough */
 
-        case SSL_ERROR_ZERO_RETURN: {
-            turbo_dc_state_t old_state = peer->state;
-            if (old_state != TURBO_DC_STATE_CLOSED) {
-                peer->state = TURBO_DC_STATE_CLOSED;
-                if (peer->on_state) {
-                    peer->on_state(peer, old_state, TURBO_DC_STATE_CLOSED, peer->user_data);
-                }
-            }
+        case SSL_ERROR_ZERO_RETURN:
+            dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
             break;
-        }
 
         default: {
-            turbo_dc_state_t old_state = peer->state;
-            if (old_state != TURBO_DC_STATE_FAILED) {
-                peer->state = TURBO_DC_STATE_FAILED;
-
-                unsigned long err = ERR_get_error();
-                char err_buf[256];
-                if (err) {
-                    ERR_error_string_n(err, err_buf, sizeof(err_buf));
-                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
-                } else {
-                    stbsp_snprintf(err_buf, sizeof(err_buf), "SSL error %d", ssl_error);
-                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
-                }
-
-                if (peer->on_error) {
-                    peer->on_error(peer, TURBO_DC_ERROR_DTLS_HANDSHAKE, err_buf, peer->user_data);
-                }
-
-                if (peer->on_state) {
-                    peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
-                }
+            unsigned long err = ERR_get_error();
+            char err_buf[256];
+            if (err) {
+                ERR_error_string_n(err, err_buf, sizeof(err_buf));
+                TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
+            } else {
+                stbsp_snprintf(err_buf, sizeof(err_buf),
+                               "SSL error %d", ssl_error);
+                TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
             }
+            dc_fail_peer(peer, TURBO_DC_ERROR_DTLS_HANDSHAKE, err_buf);
             break;
         }
     }
@@ -369,11 +351,13 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
         /* Start SCTP association after DTLS is ready.
          * The peer is only CONNECTED after SCTP reports COMM_UP. */
         if (sctp_start_association(peer) != 0) {
-            turbo_dc_state_t old_state = peer->state;
-            peer->state = TURBO_DC_STATE_FAILED;
-            if (peer->on_state) {
-                peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
-            }
+            turbo_dc_error_t error = turbo_dc_peer_get_error(peer);
+            turbo_dc_error_code_t code =
+                error.code == TURBO_DC_ERROR_NONE
+                    ? TURBO_DC_ERROR_SCTP_CONNECT : error.code;
+            dc_fail_peer(peer, code,
+                         error.detail ? error.detail
+                                      : "SCTP association start failed");
         }
     } else {
         dtls_handle_error(peer, ret);
