@@ -190,6 +190,7 @@ static void sctp_reassembly_clear_all_locked(turbo_dc_peer_t *peer) {
     size_t i;
     for (i = 0; i < SCTP_REASSEMBLY_SLOTS; ++i)
         sctp_reassembly_clear_slot(&peer->sctp.reassembly[i]);
+    peer->sctp.reassembly_blocked = 0;
 }
 
 static void sctp_reassembly_clear_all(turbo_dc_peer_t *peer) {
@@ -243,12 +244,13 @@ static sctp_reassembly_result_t sctp_reassemble_message(
     *assembled = NULL;
     *assembled_length = 0u;
     *detail = NULL;
-    if (!bytes || length == 0u || length > SCTP_REASSEMBLY_MESSAGE_MAX) {
-        *detail = "invalid or oversized SCTP receive fragment";
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->sctp.reassembly_blocked) {
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        *detail = "SCTP receive reassembly is blocked until association reset";
         return SCTP_REASSEMBLY_REJECTED;
     }
 
-    cmeta_mutex_lock(&peer->operation_mutex);
     for (i = 0; i < SCTP_REASSEMBLY_SLOTS; ++i) {
         sctp_reassembly_slot_t *candidate = &peer->sctp.reassembly[i];
         if (!candidate->used) {
@@ -264,29 +266,60 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         }
     }
 
+    if (!bytes || length == 0u || length > SCTP_REASSEMBLY_MESSAGE_MAX) {
+        if (slot) {
+            free(slot->data);
+            slot->data = NULL;
+            slot->length = 0u;
+            slot->discarding = 1u;
+            if (flags & MSG_EOR) sctp_reassembly_clear_slot(slot);
+        } else if ((flags & MSG_EOR) == 0) {
+            if (!free_slot) {
+                sctp_reassembly_clear_all_locked(peer);
+                peer->sctp.reassembly_blocked = 1;
+            } else {
+                free_slot->stream_id = rcv->rcv_sid;
+                free_slot->stream_sequence = rcv->rcv_ssn;
+                free_slot->ppid = ppid;
+                free_slot->association_id = rcv->rcv_assoc_id;
+                free_slot->unordered = unordered;
+                free_slot->discarding = 1u;
+                free_slot->used = 1u;
+            }
+        }
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        *detail = "invalid or oversized SCTP receive fragment";
+        return SCTP_REASSEMBLY_REJECTED;
+    }
+
+    if (slot && slot->ppid != ppid) {
+        sctp_reassembly_clear_slot(slot);
+        if ((flags & MSG_EOR) == 0)
+            peer->sctp.reassembly_blocked = 1;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        *detail = "SCTP fragment metadata changed before EOR";
+        return SCTP_REASSEMBLY_REJECTED;
+    }
+    if (slot && slot->discarding) {
+        if (flags & MSG_EOR) sctp_reassembly_clear_slot(slot);
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        *detail = "discarding rejected SCTP partial delivery until EOR";
+        return SCTP_REASSEMBLY_REJECTED;
+    }
     if (!slot && (flags & MSG_EOR)) {
         cmeta_mutex_unlock(&peer->operation_mutex);
         *assembled_length = length;
         return SCTP_REASSEMBLY_READY;
     }
-    if (slot && slot->ppid != ppid) {
-        sctp_reassembly_clear_slot(slot);
-        cmeta_mutex_unlock(&peer->operation_mutex);
-        *detail = "SCTP fragment metadata changed before EOR";
-        return SCTP_REASSEMBLY_REJECTED;
-    }
     if (!slot) {
         if (!free_slot) {
+            sctp_reassembly_clear_all_locked(peer);
+            peer->sctp.reassembly_blocked = 1;
             cmeta_mutex_unlock(&peer->operation_mutex);
             *detail = "too many simultaneous SCTP partial deliveries";
             return SCTP_REASSEMBLY_REJECTED;
         }
         free_slot->data = (uint8_t *)malloc(SCTP_REASSEMBLY_MESSAGE_MAX);
-        if (!free_slot->data) {
-            cmeta_mutex_unlock(&peer->operation_mutex);
-            *detail = "SCTP receive reassembly allocation failed";
-            return SCTP_REASSEMBLY_REJECTED;
-        }
         free_slot->length = 0u;
         free_slot->stream_id = rcv->rcv_sid;
         free_slot->stream_sequence = rcv->rcv_ssn;
@@ -295,9 +328,19 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         free_slot->unordered = unordered;
         free_slot->used = 1u;
         slot = free_slot;
+        if (!slot->data) {
+            slot->discarding = 1u;
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            *detail = "SCTP receive reassembly allocation failed";
+            return SCTP_REASSEMBLY_REJECTED;
+        }
     }
     if (length > SCTP_REASSEMBLY_MESSAGE_MAX - slot->length) {
-        sctp_reassembly_clear_slot(slot);
+        free(slot->data);
+        slot->data = NULL;
+        slot->length = 0u;
+        slot->discarding = 1u;
+        if (flags & MSG_EOR) sctp_reassembly_clear_slot(slot);
         cmeta_mutex_unlock(&peer->operation_mutex);
         *detail = "SCTP message exceeds the 24 KiB receive limit";
         return SCTP_REASSEMBLY_REJECTED;
