@@ -10,11 +10,15 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import queue
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -26,6 +30,58 @@ IDENTITY = re.compile(r"[a-zA-Z0-9_.+-]+\Z")
 
 def run(args, **kwargs):
     return subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def run_producer(args):
+    """vcpkg treats failed cache uploads as warnings; production must fail.
+
+    Preserve the error's following diagnostics, then stop our process tree so a
+    rejected upload cannot be hidden behind another hour of dependency builds.
+    """
+    lines = queue.Queue()
+    with subprocess.Popen([str(a) for a in args], stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                          errors="replace", bufsize=1, start_new_session=os.name != "nt") as process:
+        def read_output():
+            try:
+                for line in process.stdout:
+                    lines.put(line)
+            finally:
+                lines.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        failed_at = None
+        try:
+            while True:
+                if failed_at is not None and time.monotonic() >= failed_at + 1:
+                    break
+                timeout = None if failed_at is None else max(0, failed_at + 1 - time.monotonic())
+                try:
+                    line = lines.get(timeout=timeout)
+                except queue.Empty:
+                    break
+                if line is None:
+                    break
+                print(line, end="", flush=True)
+                lower = line.lower()
+                if (failed_at is None and lower.startswith("error: ") and
+                        "nuget.exe" in lower and " push " in lower and "failed with exit code" in lower):
+                    failed_at = time.monotonic()
+            if failed_at is not None:
+                raise RuntimeError("NuGet cache publication failed; stopped dependency production")
+            code = process.wait()
+            if code:
+                raise subprocess.CalledProcessError(code, args)
+        finally:
+            if process.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            reader.join(timeout=2)
 
 
 def download(package_id, version, output, *, allow_missing=False):
@@ -284,7 +340,10 @@ def media(triplet, installed, producer=False):
             os.environ["NUGET_API_KEY"] = os.environ["GITHUB_TOKEN"]
             os.environ["VCPKG_NUGET_REPOSITORY"] = "https://github.com/qigao/vcpkg-cache"
             os.environ["VCPKG_BINARY_SOURCES"] += f";nugetconfig,{config},write"
-        run(args if producer else [*args, "--only-binarycaching"])
+        if producer:
+            run_producer(args)
+        else:
+            run([*args, "--only-binarycaching"])
     print(f"Media closure: {len(entries)} exact ABI packages; producer={producer}", flush=True)
 
 

@@ -1,11 +1,15 @@
 """Transport/format regressions: no live credentials or package writes."""
+import contextlib
 import hashlib
+import io
 import os
 from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -58,6 +62,31 @@ class PackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ABI mismatch"):
             gp.to_file_cache(self.package(abi_info=b"wrong"), self.root / "cache", self.package_id, self.version)
         self.assertFalse(list((self.root / "cache").rglob("*.zip")))
+
+    def test_rejected_upload_stops_a_running_producer_before_more_builds(self):
+        marker = self.root / "unwanted-build"
+        script = """
+import sys, time
+from pathlib import Path
+print('error: "C:/tools/nuget.exe" push package.nupkg -ConfigFile publish.config failed with exit code 1', flush=True)
+print('Source parameter was not specified.', flush=True)
+time.sleep(30)
+Path(sys.argv[1]).write_text('must not reach another build')
+"""
+        started = time.monotonic()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            with self.assertRaisesRegex(RuntimeError, "publication failed"):
+                gp.run_producer([sys.executable, "-c", script, str(marker)])
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertFalse(marker.exists())
+        self.assertIn("Source parameter was not specified.", captured.getvalue())
+
+    def test_producer_preserves_native_success_and_compile_failure(self):
+        gp.run_producer([sys.executable, "-c", "print('Stored package in cache')"])
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            gp.run_producer([sys.executable, "-c", "raise SystemExit(7)"])
+        self.assertEqual(caught.exception.returncode, 7)
 
     def test_vcpkg_plan_identity_download_and_cache_only_install(self):
         package = self.package()
