@@ -223,7 +223,16 @@ async function main() {
 
     janus.onEvent(m => {
       if (process.env.PUBLIC_JANUS_DEBUG === '1') {
-        console.log('[janus-event] ' + JSON.stringify(m));
+        console.log('[janus-event] ' + JSON.stringify({
+          janus: m.janus,
+          session_id: m.session_id,
+          sender: m.sender,
+          transaction: m.transaction,
+          error: m.error,
+          has_jsep: Boolean(m.jsep),
+          jsep_type: m.jsep && m.jsep.type,
+          candidate_completed: m.candidate && m.candidate.completed,
+        }));
       }
       if (m.session_id !== sessionId || m.sender !== handleId) return;
       const peer = local && local.getPeer();
