@@ -236,8 +236,8 @@ async function main() {
     }
     const combinedOutput = stdout + '\n' + stderr;
     if (!offerSeen || !answerSent ||
-        !combinedOutput.includes('Janus EchoTest returned the exact DataChannel payload')) {
-      throw new Error('native process exited without complete public Janus DataChannel evidence');
+        !combinedOutput.includes('PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned')) {
+      throw new Error('native process exited without exact public Janus DataChannel echo evidence');
     }
     console.log(JSON.stringify({
       result: 'PASS',
