@@ -1102,7 +1102,10 @@ static chttp_websocket_client_config signal_client_config(void) {
   config.network.max_send_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.receive_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.connect_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
-  config.network.read_timeout_ms = SIGNAL_RECEIVE_TIMEOUT_MS;
+  /* The per-call receive timeout drives polling; the transport-level idle
+   * timeout must stay disabled or it closes signaling while Janus processes
+   * an asynchronous SDP answer. */
+  config.network.read_timeout_ms = 0u;
   config.network.write_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
   config.network.tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES;
   config.network.tls_handshake_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
