@@ -1043,6 +1043,154 @@ static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, vo
   turbo_dc_channel_on_message(channel, on_dc_message);
 }
 
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+/* Private qualification executable only; production DataChannel keeps usrsctp. */
+static int c11_is_owner(void *context) {
+  app_state_t *app = (app_state_t *)context;
+  return app && app->dc_peer && dc_peer_is_on_transport_owner(app->dc_peer);
+}
+static int c11_entropy(void *context, uint8_t *out, size_t size) {
+  (void)context;
+  return out && rand_bytes(out, size) == 1 ? 0 : -1;
+}
+static int c11_mac_sign(void *context, const uint8_t *bytes, size_t size,
+                        uint8_t out[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  app_state_t *app = (app_state_t *)context;
+  return app ? cnet_sctp_gmssl_mac_sign(&app->c11_cookie_mac, bytes, size, out) : -1;
+}
+static int c11_mac_verify(void *context, const uint8_t *bytes, size_t size,
+                          const uint8_t mac[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  app_state_t *app = (app_state_t *)context;
+  return app ? cnet_sctp_gmssl_mac_verify(&app->c11_cookie_mac, bytes, size, mac) : -1;
+}
+static void c11_wipe(void *memory, size_t size) {
+  volatile uint8_t *p = (volatile uint8_t *)memory;
+  while (size-- != 0u) *p++ = 0u;
+}
+static uint64_t c11_clock(app_state_t *app) {
+  uint64_t now = cmeta_monotonic_ms();
+  if (now < app->c11_now_ms) return app->c11_now_ms;
+  app->c11_now_ms = now;
+  return now;
+}
+static void c11_fail(app_state_t *app, const char *reason) {
+  TLOG_ERRORF("Private C11 SCTP public interop failed: {}", reason);
+  atomic_store(&app->callback_failed, 1);
+  app_request_stop(app);
+}
+static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size) {
+  if (size == 0u) return 0;
+  if (!packet || size > CNET_SCTP_ASSOC_MAX_PACKET ||
+      dtls_test_write_application_data(app->dc_peer, packet, size) != 0) {
+    c11_fail(app, "failed to write SCTP packet as authenticated DTLS application data");
+    return -1;
+  }
+  return 0;
+}
+static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
+                            const void *payload, size_t payload_size) {
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message(
+      &app->c11_assoc, c11_clock(app), sid, ppid, 0, payload, payload_size,
+      packet, sizeof(packet), &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    c11_fail(app, "C11 SCTP DATA send was rejected");
+    return -1;
+  }
+  return c11_send_packet(app, packet, packet_size);
+}
+static int c11_open_datachannel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  uint16_t streams = app->c11_assoc.config.outbound_streams;
+  uint16_t sid = app->c11_local_is_dtls_server ? 1u : 0u;
+  cnet_sctp_dcep_status status;
+  if (app->c11_assoc.peer_inbound_streams < streams)
+    streams = app->c11_assoc.peer_inbound_streams;
+  if (streams > CNET_SCTP_DCEP_STREAMS) streams = CNET_SCTP_DCEP_STREAMS;
+  if (streams <= sid) {
+    c11_fail(app, "negotiated SCTP stream count cannot carry local DCEP SID");
+    return -1;
+  }
+  status = cnet_sctp_dcep_init(&app->c11_dcep, streams,
+                               app->c11_local_is_dtls_server ? 0 : 1,
+                               c11_is_owner, app);
+  if (status != CNET_SCTP_DCEP_OK) {
+    c11_fail(app, "C11 DCEP initialization failed");
+    return -1;
+  }
+  app->c11_dcep_initialized = 1;
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0u, 0u, 0u,
+                               "chat", 4u, NULL, 0u,
+                               open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 DCEP OPEN creation failed");
+    return -1;
+  }
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID, open, open_size) != 0)
+    return -1;
+  app->c11_dcep_open_sent = 1;
+  TLOG_INFOF("Private C11 SCTP association established; DCEP OPEN sent on SID {}",
+             sid);
+  return 0;
+}
+static int c11_start_association(app_state_t *app) {
+  cnet_sctp_assoc_config config = {0};
+  uint8_t key[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+  uint64_t binding = 0u;
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status;
+  if (!c11_is_owner(app)) {
+    c11_fail(app, "association start was not called by the DataChannel Owner");
+    return -1;
+  }
+  if (app->c11_assoc_initialized) return 0;
+  if (rand_bytes(key, sizeof(key)) != 1 ||
+      rand_bytes((uint8_t *)&binding, sizeof(binding)) != 1 || binding == 0u) {
+    c11_wipe(key, sizeof(key));
+    c11_fail(app, "cryptographic key or DTLS generation binding unavailable");
+    return -1;
+  }
+  if (cnet_sctp_gmssl_mac_init(&app->c11_cookie_mac, key, sizeof(key)) != 0) {
+    c11_wipe(key, sizeof(key));
+    c11_fail(app, "GmSSL Cookie MAC initialization failed");
+    return -1;
+  }
+  c11_wipe(key, sizeof(key));
+  config.local_port = 5000u;
+  config.remote_port = 5000u;
+  config.receive_window = CNET_SCTP_DATA_RECEIVE_CEILING;
+  config.outbound_streams = CNET_SCTP_DATA_STREAMS;
+  config.inbound_streams = CNET_SCTP_DATA_STREAMS;
+  config.t1_ms = 1000u;
+  config.t1_max_ms = 8000u;
+  config.cookie_lifetime_ms = 30000u;
+  config.peer_binding = binding;
+  config.max_retransmits = 5u;
+  config.is_owner = c11_is_owner;
+  config.entropy = c11_entropy;
+  config.mac = c11_mac_sign;
+  config.verify_mac = c11_mac_verify;
+  config.provider_context = app;
+  status = cnet_sctp_assoc_init(&app->c11_assoc, &config, c11_clock(app));
+  if (status != CNET_SCTP_ASSOC_OK) {
+    cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+    c11_fail(app, "C11 SCTP association initialization failed");
+    return -1;
+  }
+  app->c11_assoc_initialized = 1;
+  status = cnet_sctp_assoc_start(&app->c11_assoc, c11_clock(app),
+                                packet, sizeof(packet), &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    c11_fail(app, "C11 SCTP INIT creation failed");
+    return -1;
+  }
+  TLOG_INFO("Starting experimental C11 SCTP association over authenticated DTLS");
+  return c11_send_packet(app, packet, packet_size);
+}
+
 static const char *dc_state_name(turbo_dc_state_t state) {
   switch (state) {
     case TURBO_DC_STATE_NEW: return "NEW";
