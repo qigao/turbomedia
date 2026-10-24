@@ -126,6 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           node --check webrtc/examples/public_services_smoke.js
+          node --check webrtc/examples/public_janus_interop.js
 
       # Test-only source checkout for the private C11 SCTP conformance harness.
       # The source is compiled only into tests and never linked into production.
@@ -422,6 +423,21 @@ jobs:
             [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           done
           node webrtc/examples/public_services_smoke.js
+
+      - name: Verify native DataChannel against public Janus EchoTest
+        if: matrix.platform == 'Linux'
+        shell: bash
+        env:
+          WEBRTC_SIGNALLED_PEER_BIN: ${{ github.workspace }}/build/platform-Linux/bin/rtc_signaled_peer
+          PUBLIC_WEBRTC_TIMEOUT_MS: "90000"
+        run: |
+          set -euo pipefail
+          for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
+            [[ -n "$root" ]] || continue
+            [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          done
+          node webrtc/examples/public_janus_interop.js
 
       - name: Compiler cache statistics
         if: always()
