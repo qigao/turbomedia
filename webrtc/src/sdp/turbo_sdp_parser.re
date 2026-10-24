@@ -242,6 +242,29 @@ parse_loop:
             goto parse_loop;
         }
 
+        // ICE trickle support is session-wide and may be signaled before m=.
+        "a=ice-options:" LINE EOL {
+            const char *p = line_start + sizeof("a=ice-options:") - 1;
+            const char *line_end = YYCURSOR;
+            while (line_end > line_start &&
+                   (line_end[-1] == '\r' || line_end[-1] == '\n')) {
+                line_end--;
+            }
+            while (p < line_end) {
+                const char *token;
+                size_t token_len;
+                while (p < line_end && (*p == ' ' || *p == '\t')) p++;
+                token = p;
+                while (p < line_end && *p != ' ' && *p != '\t') p++;
+                token_len = (size_t)(p - token);
+                if (token_len == sizeof("trickle") - 1 &&
+                    memcmp(token, "trickle", sizeof("trickle") - 1) == 0) {
+                    sdp->ice_trickle = 1;
+                }
+            }
+            goto parse_loop;
+        }
+
         // Bundle group: a=group:BUNDLE 0 1
         "a=group:BUNDLE" [^\r\n]* EOL {
             const char *p = line_start + 14;
