@@ -322,7 +322,7 @@ static int flush_signal_outbox(app_state_t *app) {
       app->outbox_tail = NULL;
     }
 
-    TLOG_INFOF("Sending signaling message: {}", msg->json);
+    TLOG_INFOF("Sending signaling payload ({} bytes)", strlen(msg->json));
     if (!app->signal_client_initialized ||
         chttp_websocket_client_send_text(&app->signal_client, msg->json, strlen(msg->json),
                                          SIGNAL_OPERATION_TIMEOUT_MS) != SALTS_OK) {
@@ -930,7 +930,7 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     TLOG_INFO("Remote peer left room");
     app->remote_peer_id[0] = '\0';
   } else if (strcmp(type_name, "error") == 0) {
-    TLOG_ERRORF("Signaling server returned an error: {}", json_text);
+    TLOG_ERRORF("Signaling server returned an error (payload_bytes={})", len);
   }
 
   json_free(root);
