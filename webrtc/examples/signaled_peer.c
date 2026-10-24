@@ -1191,6 +1191,147 @@ static int c11_start_association(app_state_t *app) {
   return c11_send_packet(app, packet, packet_size);
 }
 
+static void c11_handle_dcep(app_state_t *app,
+                            const cnet_sctp_data_message *message,
+                            const uint8_t *payload, size_t payload_size) {
+  uint8_t reply[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t reply_size = 0u;
+  cnet_sctp_dcep_status status = cnet_sctp_dcep_input(
+      &app->c11_dcep, message->stream_id, payload, payload_size,
+      reply, sizeof(reply), &reply_size);
+  if (status != CNET_SCTP_DCEP_OK) {
+    c11_fail(app, "C11 DCEP rejected peer OPEN/ACK");
+    return;
+  }
+  if (reply_size != 0u) {
+    if (c11_send_message(app, message->stream_id, CNET_SCTP_DCEP_PPID,
+                         reply, reply_size) != 0) return;
+    status = cnet_sctp_dcep_ack_admitted(&app->c11_dcep, message->stream_id);
+    if (status != CNET_SCTP_DCEP_OK) {
+      c11_fail(app, "C11 DCEP ACK admission failed");
+      return;
+    }
+  }
+  if (app->is_offerer && app->janus_echo_mode && app->c11_dcep_open_sent &&
+      !atomic_exchange(&app->message_sent, 1) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    static const char hello[] = "hello over signaled ICE";
+    if (c11_send_message(app, message->stream_id,
+                         CNET_SCTP_WEBRTC_TEXT_PPID, hello, sizeof(hello) - 1u) != 0)
+      return;
+    TLOG_INFO("Private C11 SCTP sent exact Janus EchoTest payload");
+  }
+}
+
+static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
+                                         const uint8_t *data, size_t size,
+                                         void *user_data) {
+  app_state_t *app = (app_state_t *)user_data;
+  uint8_t output[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t output_size = 0u;
+  cnet_sctp_assoc_status status;
+  unsigned int attempts;
+  if (!app || peer != app->dc_peer || !c11_is_owner(app) ||
+      !app->c11_assoc_initialized || !data || size == 0u) {
+    if (app) c11_fail(app, "invalid or non-owner DTLS application-data callback");
+    return;
+  }
+  status = cnet_sctp_assoc_input(&app->c11_assoc, c11_clock(app), data, size,
+                                 output, sizeof(output), &output_size);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP rejected authenticated DTLS application data");
+    return;
+  }
+  if (c11_send_packet(app, output, output_size) != 0) return;
+
+  if (app->c11_assoc.state == CNET_SCTP_ASSOC_ESTABLISHED &&
+      !app->c11_dcep_initialized) {
+    if (c11_open_datachannel(app) != 0) return;
+  }
+  if (app->c11_assoc.state != CNET_SCTP_ASSOC_ESTABLISHED ||
+      !app->c11_dcep_initialized) return;
+
+  for (attempts = 0u; attempts < CNET_SCTP_DATA_RX_SLOTS; ++attempts) {
+    cnet_sctp_data_message message = {0};
+    uint8_t payload[CNET_SCTP_DATA_MESSAGE_MAX];
+    size_t payload_size = 0u;
+    status = cnet_sctp_assoc_take_message(&app->c11_assoc, &message,
+                                          payload, sizeof(payload), &payload_size);
+    if (status == CNET_SCTP_ASSOC_EMPTY) break;
+    if (status != CNET_SCTP_ASSOC_OK) {
+      c11_fail(app, "C11 SCTP message dequeue failed");
+      return;
+    }
+    if (message.ppid == CNET_SCTP_DCEP_PPID) {
+      c11_handle_dcep(app, &message, payload, payload_size);
+      if (!atomic_load(&app->running)) return;
+    } else if (message.ppid == CNET_SCTP_WEBRTC_TEXT_PPID &&
+               app->is_offerer && app->janus_echo_mode) {
+      static const char prefix[] = "Janus EchoTest here! You wrote: ";
+      static const char expected[] = "hello over signaled ICE";
+      if (payload_size != sizeof(prefix) - 1u + sizeof(expected) - 1u ||
+          memcmp(payload, prefix, sizeof(prefix) - 1u) != 0 ||
+          memcmp(payload + sizeof(prefix) - 1u, expected, sizeof(expected) - 1u) != 0) {
+        c11_fail(app, "Janus C11 SCTP echo payload did not match exactly");
+        return;
+      }
+      puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact DataChannel payload returned");
+      atomic_store(&app->completed, 1);
+      app_request_stop(app);
+      return;
+    } else {
+      c11_fail(app, "unexpected PPID or DataChannel message for public EchoTest");
+      return;
+    }
+  }
+}
+
+static void c11_cleanup_owner_task(void *arg1, void *arg2) {
+  app_state_t *app = (app_state_t *)arg1;
+  (void)arg2;
+  if (!app || !c11_is_owner(app)) return;
+  if (app->c11_dcep_initialized) {
+    (void)cnet_sctp_dcep_stop(&app->c11_dcep);
+    app->c11_dcep_initialized = 0;
+  }
+  if (app->c11_assoc_initialized) {
+    (void)cnet_sctp_assoc_stop(&app->c11_assoc);
+    if (cnet_sctp_assoc_destroy(&app->c11_assoc) != CNET_SCTP_ASSOC_OK) {
+      TLOG_ERROR("Private C11 SCTP Association destroy failed during cleanup");
+      atomic_store(&app->callback_failed, 1);
+    }
+    app->c11_assoc_initialized = 0;
+  }
+  cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+}
+
+static void c11_poll_owner_task(void *arg1, void *arg2) {
+  app_state_t *app = (app_state_t *)arg1;
+  uint8_t output[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t output_size = 0u;
+  uint64_t deadline = 0u;
+  int has_deadline = 0;
+  cnet_sctp_assoc_status status;
+  (void)arg2;
+  if (!app || !app->c11_assoc_initialized || !c11_is_owner(app)) return;
+  status = cnet_sctp_assoc_next_deadline(&app->c11_assoc, &deadline, &has_deadline);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP deadline query failed");
+    return;
+  }
+  if (!has_deadline || c11_clock(app) < deadline) return;
+  status = cnet_sctp_assoc_advance(&app->c11_assoc, c11_clock(app),
+                                  output, sizeof(output), &output_size);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP retransmission deadline failed");
+    return;
+  }
+  if (c11_send_packet(app, output, output_size) != 0) return;
+  if (app->c11_assoc.state == CNET_SCTP_ASSOC_FAILED) {
+    c11_fail(app, "C11 SCTP association exhausted its retry budget");
+  }
+}
+
 static const char *dc_state_name(turbo_dc_state_t state) {
   switch (state) {
     case TURBO_DC_STATE_NEW: return "NEW";
