@@ -430,6 +430,7 @@ jobs:
         env:
           WEBRTC_SIGNALLED_PEER_BIN: ${{ github.workspace }}/build/platform-Linux/bin/rtc_signaled_peer
           PUBLIC_WEBRTC_TIMEOUT_MS: "90000"
+          PUBLIC_JANUS_DEBUG: "1"
         run: |
           set -euo pipefail
           for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
