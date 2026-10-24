@@ -385,6 +385,68 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
 
+  # Real public-service qualification of the private C11 SCTP/DCEP path.
+  # This executable compiles the existing Peer/DTLS/ICE implementation with
+  # a test-only DTLS application-data handler. It disables production usrsctp
+  # on this executable only; the shipped DataChannel target remains unchanged.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TURBO_MEDIA_HAS_DESKTOP_SERVICES)
+    set(_dc_c11_public_sources)
+    foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
+      list(APPEND _dc_c11_public_sources
+           "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
+    endforeach()
+    turbo_media_add_webrtc_base_test(
+      rtc_signaled_peer_c11
+      ../examples/signaled_peer.c
+      ../src/ice_integration.c
+      ../src/salts_ice_owner.c
+      ${_dc_c11_public_sources}
+      "${_salts_sctp_src}/sctp_wire.c"
+      "${_salts_sctp_src}/sctp_init_params.c"
+      "${_salts_sctp_src}/sctp_collision.c"
+      "${_salts_sctp_src}/sctp_data.c"
+      "${_salts_sctp_src}/sctp_assoc.c"
+      "${_salts_sctp_src}/sctp_dcep.c"
+      "${_salts_sctp_src}/sctp_webrtc.c"
+      "${_salts_sctp_src}/sctp_gmssl_mac.c")
+    target_include_directories(
+      rtc_signaled_peer_c11
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+              "${_salts_sctp_inc}" "${_salts_sctp_src}")
+    target_compile_definitions(
+      rtc_signaled_peer_c11
+      PRIVATE TURBO_MEDIA_TEST_C11_SCTP_BRIDGE=1
+              TURBO_MEDIA_TEST_PUBLIC_C11_SCTP=1)
+    target_link_libraries(
+      rtc_signaled_peer_c11
+      PRIVATE TurboMedia::SDP
+              Salts::LtvParser
+              turbo_media_cnet_adapter
+              Salts::CNet
+              SaltsNet::ICE
+              CHttp::Client
+              Salts::JsonParser
+              Salts::Core
+              Salts::CSTL
+              unofficial::usrsctp::usrsctp
+              OpenSSL::SSL
+              OpenSSL::Crypto
+              GmSSL::GmSSL
+              roaring::roaring)
+    set_target_properties(
+      rtc_signaled_peer_c11
+      PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+                 CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+                 RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+                 FOLDER "turbomedia/tests/webrtc")
+    if(MSVC)
+      target_compile_options(rtc_signaled_peer_c11 PRIVATE /W4 /WX)
+    else()
+      target_compile_options(rtc_signaled_peer_c11
+        PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+  endif()
+
   if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
       message(FATAL_ERROR
