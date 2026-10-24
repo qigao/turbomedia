@@ -106,7 +106,13 @@ async function connectJanus() {
   const pending = new Map(), handlers = new Set();
   let closed = false;
   ws.addEventListener('message', ev => {
-    let m; try { m = JSON.parse(String(ev.data)); } catch { return; }
+    let m; try { m = JSON.parse(String(ev.data)); } catch (error) {
+      console.error('[janus] invalid JSON response: ' + error.message);
+      return;
+    }
+    if (process.env.PUBLIC_JANUS_DEBUG === '1') {
+      console.log('[janus-wire] ' + JSON.stringify(m));
+    }
     if (m.transaction && pending.has(m.transaction)) {
       const p = pending.get(m.transaction);
       if ((m.janus === 'ack' && p.ack) || m.janus === 'success') {
@@ -114,7 +120,7 @@ async function connectJanus() {
       }
       if (m.janus === 'error') {
         pending.delete(m.transaction); clearTimeout(p.timer);
-        p.reject(new Error('Janus API error during ' + payload.janus + ': ' + JSON.stringify(m.error || m))); return;
+        p.reject(new Error('Janus API error during ' + p.operation + ': ' + JSON.stringify(m.error || m))); return;
       }
     }
     for (const fn of handlers) { try { fn(m); } catch (e) { console.error('[janus-event] ' + e.message); } }
@@ -134,7 +140,7 @@ async function connectJanus() {
       const id = txid();
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { pending.delete(id); reject(new Error('Janus request timeout: ' + payload.janus)); }, TIMEOUT);
-        pending.set(id, { resolve, reject, timer, ack: !!ack });
+        pending.set(id, { resolve, reject, timer, ack: !!ack, operation: payload.janus });
         ws.send(JSON.stringify(Object.assign({}, payload, { transaction: id })));
       });
     },
@@ -207,6 +213,9 @@ async function main() {
     const port = await local.listen();
 
     janus.onEvent(m => {
+      if (process.env.PUBLIC_JANUS_DEBUG === '1') {
+        console.log('[janus-event] ' + JSON.stringify(m));
+      }
       if (m.session_id !== sessionId || m.sender !== handleId) return;
       const peer = local && local.getPeer();
       if (!peer || peer.closed) return;
@@ -243,6 +252,8 @@ async function main() {
           if (answerSent) peer.send({ type: 'candidate', candidate: m.candidate.candidate });
           else queuedCandidates.push(m.candidate.candidate);
         }
+      } else if (m.janus === 'error') {
+        console.error('[public-webrtc] Janus error event: ' + JSON.stringify(m.error || m));
       } else if (m.janus === 'hangup') {
         console.error('[public-webrtc] Janus reported hangup');
       }
