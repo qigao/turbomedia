@@ -111,7 +111,16 @@ async function connectJanus() {
       return;
     }
     if (process.env.PUBLIC_JANUS_DEBUG === '1') {
-      console.log('[janus-wire] ' + JSON.stringify(m));
+      console.log('[janus-wire] ' + JSON.stringify({
+        janus: m.janus,
+        transaction: m.transaction,
+        session_id: m.session_id,
+        sender: m.sender,
+        error: m.error,
+        has_jsep: Boolean(m.jsep),
+        jsep_type: m.jsep && m.jsep.type,
+        candidate_completed: m.candidate && m.candidate.completed,
+      }));
     }
     if (m.transaction && pending.has(m.transaction)) {
       const p = pending.get(m.transaction);
