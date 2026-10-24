@@ -54,6 +54,8 @@ typedef struct {
   _Atomic(turbo_dc_channel_t *) channel;
 
   int is_offerer;
+  int force_stun;
+  int janus_echo_mode;
   atomic_int running;
   int ws_connected;
   int local_gathering_complete;
@@ -912,7 +914,23 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
       turbo_dc_channel_send(channel, echo, (size_t)echo_len, 0);
       atomic_store(&app->completed, 1);
     }
-  } else if (app->is_offerer && strncmp(message, "ECHO:", 5) == 0) {
+  } else if (app->is_offerer &&
+             (strncmp(message, "ECHO:", 5) == 0 ||
+              (app->janus_echo_mode &&
+               strncmp(message, "Janus EchoTest here! You wrote: ",
+                       strlen("Janus EchoTest here! You wrote: ")) == 0))) {
+    const char *echoed = message;
+    if (app->janus_echo_mode &&
+        strncmp(message, "Janus EchoTest here! You wrote: ",
+                strlen("Janus EchoTest here! You wrote: ")) == 0) {
+      echoed += strlen("Janus EchoTest here! You wrote: ");
+      if (strcmp(echoed, "hello over signaled ICE") != 0) {
+        TLOG_ERROR("Janus EchoTest returned a different payload");
+        app_request_stop(app);
+        return;
+      }
+      TLOG_INFO("Public Janus EchoTest returned the exact DataChannel payload");
+    }
     atomic_store(&app->completed, 1);
     app_request_stop(app);
   }
@@ -979,7 +997,7 @@ static int ensure_media_stack(app_state_t *app) {
     return 0;
   }
 
-  loopback = signal_host_is_loopback(app->signal_host);
+  loopback = signal_host_is_loopback(app->signal_host) && !app->force_stun;
 
   TLOG_INFO("ensure_media_stack: creating DataChannel context");
   memset(&dc_cfg, 0, sizeof(dc_cfg));
@@ -1229,7 +1247,9 @@ static int run_signaling(app_state_t *app) {
 static void print_usage(const char *argv0) {
   fprintf(stderr,
           "Usage: %s (--offer|--answer) [--room name] [--server host] [--port port]\n"
-          "          [--path /ws] [--secure] [--peer-id id]\n"
+          "          [--path /ws] [--secure] [--peer-id id] [--force-stun] [--janus-echo]\n"
+          "  --force-stun   Use public STUN even when signaling is loopback.\n"
+          "  --janus-echo   Require the public Janus EchoTest response payload.\n"
           "Set TURBO_SIGNALING_PEER_TOKEN for authenticated admission.\n",
           argv0);
 }
@@ -1280,6 +1300,10 @@ int main(int argc, char **argv) {
       snprintf(app.signal_path, sizeof(app.signal_path), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--secure") == 0) {
       app.use_tls = 1;
+    } else if (strcmp(argv[i], "--force-stun") == 0) {
+      app.force_stun = 1;
+    } else if (strcmp(argv[i], "--janus-echo") == 0) {
+      app.janus_echo_mode = 1;
     } else if (strcmp(argv[i], "--peer-id") == 0 && i + 1 < argc) {
       snprintf(app.requested_peer_id, sizeof(app.requested_peer_id), "%s",
                argv[++i]);
