@@ -106,6 +106,9 @@ void test_parse_datachannel_sdp(void) {
     check_equal((int)(sdp.media_count), (int)(1));
     check_equal((int)(sdp.media[0].type), (int)(SDP_MEDIA_APPLICATION));
     check_equal(sdp.media[0].mid, "0");
+    check_equal(sdp.media[0].fingerprint_hash, "sha-256");
+    check_equal(sdp.media[0].fingerprint,
+                "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00");
     check_equal((int)(sdp.media[0].sctp_port), (int)(5000));
     check_equal((int)(sdp.media[0].max_message_size), (int)(262144));
     check_equal((int)(sdp.media[0].setup), (int)(SDP_ROLE_ACTIVE));
