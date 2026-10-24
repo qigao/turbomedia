@@ -273,6 +273,11 @@ async function main() {
         console.error('[public-webrtc] Janus API error event: ' + JSON.stringify(m.error || m));
         return;
       }
+      if (m.janus === 'timeout') {
+        console.error('[public-webrtc] Janus session timed out');
+        if (child && child.exitCode === null) child.kill('SIGTERM');
+        return;
+      }
       // Janus transports can omit session_id on session-scoped events; this
       // WebSocket is dedicated to this session. Validate it only when present.
       if (m.session_id !== undefined && String(m.session_id) !== String(sessionId)) return;
@@ -319,6 +324,7 @@ async function main() {
         console.error('[public-webrtc] Janus error event: ' + JSON.stringify(m.error || m));
       } else if (m.janus === 'hangup') {
         console.error('[public-webrtc] Janus reported hangup');
+        if (child && child.exitCode === null) child.kill('SIGTERM');
       }
     });
 
