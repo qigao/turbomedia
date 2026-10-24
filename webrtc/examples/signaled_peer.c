@@ -1336,6 +1336,8 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
   }
 }
 
+#endif /* TURBO_MEDIA_TEST_PUBLIC_C11_SCTP helpers */
+
 static const char *dc_state_name(turbo_dc_state_t state) {
   switch (state) {
     case TURBO_DC_STATE_NEW: return "NEW";
