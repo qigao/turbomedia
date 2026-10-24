@@ -555,6 +555,24 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   return sdp_generate_offer(&local_sdp, buffer, buffer_size);
 }
 
+static int sdp_has_end_of_candidates(const char *sdp) {
+  const char *line;
+  if (!sdp) return 0;
+  line = sdp;
+  while (*line) {
+    const char *end = strchr(line, '\n');
+    size_t len = end ? (size_t)(end - line) : strlen(line);
+    if (len > 0 && line[len - 1] == '\r') len--;
+    if (len == sizeof("a=end-of-candidates") - 1 &&
+        memcmp(line, "a=end-of-candidates", len) == 0) {
+      return 1;
+    }
+    if (!end) break;
+    line = end + 1;
+  }
+  return 0;
+}
+
 static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_str) {
   int i;
   char candidate_line[512];
@@ -597,6 +615,16 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     }
   }
 
+  /* Some public peers (including Janus) include the complete ICE candidate
+   * set and a=end-of-candidates in the SDP answer instead of sending a
+   * separate trickle-complete event. Preserve that end marker so connectivity
+   * checks do not wait forever for a signaling event that will never arrive. */
+  if (sdp_has_end_of_candidates(sdp_str)) {
+    app->remote_end_of_candidates = 1;
+    ice_integration_end_of_candidates(app->ice);
+  }
+  TLOG_INFOF("Remote {} SDP: candidates={} end_of_candidates={}",
+             type, media->candidate_count, app->remote_end_of_candidates);
   TLOG_INFOF("Applied remote {} SDP", type);
   return 0;
 }
