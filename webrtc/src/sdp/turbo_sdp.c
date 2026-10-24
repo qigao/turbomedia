@@ -214,6 +214,9 @@ int sdp_generate(const sdp_session_t *sdp, char *buffer, size_t size) {
              (unsigned long long)sdp->session_version, sdp->origin_addr);
   SDP_APPEND("s=-\r\n");
   SDP_APPEND("t=0 0\r\n");
+  if (sdp->ice_trickle) {
+    SDP_APPEND("a=ice-options:trickle\r\n");
+  }
 
   /* BUNDLE group */
   if (sdp->bundle_count > 0) {

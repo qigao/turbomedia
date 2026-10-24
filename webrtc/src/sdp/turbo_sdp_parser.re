@@ -188,6 +188,8 @@ int sdp_parse(const char *sdp_str, size_t len, sdp_session_t *sdp) {
     const char *line_start;
     const char *line_end;
     sdp_media_t *current_media = NULL;
+    sdp_media_t session_attributes;
+    memset(&session_attributes, 0, sizeof(session_attributes));
 
 parse_loop:
     line_start = YYCURSOR;
@@ -242,6 +244,29 @@ parse_loop:
             goto parse_loop;
         }
 
+        // ICE trickle support is session-wide and may be signaled before m=.
+        "a=ice-options:" LINE EOL {
+            const char *p = line_start + sizeof("a=ice-options:") - 1;
+            const char *line_end = YYCURSOR;
+            while (line_end > line_start &&
+                   (line_end[-1] == '\r' || line_end[-1] == '\n')) {
+                line_end--;
+            }
+            while (p < line_end) {
+                const char *token;
+                size_t token_len;
+                while (p < line_end && (*p == ' ' || *p == '\t')) p++;
+                token = p;
+                while (p < line_end && *p != ' ' && *p != '\t') p++;
+                token_len = (size_t)(p - token);
+                if (token_len == sizeof("trickle") - 1 &&
+                    memcmp(token, "trickle", sizeof("trickle") - 1) == 0) {
+                    sdp->ice_trickle = 1;
+                }
+            }
+            goto parse_loop;
+        }
+
         // Bundle group: a=group:BUNDLE 0 1
         "a=group:BUNDLE" [^\r\n]* EOL {
             const char *p = line_start + 14;
@@ -268,12 +293,33 @@ parse_loop:
         "m=" LINE EOL {
             if (parse_media_line(sdp, line_start + 2, &current_media) < 0)
                 return -1;
+            /* DTLS fingerprint/setup and ICE credentials may be session-level.
+             * Inherit them into each media section; explicit media attributes
+             * parsed below can override these defaults. */
+            if (session_attributes.ice_ufrag[0] && !current_media->ice_ufrag[0])
+                memcpy(current_media->ice_ufrag, session_attributes.ice_ufrag,
+                       sizeof(current_media->ice_ufrag));
+            if (session_attributes.ice_pwd[0] && !current_media->ice_pwd[0])
+                memcpy(current_media->ice_pwd, session_attributes.ice_pwd,
+                       sizeof(current_media->ice_pwd));
+            if (session_attributes.fingerprint_hash[0] &&
+                !current_media->fingerprint_hash[0])
+                memcpy(current_media->fingerprint_hash,
+                       session_attributes.fingerprint_hash,
+                       sizeof(current_media->fingerprint_hash));
+            if (session_attributes.fingerprint[0] && !current_media->fingerprint[0])
+                memcpy(current_media->fingerprint, session_attributes.fingerprint,
+                       sizeof(current_media->fingerprint));
+            if (session_attributes.setup != SDP_ROLE_ACTPASS &&
+                current_media->setup == SDP_ROLE_ACTPASS)
+                current_media->setup = session_attributes.setup;
             goto parse_loop;
         }
 
         // Attribute line: a=...
         "a=" LINE EOL {
-            if (current_media && parse_attribute_line(current_media, line_start + 2) < 0)
+            if (parse_attribute_line(current_media ? current_media : &session_attributes,
+                                     line_start + 2) < 0)
                 return -1;
             goto parse_loop;
         }

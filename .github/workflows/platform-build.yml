@@ -120,13 +120,21 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: Validate public-service smoke harness syntax
+        if: matrix.platform == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check webrtc/examples/public_services_smoke.js
+          node --check webrtc/examples/public_janus_interop.js
+
       # Test-only source checkout for the private C11 SCTP conformance harness.
       # The source is compiled only into tests and never linked into production.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
-          # Immutable source checkpoint qualified by the C11 6/6 + Owner TSan run.
-          ref: 1ebec510a7928864a74307a98aaa18a310abd0de
+          # Exact HEAD of clean master-based Salts SCTP integration PR #1281; test-only checkout.
+          ref: 916871996ccf4dcb6b042bd8306f19083b7ce795
           path: salts-sctp-prototype
 
       - uses: ./.github/actions/setup-native-deps
@@ -400,6 +408,58 @@ jobs:
             & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
+
+      - name: Verify native ICE against public STUN and public Janus control plane
+        if: matrix.platform == 'Linux'
+        shell: bash
+        env:
+          WEBRTC_ICE_PROBE_BIN: ${{ github.workspace }}/build/platform-Linux/bin/browser_interop
+          PUBLIC_SERVICE_TIMEOUT_MS: "5000"
+        run: |
+          set -euo pipefail
+          for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
+            [[ -n "$root" ]] || continue
+            [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          done
+          node webrtc/examples/public_services_smoke.js
+
+      - name: Verify native DataChannel against public Janus EchoTest
+        if: matrix.platform == 'Linux'
+        shell: bash
+        env:
+          WEBRTC_SIGNALLED_PEER_BIN: ${{ github.workspace }}/build/platform-Linux/bin/rtc_signaled_peer
+          PUBLIC_WEBRTC_TIMEOUT_MS: "90000"
+          PUBLIC_JANUS_DEBUG: "1"
+          TURBO_SIGNAL_TRACE: ${{ runner.temp }}/signaled-peer.trace
+        run: |
+          set -euo pipefail
+          trap 'if [[ -f "$TURBO_SIGNAL_TRACE" ]]; then echo "=== native signaling/ICE trace ==="; cat "$TURBO_SIGNAL_TRACE"; fi' EXIT
+          for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
+            [[ -n "$root" ]] || continue
+            [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          done
+          node webrtc/examples/public_janus_interop.js
+
+      - name: Verify private C11 SCTP DataChannel against public Janus EchoTest
+        if: matrix.platform == 'Linux'
+        shell: bash
+        env:
+          WEBRTC_SIGNALLED_PEER_BIN: ${{ github.workspace }}/build/platform-Linux/bin/rtc_signaled_peer_c11
+          PUBLIC_WEBRTC_EXPECT_C11_SCTP: "1"
+          PUBLIC_WEBRTC_TIMEOUT_MS: "90000"
+          PUBLIC_JANUS_DEBUG: "1"
+          TURBO_SIGNAL_TRACE: ${{ runner.temp }}/signaled-peer-c11.trace
+        run: |
+          set -euo pipefail
+          trap 'if [[ -f "$TURBO_SIGNAL_TRACE" ]]; then echo "=== private C11 SCTP signaling/ICE trace ==="; cat "$TURBO_SIGNAL_TRACE"; fi' EXIT
+          for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
+            [[ -n "$root" ]] || continue
+            [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          done
+          node webrtc/examples/public_janus_interop.js
 
       - name: Compiler cache statistics
         if: always()

@@ -410,10 +410,21 @@ def media(triplet, installed, producer=False, scope="media"):
                 # An own-package 404 selects the read-only shared fallback.
                 # The final 404 remains fatal for consumers; only a producer
                 # may convert it into a source build and own-package upload.
-                if download(candidate, version, package,
-                            allow_missing=index < len(candidates) - 1 or producer):
+                print(f"Checking vcpkg cache package {candidate}/{version}",
+                      flush=True)
+                try:
+                    found = download(
+                        candidate, version, package,
+                        allow_missing=index < len(candidates) - 1 or producer)
+                except RuntimeError as error:
+                    raise RuntimeError(
+                        f"vcpkg cache lookup failed for {candidate}/{version} "
+                        f"(triplet={triplet}, scope={scope}, producer={producer}): "
+                        f"{error}") from error
+                if found:
                     to_file_cache(package, cache, candidate, version)
                     break
+                print(f"Cache miss: {candidate}/{version}", flush=True)
         if producer:
             # The existing native Windows NuGet client is used ONLY to publish.
             # All reads use curl; Linux/macOS never invoke NuGet.exe or Mono.

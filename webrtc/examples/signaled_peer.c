@@ -15,8 +15,17 @@
 #include "tlog.h"
 #include "turbo_datachannel.h"
 #include <http_client/http.h>
+#include <cnet/websocket.h>
 #include <json_parser.h>
 #include "turbo_sdp.h"
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+#include "turbo_datachannel_internal.h"
+#include "sctp_assoc_internal.h"
+#include "sctp_dcep_internal.h"
+#include "sctp_webrtc_internal.h"
+#include "sctp_gmssl_mac_internal.h"
+#include <gmssl/rand.h>
+#endif
 #include <cmeta_error.h>
 #include <cmeta_thread.h>
 #include <stdint.h>
@@ -31,8 +40,8 @@
 #define MAX_SIGNAL_HOST_LEN 256
 #define MAX_SIGNAL_PATH_LEN 128
 #define MAX_CACHED_CANDIDATES 32
-#define SIGNAL_MAX_MESSAGE_BYTES (64u * 1024u)
-#define SIGNAL_MAX_HANDSHAKE_HEADER_BYTES (32u * 1024u)
+#define SIGNAL_MAX_MESSAGE_BYTES (16u * 1024u)
+#define SIGNAL_MAX_HANDSHAKE_HEADER_BYTES (8u * 1024u)
 #define SIGNAL_OPERATION_TIMEOUT_MS 5000u
 #define SIGNAL_RECEIVE_TIMEOUT_MS 50u
 #define SIGNAL_SHUTDOWN_TIMEOUT_MS 1000u
@@ -54,6 +63,8 @@ typedef struct {
   _Atomic(turbo_dc_channel_t *) channel;
 
   int is_offerer;
+  int force_stun;
+  int janus_echo_mode;
   atomic_int running;
   int ws_connected;
   int local_gathering_complete;
@@ -97,6 +108,16 @@ typedef struct {
 
   sdp_session_t remote_sdp;
   int have_remote_sdp;
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  cnet_sctp_assoc c11_assoc;
+  cnet_sctp_dcep c11_dcep;
+  cnet_sctp_gmssl_mac c11_cookie_mac;
+  uint64_t c11_now_ms;
+  int c11_assoc_initialized;
+  int c11_dcep_initialized;
+  int c11_dcep_open_sent;
+  int c11_local_is_dtls_server;
+#endif
 } app_state_t;
 
 static void tracef_app(const app_state_t *app, const char *fmt, ...) {
@@ -123,7 +144,6 @@ static void tracef_app(const app_state_t *app, const char *fmt, ...) {
 }
 
 static int run_signaling(app_state_t *app);
-static char *dup_printf(const char *fmt, ...);
 static int ensure_media_runtime(app_state_t *app);
 static int enqueue_signalf(app_state_t *app, const char *fmt, ...);
 
@@ -198,39 +218,6 @@ static char *escape_json_string(const char *str) {
   }
   *dst = '\0';
   return escaped;
-}
-
-static char *dup_printf(const char *fmt, ...) {
-  char *buffer;
-  int needed;
-  va_list ap;
-
-  va_start(ap, fmt);
-#ifdef _WIN32
-  needed = _vscprintf(fmt, ap);
-#else
-  {
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    needed = vsnprintf(NULL, 0, fmt, ap_copy);
-    va_end(ap_copy);
-  }
-#endif
-  va_end(ap);
-
-  if (needed < 0) {
-    return NULL;
-  }
-
-  buffer = (char *)malloc((size_t)needed + 1);
-  if (!buffer) {
-    return NULL;
-  }
-
-  va_start(ap, fmt);
-  vsnprintf(buffer, (size_t)needed + 1, fmt, ap);
-  va_end(ap);
-  return buffer;
 }
 
 static void app_request_stop(app_state_t *app) {
@@ -319,7 +306,7 @@ static int flush_signal_outbox(app_state_t *app) {
       app->outbox_tail = NULL;
     }
 
-    TLOG_INFOF("Sending signaling message: {}", msg->json);
+    TLOG_INFOF("Sending signaling payload ({} bytes)", strlen(msg->json));
     if (!app->signal_client_initialized ||
         chttp_websocket_client_send_text(&app->signal_client, msg->json, strlen(msg->json),
                                          SIGNAL_OPERATION_TIMEOUT_MS) != SALTS_OK) {
@@ -384,6 +371,19 @@ static int has_emitted_candidate(const app_state_t *app, const char *candidate_s
   return 0;
 }
 
+static void copy_candidate_text(char *destination, size_t capacity,
+                                const char *source) {
+  size_t length = 0u;
+  if (!destination || capacity == 0u) return;
+  if (!source) {
+    destination[0] = '\0';
+    return;
+  }
+  while (length + 1u < capacity && source[length] != '\0') ++length;
+  memmove(destination, source, length);
+  destination[length] = '\0';
+}
+
 static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp) {
   char *escaped = NULL;
   ice_candidate_t parsed;
@@ -397,8 +397,9 @@ static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp
   }
 
   if (app->emitted_candidate_count < MAX_CACHED_CANDIDATES) {
-    snprintf(app->emitted_candidates[app->emitted_candidate_count],
-             sizeof(app->emitted_candidates[app->emitted_candidate_count]), "%s", candidate_sdp);
+    copy_candidate_text(app->emitted_candidates[app->emitted_candidate_count],
+                        sizeof(app->emitted_candidates[app->emitted_candidate_count]),
+                        candidate_sdp);
     app->emitted_candidate_count++;
   }
 
@@ -414,8 +415,9 @@ static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp
   }
 
   if (app->cached_candidate_count < MAX_CACHED_CANDIDATES) {
-    snprintf(app->cached_candidates[app->cached_candidate_count],
-             sizeof(app->cached_candidates[app->cached_candidate_count]), "%s", candidate_sdp);
+    copy_candidate_text(app->cached_candidates[app->cached_candidate_count],
+                        sizeof(app->cached_candidates[app->cached_candidate_count]),
+                        candidate_sdp);
     app->cached_candidate_count++;
   }
 }
@@ -516,6 +518,10 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   sdp_media_t *media;
 
   sdp_session_init(&local_sdp);
+  /* Candidate messages are sent after the description, so advertise ICE
+   * trickle explicitly rather than making the remote endpoint assume a
+   * complete candidate list is embedded in this SDP. */
+  local_sdp.ice_trickle = 1;
   TLOG_INFO("build_local_sdp: add datachannel m-line");
   media = sdp_add_datachannel(&local_sdp, "0", 5000);
   if (!media) {
@@ -552,6 +558,24 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   return sdp_generate_offer(&local_sdp, buffer, buffer_size);
 }
 
+static int sdp_has_end_of_candidates(const char *sdp) {
+  const char *line;
+  if (!sdp) return 0;
+  line = sdp;
+  while (*line) {
+    const char *end = strchr(line, '\n');
+    size_t len = end ? (size_t)(end - line) : strlen(line);
+    if (len > 0 && line[len - 1] == '\r') len--;
+    if (len == sizeof("a=end-of-candidates") - 1 &&
+        memcmp(line, "a=end-of-candidates", len) == 0) {
+      return 1;
+    }
+    if (!end) break;
+    line = end + 1;
+  }
+  return 0;
+}
+
 static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_str) {
   int i;
   char candidate_line[512];
@@ -572,6 +596,37 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     return -1;
   }
 
+  /* The answer's setup attribute determines which endpoint initiates DTLS.
+   * If Janus answers with setup:active, Janus sends ClientHello and this
+   * offerer must use DTLS server/accept state. setup:passive requires the
+   * inverse. Do this while the peer is still NEW, before ICE can connect and
+   * start the handshake. */
+  if (strcmp(type, "answer") == 0) {
+    int local_is_dtls_server;
+    const char *remote_setup;
+    if (media->setup == SDP_ROLE_ACTIVE) {
+      local_is_dtls_server = 1;
+      remote_setup = "active";
+    } else if (media->setup == SDP_ROLE_PASSIVE) {
+      local_is_dtls_server = 0;
+      remote_setup = "passive";
+    } else {
+      TLOG_ERRORF("Invalid DTLS setup role in SDP answer: {}",
+                  media->setup == SDP_ROLE_ACTPASS ? "actpass" : "unknown");
+      return -1;
+    }
+    if (turbo_dc_peer_set_dtls_role(app->dc_peer, local_is_dtls_server) != 0) {
+      TLOG_ERRORF("Failed to apply DTLS role from remote answer setup:{}",
+                  remote_setup);
+      return -1;
+    }
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+    app->c11_local_is_dtls_server = local_is_dtls_server;
+#endif
+    TLOG_INFOF("Remote answer setup:{}; local DTLS role:{}",
+               remote_setup, local_is_dtls_server ? "server/passive" : "client/active");
+  }
+
   if (ice_integration_set_remote_credentials(app->ice, media->ice_ufrag,
                                              media->ice_pwd) != 0) {
     TLOG_ERROR("Failed to apply remote ICE credentials");
@@ -579,12 +634,22 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
   }
   app->remote_credentials_set = 1;
 
-  if (media->fingerprint_hash[0] != '\0' && media->fingerprint[0] != '\0') {
-    if (turbo_dc_peer_set_remote_fingerprint(app->dc_peer, media->fingerprint_hash,
-                                             media->fingerprint) != 0) {
-      TLOG_WARN("Failed to set remote fingerprint from SDP");
+  if (media->fingerprint_hash[0] == '\0' || media->fingerprint[0] == '\0') {
+    TLOG_ERROR("Remote SDP is missing a DTLS fingerprint");
+    return -1;
+  }
+  {
+    int fingerprint_status = turbo_dc_peer_set_remote_fingerprint(
+        app->dc_peer, media->fingerprint_hash, media->fingerprint);
+    if (fingerprint_status != 0) {
+      TLOG_ERRORF("Invalid remote DTLS fingerprint in SDP (hash={}, length={}, status={})",
+                  media->fingerprint_hash, strlen(media->fingerprint),
+                  fingerprint_status);
+      return -1;
     }
   }
+  TLOG_INFOF("Applied remote DTLS fingerprint: hash={} length={}",
+             media->fingerprint_hash, strlen(media->fingerprint));
 
   for (i = 0; i < media->candidate_count; ++i) {
     if (sdp_candidate_to_string(&media->candidates[i], candidate_line, sizeof(candidate_line)) == 0) {
@@ -594,6 +659,16 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     }
   }
 
+  /* Some public peers (including Janus) include the complete ICE candidate
+   * set and a=end-of-candidates in the SDP answer instead of sending a
+   * separate trickle-complete event. Preserve that end marker so connectivity
+   * checks do not wait forever for a signaling event that will never arrive. */
+  if (sdp_has_end_of_candidates(sdp_str)) {
+    app->remote_end_of_candidates = 1;
+    ice_integration_end_of_candidates(app->ice);
+  }
+  TLOG_INFOF("Remote {} SDP: candidates={} end_of_candidates={}",
+             type, media->candidate_count, app->remote_end_of_candidates);
   TLOG_INFOF("Applied remote {} SDP", type);
   return 0;
 }
@@ -857,7 +932,7 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     TLOG_INFO("Remote peer left room");
     app->remote_peer_id[0] = '\0';
   } else if (strcmp(type_name, "error") == 0) {
-    TLOG_ERRORF("Signaling server returned an error: {}", json_text);
+    TLOG_ERRORF("Signaling server returned an error (payload_bytes={})", len);
   }
 
   json_free(root);
@@ -912,7 +987,23 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
       turbo_dc_channel_send(channel, echo, (size_t)echo_len, 0);
       atomic_store(&app->completed, 1);
     }
-  } else if (app->is_offerer && strncmp(message, "ECHO:", 5) == 0) {
+  } else if (app->is_offerer) {
+    const char *janus_prefix = "Janus EchoTest here! You wrote: ";
+    if (app->janus_echo_mode) {
+      const size_t prefix_len = strlen(janus_prefix);
+      if (strncmp(message, janus_prefix, prefix_len) != 0) {
+        return;
+      }
+      if (strcmp(message + prefix_len, "hello over signaled ICE") != 0) {
+        TLOG_ERROR("Janus EchoTest returned a different payload");
+        app_request_stop(app);
+        return;
+      }
+      puts("PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned");
+      TLOG_INFO("Public Janus EchoTest returned the exact DataChannel payload");
+    } else if (strncmp(message, "ECHO:", 5) != 0) {
+      return;
+    }
     atomic_store(&app->completed, 1);
     app_request_stop(app);
   }
@@ -937,12 +1028,320 @@ static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, vo
   turbo_dc_channel_on_message(channel, on_dc_message);
 }
 
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+/* Private qualification executable only; production DataChannel keeps usrsctp. */
+static int c11_is_owner(void *context) {
+  app_state_t *app = (app_state_t *)context;
+  return app && app->dc_peer && dc_peer_is_on_transport_owner(app->dc_peer);
+}
+static int c11_entropy(void *context, uint8_t *out, size_t size) {
+  (void)context;
+  return out && rand_bytes(out, size) == 1 ? 0 : -1;
+}
+static int c11_mac_sign(void *context, const uint8_t *bytes, size_t size,
+                        uint8_t out[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  app_state_t *app = (app_state_t *)context;
+  return app ? cnet_sctp_gmssl_mac_sign(&app->c11_cookie_mac, bytes, size, out) : -1;
+}
+static int c11_mac_verify(void *context, const uint8_t *bytes, size_t size,
+                          const uint8_t mac[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  app_state_t *app = (app_state_t *)context;
+  return app ? cnet_sctp_gmssl_mac_verify(&app->c11_cookie_mac, bytes, size, mac) : -1;
+}
+static void c11_wipe(void *memory, size_t size) {
+  volatile uint8_t *p = (volatile uint8_t *)memory;
+  while (size-- != 0u) *p++ = 0u;
+}
+static uint64_t c11_clock(app_state_t *app) {
+  uint64_t now = cmeta_monotonic_ms();
+  if (now < app->c11_now_ms) return app->c11_now_ms;
+  app->c11_now_ms = now;
+  return now;
+}
+static void c11_fail(app_state_t *app, const char *reason) {
+  TLOG_ERRORF("Private C11 SCTP public interop failed: {}", reason);
+  atomic_store(&app->callback_failed, 1);
+  app_request_stop(app);
+}
+static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size) {
+  if (size == 0u) return 0;
+  if (!packet || size > CNET_SCTP_ASSOC_MAX_PACKET ||
+      dtls_test_write_application_data(app->dc_peer, packet, size) != 0) {
+    c11_fail(app, "failed to write SCTP packet as authenticated DTLS application data");
+    return -1;
+  }
+  return 0;
+}
+static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
+                            const void *payload, size_t payload_size) {
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message(
+      &app->c11_assoc, c11_clock(app), sid, ppid, 0, payload, payload_size,
+      packet, sizeof(packet), &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    c11_fail(app, "C11 SCTP DATA send was rejected");
+    return -1;
+  }
+  return c11_send_packet(app, packet, packet_size);
+}
+static int c11_open_datachannel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  uint16_t streams = app->c11_assoc.config.outbound_streams;
+  uint16_t sid = app->c11_local_is_dtls_server ? 1u : 0u;
+  cnet_sctp_dcep_status status;
+  if (app->c11_assoc.peer_inbound_streams < streams)
+    streams = app->c11_assoc.peer_inbound_streams;
+  if (streams > CNET_SCTP_DCEP_STREAMS) streams = CNET_SCTP_DCEP_STREAMS;
+  if (streams <= sid) {
+    c11_fail(app, "negotiated SCTP stream count cannot carry local DCEP SID");
+    return -1;
+  }
+  status = cnet_sctp_dcep_init(&app->c11_dcep, streams,
+                               app->c11_local_is_dtls_server ? 0 : 1,
+                               c11_is_owner, app);
+  if (status != CNET_SCTP_DCEP_OK) {
+    c11_fail(app, "C11 DCEP initialization failed");
+    return -1;
+  }
+  app->c11_dcep_initialized = 1;
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0u, 0u, 0u,
+                               "chat", 4u, NULL, 0u,
+                               open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 DCEP OPEN creation failed");
+    return -1;
+  }
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID, open, open_size) != 0)
+    return -1;
+  app->c11_dcep_open_sent = 1;
+  TLOG_INFOF("Private C11 SCTP association established; DCEP OPEN sent on SID {}",
+             sid);
+  return 0;
+}
+static int c11_start_association(app_state_t *app) {
+  cnet_sctp_assoc_config config = {0};
+  uint8_t key[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+  uint64_t binding = 0u;
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status;
+  if (!c11_is_owner(app)) {
+    c11_fail(app, "association start was not called by the DataChannel Owner");
+    return -1;
+  }
+  if (app->c11_assoc_initialized) return 0;
+  if (rand_bytes(key, sizeof(key)) != 1 ||
+      rand_bytes((uint8_t *)&binding, sizeof(binding)) != 1 || binding == 0u) {
+    c11_wipe(key, sizeof(key));
+    c11_fail(app, "cryptographic key or DTLS generation binding unavailable");
+    return -1;
+  }
+  if (cnet_sctp_gmssl_mac_init(&app->c11_cookie_mac, key, sizeof(key)) != 0) {
+    c11_wipe(key, sizeof(key));
+    c11_fail(app, "GmSSL Cookie MAC initialization failed");
+    return -1;
+  }
+  c11_wipe(key, sizeof(key));
+  config.local_port = 5000u;
+  config.remote_port = 5000u;
+  config.receive_window = CNET_SCTP_DATA_RECEIVE_CEILING;
+  config.outbound_streams = CNET_SCTP_DATA_STREAMS;
+  config.inbound_streams = CNET_SCTP_DATA_STREAMS;
+  config.t1_ms = 1000u;
+  config.t1_max_ms = 8000u;
+  config.cookie_lifetime_ms = 30000u;
+  config.peer_binding = binding;
+  config.max_retransmits = 5u;
+  config.is_owner = c11_is_owner;
+  config.entropy = c11_entropy;
+  config.mac = c11_mac_sign;
+  config.verify_mac = c11_mac_verify;
+  config.provider_context = app;
+  status = cnet_sctp_assoc_init(&app->c11_assoc, &config, c11_clock(app));
+  if (status != CNET_SCTP_ASSOC_OK) {
+    cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+    c11_fail(app, "C11 SCTP association initialization failed");
+    return -1;
+  }
+  app->c11_assoc_initialized = 1;
+  status = cnet_sctp_assoc_start(&app->c11_assoc, c11_clock(app),
+                                packet, sizeof(packet), &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    c11_fail(app, "C11 SCTP INIT creation failed");
+    return -1;
+  }
+  TLOG_INFO("Starting experimental C11 SCTP association over authenticated DTLS");
+  return c11_send_packet(app, packet, packet_size);
+}
+
+static void c11_handle_dcep(app_state_t *app,
+                            const cnet_sctp_data_message *message,
+                            const uint8_t *payload, size_t payload_size) {
+  uint8_t reply[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t reply_size = 0u;
+  cnet_sctp_dcep_status status = cnet_sctp_dcep_input(
+      &app->c11_dcep, message->stream_id, payload, payload_size,
+      reply, sizeof(reply), &reply_size);
+  if (status != CNET_SCTP_DCEP_OK) {
+    c11_fail(app, "C11 DCEP rejected peer OPEN/ACK");
+    return;
+  }
+  if (reply_size != 0u) {
+    if (c11_send_message(app, message->stream_id, CNET_SCTP_DCEP_PPID,
+                         reply, reply_size) != 0) return;
+    status = cnet_sctp_dcep_ack_admitted(&app->c11_dcep, message->stream_id);
+    if (status != CNET_SCTP_DCEP_OK) {
+      c11_fail(app, "C11 DCEP ACK admission failed");
+      return;
+    }
+  }
+  if (app->is_offerer && app->janus_echo_mode && app->c11_dcep_open_sent &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id) &&
+      !atomic_exchange(&app->message_sent, 1)) {
+    static const char hello[] = "hello over signaled ICE";
+    if (c11_send_message(app, message->stream_id,
+                         CNET_SCTP_WEBRTC_TEXT_PPID, hello, sizeof(hello) - 1u) != 0)
+      return;
+    TLOG_INFO("Private C11 SCTP sent exact Janus EchoTest payload");
+  }
+}
+
+static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
+                                         const uint8_t *data, size_t size,
+                                         void *user_data) {
+  app_state_t *app = (app_state_t *)user_data;
+  uint8_t output[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t output_size = 0u;
+  cnet_sctp_assoc_status status;
+  unsigned int attempts;
+  if (!app || peer != app->dc_peer || !c11_is_owner(app) ||
+      !app->c11_assoc_initialized || !data || size == 0u) {
+    if (app) c11_fail(app, "invalid or non-owner DTLS application-data callback");
+    return;
+  }
+  status = cnet_sctp_assoc_input(&app->c11_assoc, c11_clock(app), data, size,
+                                 output, sizeof(output), &output_size);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP rejected authenticated DTLS application data");
+    return;
+  }
+  if (c11_send_packet(app, output, output_size) != 0) return;
+
+  if (app->c11_assoc.state == CNET_SCTP_ASSOC_ESTABLISHED &&
+      !app->c11_dcep_initialized) {
+    if (c11_open_datachannel(app) != 0) return;
+  }
+  if (app->c11_assoc.state != CNET_SCTP_ASSOC_ESTABLISHED ||
+      !app->c11_dcep_initialized) return;
+
+  for (attempts = 0u; attempts < CNET_SCTP_DATA_RX_SLOTS; ++attempts) {
+    cnet_sctp_data_message message = {0};
+    uint8_t payload[CNET_SCTP_DATA_MESSAGE_MAX];
+    size_t payload_size = 0u;
+    status = cnet_sctp_assoc_take_message(&app->c11_assoc, &message,
+                                          payload, sizeof(payload), &payload_size);
+    if (status == CNET_SCTP_ASSOC_EMPTY) break;
+    if (status != CNET_SCTP_ASSOC_OK) {
+      c11_fail(app, "C11 SCTP message dequeue failed");
+      return;
+    }
+    if (message.ppid == CNET_SCTP_DCEP_PPID) {
+      c11_handle_dcep(app, &message, payload, payload_size);
+      if (!atomic_load(&app->running)) return;
+    } else if (message.ppid == CNET_SCTP_WEBRTC_TEXT_PPID &&
+               app->is_offerer && app->janus_echo_mode) {
+      static const char prefix[] = "Janus EchoTest here! You wrote: ";
+      static const char expected[] = "hello over signaled ICE";
+      if (payload_size != sizeof(prefix) - 1u + sizeof(expected) - 1u ||
+          memcmp(payload, prefix, sizeof(prefix) - 1u) != 0 ||
+          memcmp(payload + sizeof(prefix) - 1u, expected, sizeof(expected) - 1u) != 0) {
+        c11_fail(app, "Janus C11 SCTP echo payload did not match exactly");
+        return;
+      }
+      puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact DataChannel payload returned");
+      atomic_store(&app->completed, 1);
+      app_request_stop(app);
+      return;
+    } else {
+      c11_fail(app, "unexpected PPID or DataChannel message for public EchoTest");
+      return;
+    }
+  }
+}
+
+static void c11_cleanup_owner_task(void *arg1, void *arg2) {
+  app_state_t *app = (app_state_t *)arg1;
+  (void)arg2;
+  if (!app || !c11_is_owner(app)) return;
+  if (app->c11_dcep_initialized) {
+    (void)cnet_sctp_dcep_stop(&app->c11_dcep);
+    app->c11_dcep_initialized = 0;
+  }
+  if (app->c11_assoc_initialized) {
+    (void)cnet_sctp_assoc_stop(&app->c11_assoc);
+    if (cnet_sctp_assoc_destroy(&app->c11_assoc) != CNET_SCTP_ASSOC_OK) {
+      TLOG_ERROR("Private C11 SCTP Association destroy failed during cleanup");
+      atomic_store(&app->callback_failed, 1);
+    }
+    app->c11_assoc_initialized = 0;
+  }
+  cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+}
+
+static void c11_poll_owner_task(void *arg1, void *arg2) {
+  app_state_t *app = (app_state_t *)arg1;
+  uint8_t output[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t output_size = 0u;
+  uint64_t deadline = 0u;
+  int has_deadline = 0;
+  cnet_sctp_assoc_status status;
+  (void)arg2;
+  if (!app || !app->c11_assoc_initialized || !c11_is_owner(app)) return;
+  status = cnet_sctp_assoc_next_deadline(&app->c11_assoc, &deadline, &has_deadline);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP deadline query failed");
+    return;
+  }
+  if (!has_deadline || c11_clock(app) < deadline) return;
+  status = cnet_sctp_assoc_advance(&app->c11_assoc, c11_clock(app),
+                                  output, sizeof(output), &output_size);
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP retransmission deadline failed");
+    return;
+  }
+  if (c11_send_packet(app, output, output_size) != 0) return;
+  if (app->c11_assoc.state == CNET_SCTP_ASSOC_FAILED) {
+    c11_fail(app, "C11 SCTP association exhausted its retry budget");
+  }
+}
+
+#endif /* TURBO_MEDIA_TEST_PUBLIC_C11_SCTP helpers */
+
+static const char *dc_state_name(turbo_dc_state_t state) {
+  switch (state) {
+    case TURBO_DC_STATE_NEW: return "NEW";
+    case TURBO_DC_STATE_CONNECTING: return "CONNECTING";
+    case TURBO_DC_STATE_CONNECTED: return "CONNECTED";
+    case TURBO_DC_STATE_DISCONNECTING: return "DISCONNECTING";
+    case TURBO_DC_STATE_CLOSED: return "CLOSED";
+    case TURBO_DC_STATE_FAILED: return "FAILED";
+    default: return "UNKNOWN";
+  }
+}
+
 static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                         turbo_dc_state_t new_state, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
-  TLOG_INFOF("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("DC state: {} -> {}", dc_state_name(old_state), dc_state_name(new_state));
 
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (new_state == TURBO_DC_STATE_CONNECTED && !app->c11_assoc_initialized) {
+    if (c11_start_association(app) != 0) app_request_stop(app);
+  }
+#else
   if (new_state == TURBO_DC_STATE_CONNECTED && !atomic_load(&app->channel)) {
     turbo_dc_channel_t *channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
     if (channel) {
@@ -956,6 +1355,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
       turbo_dc_channel_open(channel);
     }
   }
+#endif
 
   if (new_state == TURBO_DC_STATE_FAILED || new_state == TURBO_DC_STATE_CLOSED) {
     app_request_stop(app);
@@ -979,11 +1379,15 @@ static int ensure_media_stack(app_state_t *app) {
     return 0;
   }
 
-  loopback = signal_host_is_loopback(app->signal_host);
+  loopback = signal_host_is_loopback(app->signal_host) && !app->force_stun;
 
   TLOG_INFO("ensure_media_stack: creating DataChannel context");
   memset(&dc_cfg, 0, sizeof(dc_cfg));
   dc_cfg.is_server = app->is_offerer ? 0 : 1;
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  /* Keep production usrsctp dormant in this private C11 interoperability target. */
+  dc_cfg.disable_sctp = 1;
+#endif
   dc_cfg.transport = TURBO_DC_TRANSPORT_ICE;
   dc_cfg.dtls_mtu = 1200;
   dc_cfg.sctp_mtu = 1000;
@@ -1006,6 +1410,17 @@ static int ensure_media_stack(app_state_t *app) {
   turbo_dc_peer_on_state(app->dc_peer, on_dc_state);
   turbo_dc_peer_on_channel(app->dc_peer, on_dc_channel);
   turbo_dc_peer_on_error(app->dc_peer, on_dc_error);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (dc_peer_set_test_dtls_application_handler(
+          app->dc_peer, c11_on_dtls_application_data, app) != 0) {
+    TLOG_ERROR("Failed to install private C11 SCTP DTLS application handler");
+    turbo_dc_peer_destroy(app->dc_peer);
+    app->dc_peer = NULL;
+    turbo_dc_context_destroy(app->dc_ctx);
+    app->dc_ctx = NULL;
+    return -1;
+  }
+#endif
 
   app->ice = ice_integration_create(app->dc_peer, NULL,
                                     loopback ? NULL : stun_servers,
@@ -1071,13 +1486,17 @@ static chttp_websocket_client_config signal_client_config(void) {
   config.network.max_send_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.receive_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.connect_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
-  config.network.read_timeout_ms = SIGNAL_RECEIVE_TIMEOUT_MS;
+  /* The per-call receive timeout drives polling; the transport-level idle
+   * timeout must stay disabled or it closes signaling while Janus processes
+   * an asynchronous SDP answer. */
+  config.network.read_timeout_ms = 0u;
   config.network.write_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
   config.network.tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES;
   config.network.tls_handshake_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
   config.network.command_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.event_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
-  config.max_frame_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  /* CHTTP reserves WebSocket framing overhead inside max_send_bytes. */
+  config.max_frame_bytes = SIGNAL_MAX_MESSAGE_BYTES - CNET_WEBSOCKET_MAX_HEADER_BYTES;
   config.max_message_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.max_buffered_input_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.max_handshake_header_bytes = SIGNAL_MAX_HANDSHAKE_HEADER_BYTES;
@@ -1173,6 +1592,11 @@ static int run_signaling(app_state_t *app) {
     if (app->dc_peer) {
       turbo_dc_handle_timers();
       turbo_dc_peer_poll(app->dc_peer);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+      if (app->c11_assoc_initialized) {
+        (void)dc_peer_post_owner_sync(app->dc_peer, c11_poll_owner_task, app, NULL);
+      }
+#endif
     }
 
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
@@ -1202,6 +1626,7 @@ static int run_signaling(app_state_t *app) {
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+      TLOG_ERROR("Signaling WebSocket received CLOSE event from server");
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_PING) {
@@ -1229,7 +1654,9 @@ static int run_signaling(app_state_t *app) {
 static void print_usage(const char *argv0) {
   fprintf(stderr,
           "Usage: %s (--offer|--answer) [--room name] [--server host] [--port port]\n"
-          "          [--path /ws] [--secure] [--peer-id id]\n"
+          "          [--path /ws] [--secure] [--peer-id id] [--force-stun] [--janus-echo]\n"
+          "  --force-stun   Use public STUN even when signaling is loopback.\n"
+          "  --janus-echo   Require the public Janus EchoTest response payload.\n"
           "Set TURBO_SIGNALING_PEER_TOKEN for authenticated admission.\n",
           argv0);
 }
@@ -1280,6 +1707,10 @@ int main(int argc, char **argv) {
       snprintf(app.signal_path, sizeof(app.signal_path), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--secure") == 0) {
       app.use_tls = 1;
+    } else if (strcmp(argv[i], "--force-stun") == 0) {
+      app.force_stun = 1;
+    } else if (strcmp(argv[i], "--janus-echo") == 0) {
+      app.janus_echo_mode = 1;
     } else if (strcmp(argv[i], "--peer-id") == 0 && i + 1 < argc) {
       snprintf(app.requested_peer_id, sizeof(app.requested_peer_id), "%s",
                argv[++i]);
@@ -1321,6 +1752,11 @@ int main(int argc, char **argv) {
     app.signal_client_initialized = 0;
   }
   free_signal_outbox(&app);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (app.dc_peer && (app.c11_assoc_initialized || app.c11_dcep_initialized)) {
+    (void)dc_peer_post_owner_sync(app.dc_peer, c11_cleanup_owner_task, &app, NULL);
+  }
+#endif
   if (app.ice) {
     ice_integration_destroy(app.ice);
   }
