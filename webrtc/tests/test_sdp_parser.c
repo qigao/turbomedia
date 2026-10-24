@@ -34,6 +34,7 @@ static const char *DATACHANNEL_SDP =
     "o=- 654321 1 IN IP4 192.168.1.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
+    "a=ice-options:trickle\r\n"
     "a=group:BUNDLE 0\r\n"
     "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
     "c=IN IP4 0.0.0.0\r\n"
@@ -94,6 +95,7 @@ void test_parse_datachannel_sdp(void) {
     check_equal((int)(sdp.media[0].sctp_port), (int)(5000));
     check_equal((int)(sdp.media[0].max_message_size), (int)(262144));
     check_equal((int)(sdp.media[0].setup), (int)(SDP_ROLE_ACTIVE));
+    check_equal((int)(sdp.ice_trickle), (int)(1));
 }
 
 void test_parse_origin_preserves_uint64_version(void) {
@@ -201,6 +203,7 @@ void test_parse_extmap_ignores_overflow(void) {
 void test_generate_sdp(void) {
     sdp_session_t sdp;
     sdp_session_init(&sdp);
+    sdp.ice_trickle = 1;
 
     /* Add audio media */
     sdp_media_t *media = sdp_add_audio(&sdp, "0", SDP_DIRECTION_SENDRECV);
@@ -227,6 +230,7 @@ void test_generate_sdp(void) {
 
     check_greater(len, 0);
     check_not_null(strstr(buffer, "v=0"));
+    check_not_null(strstr(buffer, "a=ice-options:trickle"));
     check_not_null(strstr(buffer, "m=audio"));
     check_not_null(strstr(buffer, "a=rtpmap:111 opus/48000/2"));
     check_not_null(strstr(buffer, "a=ice-ufrag:test_ufrag"));
