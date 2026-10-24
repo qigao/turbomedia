@@ -133,8 +133,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
-          # Immutable source checkpoint qualified by the C11 6/6 + Owner TSan run.
-          ref: 1ebec510a7928864a74307a98aaa18a310abd0de
+          # Exact HEAD of clean master-based Salts SCTP integration PR #1281; test-only checkout.
+          ref: 916871996ccf4dcb6b042bd8306f19083b7ce795
           path: salts-sctp-prototype
 
       - uses: ./.github/actions/setup-native-deps
