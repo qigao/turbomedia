@@ -184,6 +184,7 @@ async function main() {
   if (!NATIVE_BIN) throw new Error('WEBRTC_SIGNALLED_PEER_BIN is required');
   const janus = await connectJanus();
   let sessionId = null, handleId = null, local = null, child = null, nativeTimedOut = false;
+  let keepaliveTimer = null;
   let answerSent = false, offerSeen = false;
   const queuedCandidates = [];       // Janus -> native peer
   const queuedEnd = { value: false };
@@ -200,6 +201,13 @@ async function main() {
     handleId = attached.data && attached.data.id;
     if (!handleId) throw new Error('Janus attach response omitted handle id');
     console.log('[public-webrtc] Janus session created; EchoTest handle attached');
+    // Janus expires idle sessions unless the client sends periodic keepalives.
+    keepaliveTimer = setInterval(() => {
+      if (sessionId === null) return;
+      void janus.request({ janus: 'keepalive', session_id: sessionId }, false)
+        .catch(error => console.error('[public-webrtc] Janus keepalive failed: ' + error.message));
+    }, 20000);
+    if (keepaliveTimer && typeof keepaliveTimer.unref === 'function') keepaliveTimer.unref();
 
     local = localSignaling(async (m, peer) => {
       if (m.type === 'join') {
@@ -350,6 +358,7 @@ async function main() {
       note: 'This exercises the current production DataChannel path; it is not C11 SCTP cutover qualification.',
     }, null, 2));
   } finally {
+    if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
     if (child && child.exitCode === null) {
       nativeTimedOut = true;
       try { child.kill('SIGTERM'); } catch {}
