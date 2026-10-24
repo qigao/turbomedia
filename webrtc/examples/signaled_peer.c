@@ -144,7 +144,6 @@ static void tracef_app(const app_state_t *app, const char *fmt, ...) {
 }
 
 static int run_signaling(app_state_t *app);
-static char *dup_printf(const char *fmt, ...);
 static int ensure_media_runtime(app_state_t *app);
 static int enqueue_signalf(app_state_t *app, const char *fmt, ...);
 
@@ -219,39 +218,6 @@ static char *escape_json_string(const char *str) {
   }
   *dst = '\0';
   return escaped;
-}
-
-static char *dup_printf(const char *fmt, ...) {
-  char *buffer;
-  int needed;
-  va_list ap;
-
-  va_start(ap, fmt);
-#ifdef _WIN32
-  needed = _vscprintf(fmt, ap);
-#else
-  {
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    needed = vsnprintf(NULL, 0, fmt, ap_copy);
-    va_end(ap_copy);
-  }
-#endif
-  va_end(ap);
-
-  if (needed < 0) {
-    return NULL;
-  }
-
-  buffer = (char *)malloc((size_t)needed + 1);
-  if (!buffer) {
-    return NULL;
-  }
-
-  va_start(ap, fmt);
-  vsnprintf(buffer, (size_t)needed + 1, fmt, ap);
-  va_end(ap);
-  return buffer;
 }
 
 static void app_request_stop(app_state_t *app) {
@@ -405,6 +371,19 @@ static int has_emitted_candidate(const app_state_t *app, const char *candidate_s
   return 0;
 }
 
+static void copy_candidate_text(char *destination, size_t capacity,
+                                const char *source) {
+  size_t length = 0u;
+  if (!destination || capacity == 0u) return;
+  if (!source) {
+    destination[0] = '\0';
+    return;
+  }
+  while (length + 1u < capacity && source[length] != '\0') ++length;
+  memmove(destination, source, length);
+  destination[length] = '\0';
+}
+
 static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp) {
   char *escaped = NULL;
   ice_candidate_t parsed;
@@ -418,8 +397,9 @@ static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp
   }
 
   if (app->emitted_candidate_count < MAX_CACHED_CANDIDATES) {
-    snprintf(app->emitted_candidates[app->emitted_candidate_count],
-             sizeof(app->emitted_candidates[app->emitted_candidate_count]), "%s", candidate_sdp);
+    copy_candidate_text(app->emitted_candidates[app->emitted_candidate_count],
+                        sizeof(app->emitted_candidates[app->emitted_candidate_count]),
+                        candidate_sdp);
     app->emitted_candidate_count++;
   }
 
@@ -435,8 +415,9 @@ static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp
   }
 
   if (app->cached_candidate_count < MAX_CACHED_CANDIDATES) {
-    snprintf(app->cached_candidates[app->cached_candidate_count],
-             sizeof(app->cached_candidates[app->cached_candidate_count]), "%s", candidate_sdp);
+    copy_candidate_text(app->cached_candidates[app->cached_candidate_count],
+                        sizeof(app->cached_candidates[app->cached_candidate_count]),
+                        candidate_sdp);
     app->cached_candidate_count++;
   }
 }
