@@ -1216,8 +1216,8 @@ static void c11_handle_dcep(app_state_t *app,
     }
   }
   if (app->is_offerer && app->janus_echo_mode && app->c11_dcep_open_sent &&
-      !atomic_exchange(&app->message_sent, 1) &&
-      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id) &&
+      !atomic_exchange(&app->message_sent, 1)) {
     static const char hello[] = "hello over signaled ICE";
     if (c11_send_message(app, message->stream_id,
                          CNET_SCTP_WEBRTC_TEXT_PPID, hello, sizeof(hello) - 1u) != 0)
