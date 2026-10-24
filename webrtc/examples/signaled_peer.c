@@ -519,6 +519,10 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   sdp_media_t *media;
 
   sdp_session_init(&local_sdp);
+  /* Candidate messages are sent after the description, so advertise ICE
+   * trickle explicitly rather than making the remote endpoint assume a
+   * complete candidate list is embedded in this SDP. */
+  local_sdp.ice_trickle = 1;
   TLOG_INFO("build_local_sdp: add datachannel m-line");
   media = sdp_add_datachannel(&local_sdp, "0", 5000);
   if (!media) {
