@@ -431,8 +431,10 @@ jobs:
           WEBRTC_SIGNALLED_PEER_BIN: ${{ github.workspace }}/build/platform-Linux/bin/rtc_signaled_peer
           PUBLIC_WEBRTC_TIMEOUT_MS: "90000"
           PUBLIC_JANUS_DEBUG: "1"
+          TURBO_SIGNAL_TRACE: ${{ runner.temp }}/signaled-peer.trace
         run: |
           set -euo pipefail
+          trap 'if [[ -f "$TURBO_SIGNAL_TRACE" ]]; then echo "=== native signaling/ICE trace ==="; cat "$TURBO_SIGNAL_TRACE"; fi' EXIT
           for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
             [[ -n "$root" ]] || continue
             [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
