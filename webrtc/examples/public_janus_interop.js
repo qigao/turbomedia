@@ -114,7 +114,7 @@ async function connectJanus() {
       }
       if (m.janus === 'error') {
         pending.delete(m.transaction); clearTimeout(p.timer);
-        p.reject(new Error('Janus API error: ' + JSON.stringify(m.error || m))); return;
+        p.reject(new Error('Janus API error during ' + payload.janus + ': ' + JSON.stringify(m.error || m))); return;
       }
     }
     for (const fn of handlers) { try { fn(m); } catch (e) { console.error('[janus-event] ' + e.message); } }
@@ -148,8 +148,10 @@ async function main() {
   const janus = await connectJanus();
   let sessionId = null, handleId = null, local = null, child = null, nativeTimedOut = false;
   let answerSent = false, offerSeen = false;
-  const queuedCandidates = [];
+  const queuedCandidates = [];       // Janus -> native peer
   const queuedEnd = { value: false };
+  const localCandidatesPending = []; // native peer -> Janus
+  let localEndPending = false;
 
   try {
     const created = await janus.request({ janus: 'create' }, false);
@@ -180,11 +182,20 @@ async function main() {
         console.log('[public-webrtc] native SDP offer submitted to public Janus');
       } else if (m.type === 'candidate') {
         if (typeof m.candidate !== 'string' || !m.candidate.startsWith('candidate:')) return;
+        // Queue native candidates until Janus has returned its SDP answer.
+        if (!answerSent) {
+          localCandidatesPending.push(m.candidate);
+          return;
+        }
         await janus.request({
           janus: 'trickle', session_id: sessionId, handle_id: handleId,
           candidate: { candidate: m.candidate, sdpMid: '0', sdpMLineIndex: 0 },
         }, true);
       } else if (m.type === 'end-of-candidates') {
+        if (!answerSent) {
+          localEndPending = true;
+          return;
+        }
         await janus.request({
           janus: 'trickle', session_id: sessionId, handle_id: handleId,
           candidate: { completed: true },
@@ -205,6 +216,25 @@ async function main() {
         console.log('[public-webrtc] received public Janus SDP answer');
         for (const candidate of queuedCandidates.splice(0)) peer.send({ type: 'candidate', candidate });
         if (queuedEnd.value) peer.send({ type: 'end-of-candidates' });
+        void (async () => {
+          for (const candidate of localCandidatesPending.splice(0)) {
+            await janus.request({
+              janus: 'trickle', session_id: sessionId, handle_id: handleId,
+              candidate: { candidate, sdpMid: '0', sdpMLineIndex: 0 },
+            }, true);
+          }
+          if (localEndPending) {
+            localEndPending = false;
+            await janus.request({
+              janus: 'trickle', session_id: sessionId, handle_id: handleId,
+              candidate: { completed: true },
+            }, true);
+          }
+          console.log('[public-webrtc] flushed local ICE candidates to public Janus');
+        })().catch(error => {
+          console.error('[public-webrtc] failed to trickle native ICE to Janus: ' + error.message);
+          if (peer && !peer.closed) peer.send({ type: 'error', message: error.message });
+        });
       } else if (m.janus === 'trickle' && m.candidate) {
         if (m.candidate.completed) {
           if (answerSent) peer.send({ type: 'end-of-candidates' });
