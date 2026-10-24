@@ -253,6 +253,11 @@ async function main() {
           error: m.error,
           has_jsep: Boolean(m.jsep),
           jsep_type: m.jsep && m.jsep.type,
+          jsep_sdp_bytes: m.jsep && typeof m.jsep.sdp === 'string' ? Buffer.byteLength(m.jsep.sdp) : 0,
+          jsep_candidate_count: m.jsep && typeof m.jsep.sdp === 'string'
+            ? (m.jsep.sdp.match(/^a=candidate:/gm) || []).length : 0,
+          jsep_end_of_candidates: m.jsep && typeof m.jsep.sdp === 'string'
+            ? /^a=end-of-candidates\s*$/m.test(m.jsep.sdp) : false,
           candidate_completed: m.candidate && m.candidate.completed,
         }));
       }
@@ -269,7 +274,10 @@ async function main() {
       if (m.janus === 'event' && m.jsep && m.jsep.type === 'answer' && typeof m.jsep.sdp === 'string') {
         peer.send({ type: 'answer', sdp: m.jsep.sdp });
         answerSent = true;
-        console.log('[public-webrtc] received public Janus SDP answer');
+        console.log('[public-webrtc] received public Janus SDP answer: bytes=' +
+          Buffer.byteLength(m.jsep.sdp) + ' candidates=' +
+          ((m.jsep.sdp.match(/^a=candidate:/gm) || []).length) +
+          ' end_of_candidates=' + /^a=end-of-candidates\s*$/m.test(m.jsep.sdp));
         for (const candidate of queuedCandidates.splice(0)) peer.send({ type: 'candidate', candidate });
         if (queuedEnd.value) peer.send({ type: 'end-of-candidates' });
         void (async () => {
