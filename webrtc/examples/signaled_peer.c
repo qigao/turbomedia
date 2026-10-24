@@ -22,6 +22,7 @@
 #include "turbo_datachannel_internal.h"
 #include "sctp_assoc_internal.h"
 #include "sctp_dcep_internal.h"
+#include "sctp_webrtc_internal.h"
 #include "sctp_gmssl_mac_internal.h"
 #include <gmssl/rand.h>
 #endif
