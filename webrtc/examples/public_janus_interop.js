@@ -39,11 +39,21 @@ class LocalPeer {
     this.socket = socket; this.buf = Buffer.alloc(0); this.closed = false; this.onMessage = onMessage;
     socket.setNoDelay(true);
     socket.on('data', b => this.consume(b));
-    socket.on('close', () => { this.closed = true; });
+    socket.on('close', () => {
+      this.closed = true;
+      console.log('[local-signaling] native WebSocket TCP connection closed');
+    });
     socket.on('error', e => console.error('[local-ws] ' + e.message));
     if (head.length) this.consume(head);
   }
-  send(obj) { if (!this.closed) this.socket.write(frame(1, JSON.stringify(obj))); }
+  send(obj) {
+    if (this.closed) return;
+    const summary = { type: obj && obj.type };
+    if (obj && typeof obj.sdp === 'string') summary.sdp_bytes = Buffer.byteLength(obj.sdp);
+    if (obj && typeof obj.candidate === 'string') summary.candidate_type = obj.candidate.match(/\btyp\s+(\w+)/)?.[1] || 'unknown';
+    console.log('[local-signaling] -> native ' + JSON.stringify(summary));
+    this.socket.write(frame(1, JSON.stringify(obj)));
+  }
   consume(chunk) {
     this.buf = Buffer.concat([this.buf, chunk]);
     while (this.buf.length >= 2) {
@@ -61,7 +71,12 @@ class LocalPeer {
       if (this.buf.length < off + n) return;
       const p = Buffer.from(this.buf.subarray(off, off + n)); this.buf = this.buf.subarray(off + n);
       if (masked) for (let i = 0; i < p.length; i++) p[i] ^= mask[i & 3];
-      if (op === 8) { this.socket.end(frame(8, p)); this.closed = true; return; }
+      if (op === 8) {
+        console.log('[local-signaling] native peer sent WebSocket CLOSE');
+        this.socket.end(frame(8, p));
+        this.closed = true;
+        return;
+      }
       if (op === 9) { this.socket.write(frame(10, p)); continue; }
       if (op === 1) this.onMessage(p.toString('utf8'));
     }
@@ -83,7 +98,14 @@ function localSignaling(onMessage) {
       accept + '\r\nSec-WebSocket-Protocol: webrtc-signaling\r\n\r\n');
     if (peer && !peer.closed) { socket.destroy(); return; }
     peer = new LocalPeer(socket, head, raw => {
-      chain = chain.then(async () => onMessage(JSON.parse(raw), peer)).catch(e => {
+      chain = chain.then(async () => {
+        const message = JSON.parse(raw);
+        const summary = { type: message && message.type };
+        if (message && typeof message.sdp === 'string') summary.sdp_bytes = Buffer.byteLength(message.sdp);
+        if (message && typeof message.candidate === 'string') summary.candidate_type = message.candidate.match(/\btyp\s+(\w+)/)?.[1] || 'unknown';
+        console.log('[local-signaling] <- native ' + JSON.stringify(summary));
+        await onMessage(message, peer);
+      }).catch(e => {
         console.error('[signaling] ' + (e.stack || e));
         if (peer && !peer.closed) peer.send({ type: 'error', message: String(e.message || e) });
       });
@@ -234,7 +256,14 @@ async function main() {
           candidate_completed: m.candidate && m.candidate.completed,
         }));
       }
-      if (m.session_id !== sessionId || m.sender !== handleId) return;
+      if (m.janus === 'error') {
+        console.error('[public-webrtc] Janus API error event: ' + JSON.stringify(m.error || m));
+        return;
+      }
+      // Janus transports can omit session_id on session-scoped events; this
+      // WebSocket is dedicated to this session. Validate it only when present.
+      if (m.session_id !== undefined && String(m.session_id) !== String(sessionId)) return;
+      if (m.sender !== undefined && String(m.sender) !== String(handleId)) return;
       const peer = local && local.getPeer();
       if (!peer || peer.closed) return;
       if (m.janus === 'event' && m.jsep && m.jsep.type === 'answer' && typeof m.jsep.sdp === 'string') {
