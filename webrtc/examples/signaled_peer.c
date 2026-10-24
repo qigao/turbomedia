@@ -914,22 +914,22 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
       turbo_dc_channel_send(channel, echo, (size_t)echo_len, 0);
       atomic_store(&app->completed, 1);
     }
-  } else if (app->is_offerer &&
-             (strncmp(message, "ECHO:", 5) == 0 ||
-              (app->janus_echo_mode &&
-               strncmp(message, "Janus EchoTest here! You wrote: ",
-                       strlen("Janus EchoTest here! You wrote: ")) == 0))) {
-    const char *echoed = message;
-    if (app->janus_echo_mode &&
-        strncmp(message, "Janus EchoTest here! You wrote: ",
-                strlen("Janus EchoTest here! You wrote: ")) == 0) {
-      echoed += strlen("Janus EchoTest here! You wrote: ");
-      if (strcmp(echoed, "hello over signaled ICE") != 0) {
+  } else if (app->is_offerer) {
+    const char *janus_prefix = "Janus EchoTest here! You wrote: ";
+    if (app->janus_echo_mode) {
+      const size_t prefix_len = strlen(janus_prefix);
+      if (strncmp(message, janus_prefix, prefix_len) != 0) {
+        return;
+      }
+      if (strcmp(message + prefix_len, "hello over signaled ICE") != 0) {
         TLOG_ERROR("Janus EchoTest returned a different payload");
         app_request_stop(app);
         return;
       }
+      puts("PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned");
       TLOG_INFO("Public Janus EchoTest returned the exact DataChannel payload");
+    } else if (strncmp(message, "ECHO:", 5) != 0) {
+      return;
     }
     atomic_store(&app->completed, 1);
     app_request_stop(app);
