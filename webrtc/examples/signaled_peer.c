@@ -632,12 +632,22 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
   }
   app->remote_credentials_set = 1;
 
-  if (media->fingerprint_hash[0] != '\0' && media->fingerprint[0] != '\0') {
-    if (turbo_dc_peer_set_remote_fingerprint(app->dc_peer, media->fingerprint_hash,
-                                             media->fingerprint) != 0) {
-      TLOG_WARN("Failed to set remote fingerprint from SDP");
+  if (media->fingerprint_hash[0] == '\0' || media->fingerprint[0] == '\0') {
+    TLOG_ERROR("Remote SDP is missing a DTLS fingerprint");
+    return -1;
+  }
+  {
+    int fingerprint_status = turbo_dc_peer_set_remote_fingerprint(
+        app->dc_peer, media->fingerprint_hash, media->fingerprint);
+    if (fingerprint_status != 0) {
+      TLOG_ERRORF("Invalid remote DTLS fingerprint in SDP (hash={}, length={}, status={})",
+                  media->fingerprint_hash, strlen(media->fingerprint),
+                  fingerprint_status);
+      return -1;
     }
   }
+  TLOG_INFOF("Applied remote DTLS fingerprint: hash={} length={}",
+             media->fingerprint_hash, strlen(media->fingerprint));
 
   for (i = 0; i < media->candidate_count; ++i) {
     if (sdp_candidate_to_string(&media->candidates[i], candidate_line, sizeof(candidate_line)) == 0) {
