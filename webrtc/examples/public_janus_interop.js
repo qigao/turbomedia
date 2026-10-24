@@ -11,6 +11,10 @@ const JANUS_WS = process.env.PUBLIC_JANUS_WS || 'wss://janus.conf.meetecho.com/w
 const NATIVE_BIN = process.env.WEBRTC_SIGNALLED_PEER_BIN || process.argv[2] ||
   path.join(process.cwd(), 'build', 'platform-Linux', 'bin', 'rtc_signaled_peer');
 const TIMEOUT = Number(process.env.PUBLIC_WEBRTC_TIMEOUT_MS || 90000);
+const EXPECT_C11_SCTP = process.env.PUBLIC_WEBRTC_EXPECT_C11_SCTP === '1';
+const PASS_MARKER = EXPECT_C11_SCTP
+  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact DataChannel payload returned'
+  : 'PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned';
 const PAYLOAD = 'hello over signaled ICE';
 const ECHO_PREFIX = 'Janus EchoTest here! You wrote: ';
 const txid = () => crypto.randomBytes(12).toString('hex');
@@ -345,9 +349,9 @@ async function main() {
         ' signal=' + exit.signal + '\n' + stderr + '\n' + stdout);
     }
     const combinedOutput = stdout + '\n' + stderr;
-    if (!offerSeen || !answerSent ||
-        !combinedOutput.includes('PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned')) {
-      throw new Error('native process exited without exact public Janus DataChannel echo evidence');
+    if (!offerSeen || !answerSent || !combinedOutput.includes(PASS_MARKER)) {
+      throw new Error('native process exited without exact public Janus DataChannel echo evidence for ' +
+                      (EXPECT_C11_SCTP ? 'private C11 SCTP' : 'production usrsctp'));
     }
     console.log(JSON.stringify({
       result: 'PASS',
@@ -360,8 +364,10 @@ async function main() {
       exact_payload: PAYLOAD,
       echoed_payload: ECHO_PREFIX + PAYLOAD,
       native_exit_code: exit.code,
-      production_backend: 'usrsctp',
-      note: 'This exercises the current production DataChannel path; it is not C11 SCTP cutover qualification.',
+      sctp_backend: EXPECT_C11_SCTP ? 'salts-c11-test-only' : 'usrsctp',
+      note: EXPECT_C11_SCTP
+        ? 'Private experimental C11 SCTP/DCEP over real public Janus DTLS; no production cutover.'
+        : 'Production DataChannel path using usrsctp.',
     }, null, 2));
   } finally {
     if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
