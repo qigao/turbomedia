@@ -46,6 +46,20 @@ static const char *DATACHANNEL_SDP =
     "a=sctp-port:5000\r\n"
     "a=max-message-size:262144\r\n";
 
+static const char *SESSION_LEVEL_DTLS_SDP =
+    "v=0\r\n"
+    "o=- 112233 1 IN IP4 0.0.0.0\r\n"
+    "s=-\r\n"
+    "t=0 0\r\n"
+    "a=ice-ufrag:sessionUfrag\r\n"
+    "a=ice-pwd:sessionPassword0123456789\r\n"
+    "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00\r\n"
+    "a=setup:active\r\n"
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+    "c=IN IP4 0.0.0.0\r\n"
+    "a=mid:0\r\n"
+    "a=sctp-port:5000\r\n";
+
 static const char *CANDIDATE_SDP =
     "v=0\r\n"
     "o=- 999 1 IN IP4 10.0.0.1\r\n"
@@ -110,6 +124,22 @@ void test_parse_origin_preserves_uint64_version(void) {
     check_equal((uint64_t)(sdp.session_version), (uint64_t)(UINT64_MAX));
     check_equal(sdp.session_id, "123456");
     check_equal(sdp.origin_addr, "127.0.0.1");
+}
+
+/* Session-level DTLS and ICE attributes must be inherited by media sections. */
+void test_parse_session_level_dtls_attributes(void) {
+    sdp_session_t sdp;
+    int result = sdp_parse(SESSION_LEVEL_DTLS_SDP,
+                           strlen(SESSION_LEVEL_DTLS_SDP), &sdp);
+
+    check_equal((int)(result), (int)(0));
+    check_equal((int)(sdp.media_count), (int)(1));
+    check_equal(sdp.media[0].ice_ufrag, "sessionUfrag");
+    check_equal(sdp.media[0].ice_pwd, "sessionPassword0123456789");
+    check_equal(sdp.media[0].fingerprint_hash, "sha-256");
+    check_equal(sdp.media[0].fingerprint,
+                "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00");
+    check_equal((int)(sdp.media[0].setup), (int)(SDP_ROLE_ACTIVE));
 }
 
 /* Test: Parse ICE candidates */
@@ -328,6 +358,7 @@ spec("test_sdp_parser") {
   after_each() { tearDown(); }
   it("test_parse_audio_sdp") { test_parse_audio_sdp(); };
   it("test_parse_datachannel_sdp") { test_parse_datachannel_sdp(); };
+  it("test_parse_session_level_dtls_attributes") { test_parse_session_level_dtls_attributes(); };
   it("test_parse_origin_preserves_uint64_version") { test_parse_origin_preserves_uint64_version(); };
   it("test_parse_candidates") { test_parse_candidates(); };
   it("test_parse_codecs") { test_parse_codecs(); };
