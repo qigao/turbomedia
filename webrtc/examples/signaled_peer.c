@@ -861,8 +861,6 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     app->remote_peer_id[0] = '\0';
   } else if (strcmp(type_name, "error") == 0) {
     TLOG_ERRORF("Signaling server returned an error: {}", json_text);
-  } else if (strcmp(type_name, "answer") == 0) {
-    TLOG_INFO("Received signaling answer");
   }
 
   json_free(root);
