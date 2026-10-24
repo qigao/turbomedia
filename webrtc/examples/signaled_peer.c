@@ -18,6 +18,13 @@
 #include <cnet/websocket.h>
 #include <json_parser.h>
 #include "turbo_sdp.h"
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+#include "turbo_datachannel_internal.h"
+#include "sctp_assoc_internal.h"
+#include "sctp_dcep_internal.h"
+#include "sctp_gmssl_mac_internal.h"
+#include <gmssl/rand.h>
+#endif
 #include <cmeta_error.h>
 #include <cmeta_thread.h>
 #include <stdint.h>
@@ -100,6 +107,16 @@ typedef struct {
 
   sdp_session_t remote_sdp;
   int have_remote_sdp;
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  cnet_sctp_assoc c11_assoc;
+  cnet_sctp_dcep c11_dcep;
+  cnet_sctp_gmssl_mac c11_cookie_mac;
+  uint64_t c11_now_ms;
+  int c11_assoc_initialized;
+  int c11_dcep_initialized;
+  int c11_dcep_open_sent;
+  int c11_local_is_dtls_server;
+#endif
 } app_state_t;
 
 static void tracef_app(const app_state_t *app, const char *fmt, ...) {
