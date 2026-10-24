@@ -861,6 +861,8 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     app->remote_peer_id[0] = '\0';
   } else if (strcmp(type_name, "error") == 0) {
     TLOG_ERRORF("Signaling server returned an error: {}", json_text);
+  } else if (strcmp(type_name, "answer") == 0) {
+    TLOG_INFO("Received signaling answer");
   }
 
   json_free(root);
@@ -956,11 +958,23 @@ static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, vo
   turbo_dc_channel_on_message(channel, on_dc_message);
 }
 
+static const char *dc_state_name(turbo_dc_state_t state) {
+  switch (state) {
+    case TURBO_DC_STATE_NEW: return "NEW";
+    case TURBO_DC_STATE_CONNECTING: return "CONNECTING";
+    case TURBO_DC_STATE_CONNECTED: return "CONNECTED";
+    case TURBO_DC_STATE_DISCONNECTING: return "DISCONNECTING";
+    case TURBO_DC_STATE_CLOSED: return "CLOSED";
+    case TURBO_DC_STATE_FAILED: return "FAILED";
+    default: return "UNKNOWN";
+  }
+}
+
 static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                         turbo_dc_state_t new_state, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
-  TLOG_INFOF("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("DC state: {} -> {}", dc_state_name(old_state), dc_state_name(new_state));
 
   if (new_state == TURBO_DC_STATE_CONNECTED && !atomic_load(&app->channel)) {
     turbo_dc_channel_t *channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
@@ -1222,6 +1236,7 @@ static int run_signaling(app_state_t *app) {
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+      TLOG_ERROR("Signaling WebSocket received CLOSE event from server");
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_PING) {
