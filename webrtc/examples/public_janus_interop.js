@@ -234,7 +234,9 @@ async function main() {
       throw new Error('native public Janus DataChannel test failed: exit=' + exit.code +
         ' signal=' + exit.signal + '\n' + stderr + '\n' + stdout);
     }
-    if (!offerSeen || !answerSent || !stdout.includes('Janus EchoTest returned the exact DataChannel payload')) {
+    const combinedOutput = stdout + '\n' + stderr;
+    if (!offerSeen || !answerSent ||
+        !combinedOutput.includes('Janus EchoTest returned the exact DataChannel payload')) {
       throw new Error('native process exited without complete public Janus DataChannel evidence');
     }
     console.log(JSON.stringify({
