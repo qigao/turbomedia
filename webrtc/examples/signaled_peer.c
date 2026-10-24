@@ -15,6 +15,7 @@
 #include "tlog.h"
 #include "turbo_datachannel.h"
 #include <http_client/http.h>
+#include <cnet/websocket.h>
 #include <json_parser.h>
 #include "turbo_sdp.h"
 #include <cmeta_error.h>
@@ -1095,7 +1096,8 @@ static chttp_websocket_client_config signal_client_config(void) {
   config.network.tls_handshake_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
   config.network.command_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.network.event_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
-  config.max_frame_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  /* CHTTP reserves WebSocket framing overhead inside max_send_bytes. */
+  config.max_frame_bytes = SIGNAL_MAX_MESSAGE_BYTES - CNET_WEBSOCKET_MAX_HEADER_BYTES;
   config.max_message_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.max_buffered_input_bytes = SIGNAL_MAX_MESSAGE_BYTES;
   config.max_handshake_header_bytes = SIGNAL_MAX_HANDSHAKE_HEADER_BYTES;
