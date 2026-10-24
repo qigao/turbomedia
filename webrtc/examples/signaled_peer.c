@@ -597,6 +597,34 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     return -1;
   }
 
+  /* The answer's setup attribute determines which endpoint initiates DTLS.
+   * If Janus answers with setup:active, Janus sends ClientHello and this
+   * offerer must use DTLS server/accept state. setup:passive requires the
+   * inverse. Do this while the peer is still NEW, before ICE can connect and
+   * start the handshake. */
+  if (strcmp(type, "answer") == 0) {
+    int local_is_dtls_server;
+    const char *remote_setup;
+    if (media->setup == SDP_ROLE_ACTIVE) {
+      local_is_dtls_server = 1;
+      remote_setup = "active";
+    } else if (media->setup == SDP_ROLE_PASSIVE) {
+      local_is_dtls_server = 0;
+      remote_setup = "passive";
+    } else {
+      TLOG_ERRORF("Invalid DTLS setup role in SDP answer: {}",
+                  media->setup == SDP_ROLE_ACTPASS ? "actpass" : "unknown");
+      return -1;
+    }
+    if (turbo_dc_peer_set_dtls_role(app->dc_peer, local_is_dtls_server) != 0) {
+      TLOG_ERRORF("Failed to apply DTLS role from remote answer setup:{}",
+                  remote_setup);
+      return -1;
+    }
+    TLOG_INFOF("Remote answer setup:{}; local DTLS role:{}",
+               remote_setup, local_is_dtls_server ? "server/passive" : "client/active");
+  }
+
   if (ice_integration_set_remote_credentials(app->ice, media->ice_ufrag,
                                              media->ice_pwd) != 0) {
     TLOG_ERROR("Failed to apply remote ICE credentials");
