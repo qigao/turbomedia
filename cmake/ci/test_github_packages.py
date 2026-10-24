@@ -254,6 +254,40 @@ Path(sys.argv[1]).write_text('must not reach another build')
                 gp.media("x64-windows", self.root / "installed")
         self.assertEqual(downloads, [(own_id, True), (shared_id, False)])
 
+    def test_media_cache_failure_reports_exact_package_and_abi(self):
+        own_id = "turbomedia-media_example_x64-windows"
+        shared_id = "vcpkg-cache_example_x64-windows"
+        version = self.version
+        calls = []
+
+        def plan(args, **_):
+            path = Path(next(str(a).split("=", 1)[1] for a in args
+                             if str(a).startswith("--x-write-nuget-packages-config=")))
+            path.write_text(
+                f'<packages><package id="{own_id}" version="{version}" /></packages>')
+
+        def fetch(package_id, package_version, destination, **kwargs):
+            calls.append((package_id, package_version, kwargs["allow_missing"]))
+            if package_id == own_id:
+                return False
+            raise RuntimeError("curl download failed: HTTP 404, exit 22")
+
+        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(self.root / "cache"),
+                        VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
+            with patch.object(gp, "run", side_effect=plan), patch.object(
+                    gp, "download", side_effect=fetch):
+                with self.assertRaisesRegex(
+                        RuntimeError,
+                        rf"vcpkg cache lookup failed for {shared_id}/{re.escape(version)} "
+                        r"\(triplet=x64-windows, scope=media, producer=False\)") as caught:
+                    gp.media("x64-windows", self.root / "installed")
+
+        self.assertEqual(calls, [
+            (own_id, version, True),
+            (shared_id, version, False),
+        ])
+        self.assertIn("HTTP 404", str(caught.exception))
+
     def test_windows_consumer_rejects_shared_plan_before_download(self):
         def plan(args, **_):
             path = Path(next(str(a).split("=", 1)[1] for a in args
