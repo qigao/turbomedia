@@ -638,6 +638,9 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
                   remote_setup);
       return -1;
     }
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+    app->c11_local_is_dtls_server = local_is_dtls_server;
+#endif
     TLOG_INFOF("Remote answer setup:{}; local DTLS role:{}",
                remote_setup, local_is_dtls_server ? "server/passive" : "client/active");
   }
@@ -1350,6 +1353,11 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   (void)peer;
   TLOG_INFOF("DC state: {} -> {}", dc_state_name(old_state), dc_state_name(new_state));
 
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (new_state == TURBO_DC_STATE_CONNECTED && !app->c11_assoc_initialized) {
+    if (c11_start_association(app) != 0) app_request_stop(app);
+  }
+#else
   if (new_state == TURBO_DC_STATE_CONNECTED && !atomic_load(&app->channel)) {
     turbo_dc_channel_t *channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
     if (channel) {
@@ -1363,6 +1371,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
       turbo_dc_channel_open(channel);
     }
   }
+#endif
 
   if (new_state == TURBO_DC_STATE_FAILED || new_state == TURBO_DC_STATE_CLOSED) {
     app_request_stop(app);
@@ -1391,6 +1400,10 @@ static int ensure_media_stack(app_state_t *app) {
   TLOG_INFO("ensure_media_stack: creating DataChannel context");
   memset(&dc_cfg, 0, sizeof(dc_cfg));
   dc_cfg.is_server = app->is_offerer ? 0 : 1;
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  /* Keep production usrsctp dormant in this private C11 interoperability target. */
+  dc_cfg.disable_sctp = 1;
+#endif
   dc_cfg.transport = TURBO_DC_TRANSPORT_ICE;
   dc_cfg.dtls_mtu = 1200;
   dc_cfg.sctp_mtu = 1000;
@@ -1413,6 +1426,17 @@ static int ensure_media_stack(app_state_t *app) {
   turbo_dc_peer_on_state(app->dc_peer, on_dc_state);
   turbo_dc_peer_on_channel(app->dc_peer, on_dc_channel);
   turbo_dc_peer_on_error(app->dc_peer, on_dc_error);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (dc_peer_set_test_dtls_application_handler(
+          app->dc_peer, c11_on_dtls_application_data, app) != 0) {
+    TLOG_ERROR("Failed to install private C11 SCTP DTLS application handler");
+    turbo_dc_peer_destroy(app->dc_peer);
+    app->dc_peer = NULL;
+    turbo_dc_context_destroy(app->dc_ctx);
+    app->dc_ctx = NULL;
+    return -1;
+  }
+#endif
 
   app->ice = ice_integration_create(app->dc_peer, NULL,
                                     loopback ? NULL : stun_servers,
@@ -1584,6 +1608,11 @@ static int run_signaling(app_state_t *app) {
     if (app->dc_peer) {
       turbo_dc_handle_timers();
       turbo_dc_peer_poll(app->dc_peer);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+      if (app->c11_assoc_initialized) {
+        (void)dc_peer_post_owner_sync(app->dc_peer, c11_poll_owner_task, app, NULL);
+      }
+#endif
     }
 
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
@@ -1739,6 +1768,11 @@ int main(int argc, char **argv) {
     app.signal_client_initialized = 0;
   }
   free_signal_outbox(&app);
+#ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
+  if (app.dc_peer && (app.c11_assoc_initialized || app.c11_dcep_initialized)) {
+    (void)dc_peer_post_owner_sync(app.dc_peer, c11_cleanup_owner_task, &app, NULL);
+  }
+#endif
   if (app.ice) {
     ice_integration_destroy(app.ice);
   }
