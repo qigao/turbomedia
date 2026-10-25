@@ -1170,8 +1170,11 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
       }
       ++app->c11_pr_loss_drops;
       if (app->c11_pr_timed_loss_active &&
-          app->c11_pr_loss_drops == 1)
-        app->c11_pr_timed_drop_ms = c11_clock(app);
+          app->c11_pr_loss_drops == 1 &&
+          !app->c11_pr_timed_drop_ms) {
+        c11_fail(app, "C11 timed DATA admission timestamp not captured");
+        return -1;
+      }
       drop = 1;
       TLOG_INFOF("Private C11 fault injected drop #{} on PR-SCTP TSN {}",
                  app->c11_pr_loss_drops, tsn);
@@ -1263,8 +1266,15 @@ static int c11_send_pr_timed(app_state_t *app, uint16_t sid,
   };
   uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
   size_t packet_size = 0u;
-  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message_pr(
-      &app->c11_assoc, c11_clock(app), sid, CNET_SCTP_WEBRTC_BINARY_PPID,
+  const uint64_t now = c11_clock(app);
+  cnet_sctp_assoc_status status;
+  /* Capture the EXACT engine-admission time used for expiry, before wire
+   * serialization. Sampling again at the drop hook can be 1ms later and
+   * falsely reject a correctly timed FORWARD-TSN on a tick boundary. */
+  if (app->c11_pr_timed_loss_active && app->c11_pr_loss_drops == 0)
+    app->c11_pr_timed_drop_ms = now;
+  status = cnet_sctp_assoc_send_message_pr(
+      &app->c11_assoc, now, sid, CNET_SCTP_WEBRTC_BINARY_PPID,
       0, &policy, payload, payload_size,
       packet, sizeof(packet), &packet_size);
   if (allow_backpressure &&
