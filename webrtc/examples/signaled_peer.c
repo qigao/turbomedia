@@ -1208,16 +1208,18 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
                        chunk.value[5u]);
       tsn = c11_be32(chunk.value);
       if (sid != app->c11_pr_fault_sid) continue;
-      if (app->c11_pr_unordered_timed_loss_active &&
-          (chunk.flags & 0x04u) == 0u) {
-        c11_fail(app, "C11 unordered TIMED dropped DATA without SCTP U flag");
-        return -1;
-      }
-      /* DCEP PPID 50 is never faulted. I-DATA has PPID only in a
-       * beginning (B) fragment; this test admits one-fragment PR DATA. */
+      /* DCEP PPID 50 remains reliable ordered even on unordered channels.
+       * Filter by DATA PPID 53 *before* requiring the application U bit,
+       * so duplicate DCEP ACKs or other control are never mistaken for
+       * a broken unordered DATA record. I-DATA exposes PPID only on B. */
       if (chunk.type == 64u && (chunk.flags & 0x02u) == 0u) continue;
       if (c11_be32(chunk.value + (chunk.type == 64u ? 12u : 8u)) !=
           CNET_SCTP_WEBRTC_BINARY_PPID) continue;
+      if (app->c11_pr_unordered_timed_loss_active &&
+          (chunk.flags & 0x04u) == 0u) {
+        c11_fail(app, "C11 unordered TIMED PPID53 DATA missing SCTP U bit");
+        return -1;
+      }
       if (app->c11_pr_loss_drops == 0) app->c11_pr_loss_tsn = tsn;
       if (tsn != app->c11_pr_loss_tsn) continue;
       if ((unsigned int)app->c11_pr_loss_drops >=
