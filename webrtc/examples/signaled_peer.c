@@ -1273,6 +1273,8 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
   status = cnet_sctp_assoc_input(&app->c11_assoc, c11_clock(app), data, size,
                                  output, sizeof(output), &output_size);
   if (status != CNET_SCTP_ASSOC_OK) {
+    TLOG_ERRORF("C11 SCTP input rejected status={} packet_bytes={}",
+                (int)status, size);
     c11_fail(app, "C11 SCTP rejected authenticated DTLS application data");
     return;
   }
