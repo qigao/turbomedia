@@ -395,7 +395,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       list(APPEND _dc_c11_public_sources
            "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
     endforeach()
-    turbo_media_add_webrtc_base_test(
+    # Standalone public-interop executable: run only through the Janus
+    # harness, never as a zero-argument local CTest.
+    add_executable(
       rtc_signaled_peer_c11
       ../examples/signaled_peer.c
       ../src/ice_integration.c
@@ -411,7 +413,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       "${_salts_sctp_src}/sctp_gmssl_mac.c")
     target_include_directories(
       rtc_signaled_peer_c11
-      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+              "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+              "${STB_INCLUDE_DIR}"
               "${_salts_sctp_inc}" "${_salts_sctp_src}")
     target_compile_definitions(
       rtc_signaled_peer_c11
