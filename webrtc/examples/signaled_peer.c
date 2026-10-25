@@ -142,6 +142,11 @@ typedef struct {
   int c11_pr_zero_payload_sent;
   int c11_pr_zero_loss_active;
   int c11_pr_zero_recovery_sent;
+  int c11_pr_timed_open_sent;
+  int c11_pr_timed_payload_sent;
+  int c11_pr_timed_loss_active;
+  int c11_pr_timed_recovery_sent;
+  uint64_t c11_pr_timed_drop_ms;
 #endif
 } app_state_t;
 
@@ -1088,11 +1093,10 @@ static void c11_fail(app_state_t *app, const char *reason) {
   atomic_store(&app->callback_failed, 1);
   app_request_stop(app);
 }
-/* This test-only boundary sees immutable, CRC-checked SCTP wire packets
- * *after* the real C11 protocol engine has admitted them. It drops exactly
- * two identical TSN copies (first send + one permitted retry), but passes
- * all other DATA, DCEP, SACK, INIT/COOKIE and RE-CONFIG through real DTLS.
- * Never fabricate an ACK or advance a protocol timer here. */
+/* Private fault boundary: drop only one selected PPID53 DATA/I-DATA TSN
+ * according to the RTX1/RTX0/TIMED test budget. Never fabricate ACKs,
+ * touch production packets or modify the protocol clock/timer state. */
+#define C11_PR_TIMED_LIFETIME_MS 500u
 static uint32_t c11_be32(const uint8_t *p) {
   return ((uint32_t)p[0] << 24u) | ((uint32_t)p[1] << 16u) |
          ((uint32_t)p[2] << 8u) | (uint32_t)p[3];
@@ -1129,8 +1133,17 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
                 UINT32_C(0x80000000) ||
             (unsigned int)app->c11_pr_loss_drops !=
                 app->c11_pr_loss_budget) {
-          c11_fail(app, "C11 PR-SCTP FORWARD-TSN before two permitted loss drops");
+          c11_fail(app, "C11 PR-SCTP FORWARD-TSN before expected loss budget");
           return -1;
+        }
+        if (app->c11_pr_timed_loss_active) {
+          const uint64_t now = c11_clock(app);
+          if (!app->c11_pr_timed_drop_ms ||
+              now < app->c11_pr_timed_drop_ms ||
+              now - app->c11_pr_timed_drop_ms < C11_PR_TIMED_LIFETIME_MS) {
+            c11_fail(app, "C11 PR-SCTP timed FORWARD-TSN preceded expiry");
+            return -1;
+          }
         }
         forward = 1;
       }
@@ -1156,6 +1169,9 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
         return -1;
       }
       ++app->c11_pr_loss_drops;
+      if (app->c11_pr_timed_loss_active &&
+          app->c11_pr_loss_drops == 1)
+        app->c11_pr_timed_drop_ms = c11_clock(app);
       drop = 1;
       TLOG_INFOF("Private C11 fault injected drop #{} on PR-SCTP TSN {}",
                  app->c11_pr_loss_drops, tsn);
@@ -1237,6 +1253,31 @@ static int c11_send_pr_rtx0(app_state_t *app, uint16_t sid,
   }
   return c11_send_packet(app, packet, packet_size);
 }
+/* A real C11 partial-reliability send; only its *new successor* retries
+ * admission under bounded CWND/RWND pressure, never the lost DATA itself. */
+static int c11_send_pr_timed(app_state_t *app, uint16_t sid,
+                            const void *payload, size_t payload_size,
+                            int allow_backpressure) {
+  const cnet_sctp_data_reliability policy = {
+      CNET_SCTP_DATA_RELIABILITY_TIMED, C11_PR_TIMED_LIFETIME_MS
+  };
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message_pr(
+      &app->c11_assoc, c11_clock(app), sid, CNET_SCTP_WEBRTC_BINARY_PPID,
+      0, &policy, payload, payload_size,
+      packet, sizeof(packet), &packet_size);
+  if (allow_backpressure &&
+      (status == CNET_SCTP_ASSOC_CAPACITY ||
+       status == CNET_SCTP_ASSOC_RETRANSMIT_PENDING))
+    return 1;
+  if (status != CNET_SCTP_ASSOC_OK || !packet_size) {
+    TLOG_ERRORF("C11 PR-SCTP TIMED send refused status={}", (int)status);
+    c11_fail(app, "C11 SCTP PR-SCTP TIMED send rejected");
+    return -1;
+  }
+  return c11_send_packet(app, packet, packet_size);
+}
 static uint16_t c11_local_sid(const app_state_t *app) {
   return app->c11_local_is_dtls_server ? 1u : 0u;
 }
@@ -1249,6 +1290,18 @@ static uint16_t c11_pr_rtx_sid(const app_state_t *app) {
 static uint16_t c11_pr_zero_sid(const app_state_t *app) {
   return (uint16_t)(c11_local_sid(app) + 6u);
 }
+static uint16_t c11_pr_timed_sid(const app_state_t *app) {
+  return (uint16_t)(c11_local_sid(app) + 8u);
+}
+static const uint8_t c11_pr_timed_echo_payload[] = {
+    0x54u, 0x49u, 0x4du, 0x45u, 0x44u, 0x00u, 0x93u, 0x16u
+};
+static const uint8_t c11_pr_timed_lost_payload[] = {
+    0x45u, 0x58u, 0x50u, 0x49u, 0x52u, 0x45u, 0xaau, 0x01u
+};
+static const uint8_t c11_pr_timed_recovery_payload[] = {
+    0x54u, 0x49u, 0x4du, 0x45u, 0x52u, 0x00u, 0xf2u, 0x03u
+};
 static const uint8_t c11_pr_zero_echo_payload[] = {
     0x50u, 0x52u, 0x00u, 0xf0u, 0x30u, 0x00u, 0x5au, 0x19u
 };
@@ -1438,6 +1491,35 @@ static int c11_open_pr_zero_channel(app_state_t *app) {
                        open, open_size) != 0) return -1;
   app->c11_pr_zero_open_sent = 1;
   TLOG_INFOF("Private C11 PR-SCTP RTX0 DCEP OPEN sent on SID {}", sid);
+  return 0;
+}
+
+static int c11_open_pr_timed_channel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  const uint16_t sid = c11_pr_timed_sid(app);
+  cnet_sctp_dcep_status status;
+  if (!app->c11_pr_zero_recovery_sent || !app->c11_pr_forward_sent ||
+      app->c11_pr_loss_drops != 1 || app->c11_pr_timed_open_sent ||
+      !app->c11_assoc.peer_forward_tsn_supported ||
+      !app->c11_assoc.data.config.forward_tsn_supported ||
+      sid >= app->c11_dcep.streams) {
+    c11_fail(app, "C11 timed channel premature or unavailable");
+    return -1;
+  }
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x02u, 0u,
+                              C11_PR_TIMED_LIFETIME_MS,
+                              "pr-timed", sizeof("pr-timed") - 1u,
+                              NULL, 0u, open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || !open_size) {
+    c11_fail(app, "C11 DCEP TIMED 500ms OPEN rejected");
+    return -1;
+  }
+  app->c11_pr_loss_active = 0;
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
+                       open, open_size) != 0) return -1;
+  app->c11_pr_timed_open_sent = 1;
+  TLOG_INFOF("Private C11 DCEP TIMED 500ms OPEN sent on SID {}", sid);
   return 0;
 }
 
@@ -1636,6 +1718,18 @@ static void c11_handle_dcep(app_state_t *app,
     TLOG_INFOF("Private C11 PR-SCTP RTX0 ACK on SID {}; sent ordered PPID 53",
                message->stream_id);
   }
+  if (app->is_offerer && app->janus_echo_mode &&
+      app->c11_pr_timed_open_sent && !app->c11_pr_timed_payload_sent &&
+      reply_size == 0u && message->stream_id == c11_pr_timed_sid(app) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    if (c11_send_pr_timed(app, message->stream_id,
+                          c11_pr_timed_echo_payload,
+                          sizeof(c11_pr_timed_echo_payload), 0) != 0)
+      return;
+    app->c11_pr_timed_payload_sent = 1;
+    TLOG_INFOF("Private C11 DCEP TIMED SID {} ACK; nominal PPID53 sent",
+               message->stream_id);
+  }
 }
 
 static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
@@ -1712,6 +1806,52 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
       TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
+      if (message.stream_id == c11_pr_timed_sid(app)) {
+        if (!app->c11_pr_timed_open_sent ||
+            !app->c11_pr_timed_payload_sent ||
+            !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
+            message.unordered) {
+          c11_fail(app, "Janus C11 timed SID/ordered/DCEP mismatch");
+          return;
+        }
+        if (!app->c11_pr_timed_loss_active) {
+          if (payload_size != sizeof(c11_pr_timed_echo_payload) ||
+              memcmp(payload, c11_pr_timed_echo_payload,
+                     sizeof(c11_pr_timed_echo_payload)) != 0) {
+            c11_fail(app, "Janus C11 timed nominal echo mismatch");
+            return;
+          }
+          app->c11_pr_timed_loss_active = 1;
+          app->c11_pr_loss_drops = 0;
+          app->c11_pr_loss_budget = 1u;
+          app->c11_pr_loss_tsn = 0u;
+          app->c11_pr_fault_sid = message.stream_id;
+          app->c11_pr_forward_sent = 0;
+          app->c11_pr_timed_drop_ms = 0u;
+          app->c11_pr_loss_active = 1;
+          if (c11_send_pr_timed(app, message.stream_id,
+                                c11_pr_timed_lost_payload,
+                                sizeof(c11_pr_timed_lost_payload), 0) != 0 ||
+              app->c11_pr_loss_drops != 1)
+            return;
+          TLOG_INFOF("Private C11 TIMED 500ms loss on SID {}; awaiting expiry",
+                     message.stream_id);
+          return;
+        }
+        if (!app->c11_pr_forward_sent ||
+            !app->c11_pr_timed_recovery_sent ||
+            app->c11_pr_loss_drops != 1 ||
+            payload_size != sizeof(c11_pr_timed_recovery_payload) ||
+            memcmp(payload, c11_pr_timed_recovery_payload,
+                   sizeof(c11_pr_timed_recovery_payload)) != 0) {
+          c11_fail(app, "Janus C11 TIMED expiry or ordered recovery mismatch");
+          return;
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss and TIMED 500ms expiry FORWARD-TSN ordered recovery returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
       if (message.stream_id == c11_pr_zero_sid(app)) {
         if (!app->c11_pr_zero_open_sent || !app->c11_pr_zero_payload_sent ||
             !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
@@ -1755,9 +1895,9 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           c11_fail(app, "Janus C11 RTX0 abandoned DATA leaked or recovery mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, PR-SCTP RTX1+RTX0 injected-loss FORWARD-TSN ordered recovery returned");
-        atomic_store(&app->completed, 1);
-        app_request_stop(app);
+        /* RTX1 and RTX0 loss/forward proof precedes a separately
+         * negotiated TIMED DCEP channel on another local SID. */
+        if (c11_open_pr_timed_channel(app) != 0) return;
         return;
       }
       if (message.stream_id == c11_pr_rtx_sid(app)) {
@@ -1929,6 +2069,21 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
   if (app->c11_assoc.state == CNET_SCTP_ASSOC_FAILED) {
     c11_fail(app, "C11 SCTP association exhausted its retry budget");
     return;
+  }
+  /* A fresh TIMED successor starts only after the real peer ACKs FWD-TSN,
+   * avoiding expiration behind an outstanding abandoned-record barrier. */
+  if (app->c11_pr_timed_loss_active && app->c11_pr_forward_sent &&
+      !app->c11_pr_timed_recovery_sent &&
+      !app->c11_assoc.data.forward_active) {
+    const int sent = c11_send_pr_timed(app, c11_pr_timed_sid(app),
+                          c11_pr_timed_recovery_payload,
+                          sizeof(c11_pr_timed_recovery_payload), 1);
+    if (sent < 0) return;
+    if (sent == 0) {
+      app->c11_pr_timed_recovery_sent = 1;
+      TLOG_INFOF("Private C11 TIMED FORWARD-TSN ACKed; ordered successor sent on SID {}",
+                 c11_pr_timed_sid(app));
+    }
   }
   if (app->c11_reset_requested && !app->c11_reset_sent) {
     output_size = 0u;
