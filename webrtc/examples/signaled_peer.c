@@ -127,6 +127,8 @@ typedef struct {
   int c11_reset_outgoing_done;
   int c11_reuse_open_sent;
   int c11_reuse_echo_sent;
+  int c11_pr_rtx_open_sent;
+  int c11_pr_rtx_payload_sent;
 #endif
 } app_state_t;
 
@@ -1102,12 +1104,40 @@ static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
                             const void *payload, size_t payload_size) {
   return c11_send_message_with_order(app, sid, ppid, 0, payload, payload_size);
 }
+
+/* Private negotiated PR-SCTP data path. DCEP itself continues to travel
+ * as ordered reliable PPID 50, irrespective of channel reliability. */
+static int c11_send_pr_rtx1(app_state_t *app, uint16_t sid,
+                           const void *payload, size_t payload_size) {
+  const cnet_sctp_data_reliability policy = {
+      CNET_SCTP_DATA_RELIABILITY_RETRANSMITS, 1u
+  };
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message_pr(
+      &app->c11_assoc, c11_clock(app), sid, CNET_SCTP_WEBRTC_BINARY_PPID,
+      0, &policy, payload, payload_size, packet, sizeof(packet),
+      &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    TLOG_ERRORF("C11 SCTP negotiated PR-SCTP RTX1 send refused status={}",
+                (int)status);
+    c11_fail(app, "C11 SCTP PR-SCTP RTX1 data admission rejected");
+    return -1;
+  }
+  return c11_send_packet(app, packet, packet_size);
+}
 static uint16_t c11_local_sid(const app_state_t *app) {
   return app->c11_local_is_dtls_server ? 1u : 0u;
 }
 static uint16_t c11_unordered_sid(const app_state_t *app) {
   return (uint16_t)(c11_local_sid(app) + 2u);
 }
+static uint16_t c11_pr_rtx_sid(const app_state_t *app) {
+  return (uint16_t)(c11_local_sid(app) + 4u);
+}
+static const uint8_t c11_pr_rtx_echo_payload[] = {
+    0x50u, 0x52u, 0x01u, 0xf0u, 0x00u, 0x7fu, 0xabu, 0x12u
+};
 
 static const uint8_t c11_unordered_echo_payload[] = {
     0x00u, 0xffu, 0x81u, 0x7fu, 0xa5u, 0x00u, 0x3cu, 0x5au
@@ -1222,6 +1252,35 @@ static int c11_open_unordered_channel(app_state_t *app) {
 /* The SCTP engine reports RFC 6525 completion in both directions. Only when
  * BOTH are performed may the owning ULP retire this SID's old DCEP record.
  * This is a private adapter proof, NOT a production DCEP retirement API. */
+static int c11_open_pr_rtx_channel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  const uint16_t sid = c11_pr_rtx_sid(app);
+  cnet_sctp_dcep_status status;
+  if (!app->c11_reuse_echo_sent || app->c11_pr_rtx_open_sent ||
+      !app->c11_assoc.peer_forward_tsn_supported ||
+      !app->c11_assoc.data.config.forward_tsn_supported ||
+      sid >= app->c11_dcep.streams) {
+    c11_fail(app, "peer PR-SCTP capability missing or third SID unavailable");
+    return -1;
+  }
+  /* RFC 8832 channel type 0x01 = ordered maxRetransmits, limit 1.
+   * A successful no-loss echo proves interoperability of the DCEP+PR send
+   * path, NOT expiry/abandonment or FORWARD-TSN under deliberate loss. */
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x01u, 0u, 1u,
+                              "pr-rtx1", sizeof("pr-rtx1") - 1u,
+                              NULL, 0u, open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 PR-SCTP maxRetransmits=1 DCEP OPEN rejected");
+    return -1;
+  }
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
+                       open, open_size) != 0) return -1;
+  app->c11_pr_rtx_open_sent = 1;
+  TLOG_INFOF("Private C11 PR-SCTP DCEP RTX1 OPEN sent on SID {}", sid);
+  return 0;
+}
+
 static int c11_drain_reset_events(app_state_t *app) {
   unsigned int i;
   for (i = 0u; i < 2u * CNET_SCTP_DCEP_STREAMS; ++i) {
@@ -1396,6 +1455,16 @@ static void c11_handle_dcep(app_state_t *app,
                  message->stream_id);
     }
   }
+  if (app->is_offerer && app->janus_echo_mode &&
+      app->c11_pr_rtx_open_sent && !app->c11_pr_rtx_payload_sent &&
+      reply_size == 0u && message->stream_id == c11_pr_rtx_sid(app) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    if (c11_send_pr_rtx1(app, message->stream_id, c11_pr_rtx_echo_payload,
+                         sizeof(c11_pr_rtx_echo_payload)) != 0) return;
+    app->c11_pr_rtx_payload_sent = 1;
+    TLOG_INFOF("Private C11 PR-SCTP RTX1 ACK on SID {}; sent ordered PPID 53",
+               message->stream_id);
+  }
 }
 
 static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
@@ -1472,6 +1541,21 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
       TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
+      if (message.stream_id == c11_pr_rtx_sid(app)) {
+        if (!app->c11_pr_rtx_open_sent || !app->c11_pr_rtx_payload_sent ||
+            !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
+            message.unordered ||
+            payload_size != sizeof(c11_pr_rtx_echo_payload) ||
+            memcmp(payload, c11_pr_rtx_echo_payload,
+                   sizeof(c11_pr_rtx_echo_payload)) != 0) {
+          c11_fail(app, "Janus C11 PR-SCTP RTX1 SID, ordered flag or echo mismatch");
+          return;
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse and negotiated PR-SCTP RTX1 echo returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
       if (message.stream_id == c11_unordered_sid(app)) {
         if (!app->c11_secondary_open_sent ||
             !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
@@ -1488,9 +1572,10 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
             c11_fail(app, "Janus C11 reused-SID echo bytes or reset state mismatch");
             return;
           }
-          puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments, unordered SID and RFC6525 reset/reuse returned");
-          atomic_store(&app->completed, 1);
-          app_request_stop(app);
+          /* A reset/reuse PASS alone is no longer sufficient: negotiate an
+           * independent maxRetransmits=1 channel and exercise the real
+           * PR-SCTP send API through public Janus before declaring success. */
+          if (c11_open_pr_rtx_channel(app) != 0) return;
           return;
         }
         if (!app->c11_unordered_sent ||
