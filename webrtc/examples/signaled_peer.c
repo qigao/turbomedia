@@ -1185,17 +1185,29 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
           }
         }
         if (app->c11_pr_unordered_timed_loss_active) {
-          /* The fault SID was admitted and fixed before this hook; unlike
-           * c11_pr_unordered_timed_sid() it is already available here,
-           * before the later helper definitions in this C11 translation. */
+          /* The public peer's SCTP INIT/INIT-ACK negotiation selects wire
+           * dialect, not the requested DCEP reliability/order combination.
+           * With RFC8260, require I-FORWARD (194), SID and unordered MID.
+           * Without RFC8260, RFC3758 FORWARD (192) for an entirely
+           * unordered abandoned message carries only the new cum-TSN,
+           * and must NOT invent ordered SSN entries or I-FORWARD proof. */
           const uint16_t sid = app->c11_pr_fault_sid;
-          if (chunk.type != 194u || chunk.value_size < 12u ||
-              chunk.value[4u] != (uint8_t)(sid >> 8u) ||
-              chunk.value[5u] != (uint8_t)sid ||
-              chunk.value[6u] != 0u || chunk.value[7u] != 1u) {
-            c11_fail(app, "C11 unordered TIMED expected RFC8260 I-FORWARD-TSN MID entry");
+          const int interleaved =
+              app->c11_assoc.data.config.interleaving_supported != 0;
+          if (interleaved) {
+            if (chunk.type != 194u || chunk.value_size < 12u ||
+                chunk.value[4u] != (uint8_t)(sid >> 8u) ||
+                chunk.value[5u] != (uint8_t)sid ||
+                chunk.value[6u] != 0u || chunk.value[7u] != 1u) {
+              c11_fail(app, "C11 unordered TIMED negotiated I-FORWARD SID/MID mismatch");
+              return -1;
+            }
+          } else if (chunk.type != 192u || chunk.value_size != 4u) {
+            c11_fail(app, "C11 unordered TIMED legacy FORWARD-TSN shape mismatch");
             return -1;
           }
+          TLOG_INFOF("C11_UNORDERED_TIMED_FORWARD_CHUNK_TYPE={} sid={}",
+                     (unsigned int)chunk.type, sid);
         }
         forward = 1;
       }
@@ -1617,9 +1629,10 @@ static int c11_open_pr_timed_channel(app_state_t *app) {
   return 0;
 }
 
-/* Separate DTLS-role-correct SID for partial-reliable UNORDERED delivery.
- * This intentionally requires RFC8260 I-DATA/I-FORWARD, beyond the prior
- * ordered TIMED and reliable-unordered test variants. */
+/* A distinct local SID tests TIMED+unordered RFC8832 DCEP type 0x82.
+ * RFC3758 legacy FORWARD is correct when the real Janus peer does not
+ * negotiate RFC8260 I-DATA. I-FORWARD may ONLY be claimed when negotiated
+ * explicitly through INIT/INIT-ACK. */
 static int c11_open_pr_unordered_timed_channel(app_state_t *app) {
   uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
   size_t open_size = 0u;
@@ -1631,12 +1644,23 @@ static int c11_open_pr_unordered_timed_channel(app_state_t *app) {
       app->c11_pr_forward_emissions != 2u ||
       app->c11_pr_unordered_timed_open_sent ||
       !app->c11_assoc.peer_forward_tsn_supported ||
-      !app->c11_assoc.peer_interleaving_supported ||
-      !app->c11_assoc.data.config.interleaving_supported ||
+      !app->c11_assoc.data.config.forward_tsn_supported ||
       sid >= app->c11_dcep.streams) {
-    c11_fail(app, "C11 unordered TIMED channel premature or no I-DATA negotiation");
+    c11_fail(app, "C11 unordered TIMED channel premature or FORWARD-TSN unavailable");
     return -1;
   }
+  if ((app->c11_assoc.peer_interleaving_supported != 0) !=
+          (app->c11_assoc.data.config.interleaving_supported != 0) ||
+      (app->c11_assoc.peer_interleaving_supported &&
+       !app->c11_assoc.peer_i_forward_tsn_supported)) {
+    c11_fail(app, "C11 unordered TIMED inconsistent negotiated interleaving");
+    return -1;
+  }
+  TLOG_INFOF("C11_UNORDERED_TIMED_NEGOTIATED peer_forward={} peer_i_data={} peer_i_forward={} local_i_data={}",
+             (unsigned int)app->c11_assoc.peer_forward_tsn_supported,
+             (unsigned int)app->c11_assoc.peer_interleaving_supported,
+             (unsigned int)app->c11_assoc.peer_i_forward_tsn_supported,
+             (unsigned int)app->c11_assoc.data.config.interleaving_supported);
   /* The preceding ordered TIMED/FWD retransmission already proved its own
    * complete echo. Disable its fault filter before sending a new DCEP OPEN. */
   app->c11_pr_loss_active = 0;
@@ -1980,7 +2004,7 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
                                 sizeof(c11_pr_unordered_timed_lost_payload),
                                 1, 0) != 0 || app->c11_pr_loss_drops != 1)
             return;
-          TLOG_INFOF("Private C11 unordered TIMED 500ms loss SID {}, awaiting I-FORWARD",
+          TLOG_INFOF("Private C11 unordered TIMED 500ms loss SID {}, awaiting negotiated FORWARD",
                      message.stream_id);
           return;
         }
@@ -1990,10 +2014,10 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
             payload_size != sizeof(c11_pr_unordered_timed_recovery_payload) ||
             memcmp(payload, c11_pr_unordered_timed_recovery_payload,
                    sizeof(c11_pr_unordered_timed_recovery_payload)) != 0) {
-          c11_fail(app, "Janus C11 unordered TIMED I-FORWARD recovery mismatch");
+          c11_fail(app, "Janus C11 unordered TIMED negotiated forward recovery mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, ordered TIMED lost-FORWARD retransmission and unordered TIMED I-FORWARD-TSN recovery returned");
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, ordered TIMED lost-FORWARD retransmission and unordered TIMED negotiated-FORWARD recovery returned");
         atomic_store(&app->completed, 1);
         app_request_stop(app);
         return;
@@ -2279,8 +2303,9 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
                  c11_pr_timed_sid(app));
     }
   }
-  /* Post-expiry unordered successor is submitted only after the real peer
-   * cumulatively ACKs its RFC8260 I-FORWARD. The U bit is preserved. */
+  /* The post-expiry unordered successor is admitted only after the real peer
+   * cumulatively ACKs negotiated RFC3758 FORWARD or RFC8260 I-FORWARD.
+   * The U bit is preserved throughout. */
   if (app->c11_pr_unordered_timed_loss_active &&
       app->c11_pr_forward_sent &&
       !app->c11_pr_unordered_timed_recovery_sent &&
@@ -2292,7 +2317,7 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
     if (sent < 0) return;
     if (sent == 0) {
       app->c11_pr_unordered_timed_recovery_sent = 1;
-      TLOG_INFOF("Private C11 unordered TIMED I-FORWARD ACKed; U=1 successor sent on SID {}",
+      TLOG_INFOF("Private C11 unordered TIMED negotiated FORWARD ACKed; U=1 successor sent on SID {}",
                  c11_pr_unordered_timed_sid(app));
     }
   }

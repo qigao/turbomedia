@@ -13,7 +13,7 @@ const NATIVE_BIN = process.env.WEBRTC_SIGNALLED_PEER_BIN || process.argv[2] ||
 const TIMEOUT = Number(process.env.PUBLIC_WEBRTC_TIMEOUT_MS || 90000);
 const EXPECT_C11_SCTP = process.env.PUBLIC_WEBRTC_EXPECT_C11_SCTP === '1';
 const PASS_MARKER = EXPECT_C11_SCTP
-  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, ordered TIMED lost-FORWARD retransmission and unordered TIMED I-FORWARD-TSN recovery returned'
+  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, ordered TIMED lost-FORWARD retransmission and unordered TIMED negotiated-FORWARD recovery returned'
   : 'PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned';
 const PAYLOAD = 'hello over signaled ICE';
 const ECHO_PREFIX = 'Janus EchoTest here! You wrote: ';
@@ -353,6 +353,13 @@ async function main() {
       throw new Error('native process exited without exact public Janus DataChannel echo evidence for ' +
                       (EXPECT_C11_SCTP ? 'private C11 SCTP' : 'production usrsctp'));
     }
+    const unorderedLegacyForward = combinedOutput.includes(
+      'C11_UNORDERED_TIMED_FORWARD_CHUNK_TYPE=192');
+    const unorderedInterleavedForward = combinedOutput.includes(
+      'C11_UNORDERED_TIMED_FORWARD_CHUNK_TYPE=194');
+    if (EXPECT_C11_SCTP && unorderedLegacyForward === unorderedInterleavedForward) {
+      throw new Error('unqualified or ambiguous negotiated unordered TIMED FORWARD chunk type');
+    }
     console.log(JSON.stringify({
       result: 'PASS',
       browser_launched: false,
@@ -386,7 +393,8 @@ async function main() {
       c11_pr_sctp_timed_forward_tsn_emissions: EXPECT_C11_SCTP ? 2 : null,
       c11_pr_sctp_unordered_timed_lifetime_ms: EXPECT_C11_SCTP ? 500 : null,
       c11_pr_sctp_unordered_timed_loss_drops: EXPECT_C11_SCTP ? 1 : null,
-      c11_pr_sctp_unordered_i_forward_tsn: EXPECT_C11_SCTP,
+      c11_pr_sctp_unordered_i_forward_tsn: EXPECT_C11_SCTP ? unorderedInterleavedForward : null,
+      c11_pr_sctp_unordered_legacy_forward_tsn: EXPECT_C11_SCTP ? unorderedLegacyForward : null,
       c11_pr_sctp_unordered_timed_successor_hex: EXPECT_C11_SCTP ? '555245434f0082a2' : null,
       native_exit_code: exit.code,
       sctp_backend: EXPECT_C11_SCTP ? 'salts-c11-test-only' : 'usrsctp',
