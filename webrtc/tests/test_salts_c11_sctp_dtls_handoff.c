@@ -305,7 +305,10 @@ static void test_bundled_data_atomic_retry(void) {
     assert(cnet_sctp_wire_decode(frame[i], sizes[i], &header, &decoder) == CNET_SCTP_WIRE_OK);
     assert(header.chunk_count == 1u);
     assert(cnet_sctp_wire_next_chunk(&decoder, &chunk[i]) == CNET_SCTP_WIRE_OK);
-    assert(chunk[i].type == 0u);
+    /* RFC 8260 peers use I-DATA (64) after successful interleaving
+     * negotiation; older source pins use DATA (0). This handoff test is
+     * intentionally valid for both negotiated wire families. */
+    assert(chunk[i].type == 0u || chunk[i].type == 64u);
   }
   cumulative = b.data.cumulative_rx;
   buffered = b.data.buffered_rx;
@@ -313,12 +316,11 @@ static void test_bundled_data_atomic_retry(void) {
   memcpy(rx_before, b.data.rx, sizeof(rx_before));
   memcpy(rx_ssn_before, b.data.rx_ssn, sizeof(rx_ssn_before));
   memcpy(malformed, chunk, sizeof(malformed));
-  /* DATA's high reserved flag bits are ignored on receive by RFC 9260
-   * §3.3.1, so they are not a valid malformed-input fixture. Truncate the
-   * second DATA value below the 12-byte fixed header instead; framing and
-   * CRC remain valid, but Association semantic preflight must reject it
-   * before committing the first DATA Chunk. */
-  malformed[1].value_size = 11u;
+  /* Reserved flag bits are ignored on receive, so they are not a valid
+   * malformed-input fixture. Truncate the second DATA/I-DATA value below
+   * its 12/16-byte fixed header instead; framing and CRC remain valid, but
+   * Association semantic preflight must reject it atomically. */
+  malformed[1].value_size = malformed[1].type == 64u ? 15u : 11u;
   assert(cnet_sctp_wire_encode(a.config.local_port, a.config.remote_port,
       a.peer_tag, malformed, 2u, bundle, sizeof(bundle), &n) == CNET_SCTP_WIRE_OK);
   memset(sack, 0xa5, sizeof(sack));
