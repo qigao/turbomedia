@@ -121,6 +121,8 @@ typedef struct {
   int c11_large_echo_pending;
   int c11_secondary_open_sent;
   int c11_unordered_sent;
+  int c11_empty_text_pending;
+  int c11_empty_binary_pending;
 #endif
 } app_state_t;
 
@@ -1359,6 +1361,28 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
                app->is_offerer && app->janus_echo_mode) {
       static const char prefix[] = "Janus EchoTest here! You wrote: ";
       static const char expected[] = "hello over signaled ICE";
+      if (app->c11_empty_text_pending) {
+        cnet_sctp_webrtc_payload empty_binary = {0};
+        if (!c11_echo_channel_ready(app, message.stream_id) ||
+            payload_size != sizeof(prefix) - 1u ||
+            memcmp(payload, prefix, sizeof(prefix) - 1u) != 0) {
+          c11_fail(app, "Janus C11 SCTP empty-text echo did not match exactly");
+          return;
+        }
+        if (cnet_sctp_webrtc_prepare(1, NULL, 0u, &empty_binary) !=
+            CNET_SCTP_WEBRTC_OK) {
+          c11_fail(app, "C11 WebRTC empty-binary framing failed");
+          return;
+        }
+        app->c11_empty_text_pending = 0;
+        app->c11_empty_binary_pending = 1;
+        if (c11_send_message(app, message.stream_id, empty_binary.ppid,
+                             empty_binary.wire_bytes,
+                             empty_binary.wire_size) != 0)
+          return;
+        TLOG_INFO("Private C11 SCTP empty-text PPID 56 verified; empty-binary PPID 57 sent");
+        continue;
+      }
       /* Require an ACKed local DCEP channel and the exact text payload.
        * A second text reply before binary must fail, not complete the test. */
       if (!c11_echo_channel_ready(app, message.stream_id) ||
@@ -1394,7 +1418,7 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           c11_fail(app, "Janus C11 reliable-unordered echo SID, flag or bytes mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments and independent unordered SID returned");
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, empty text, empty binary, 20480-byte fragments and independent unordered SID returned");
         atomic_store(&app->completed, 1);
         app_request_stop(app);
         return;
@@ -1424,11 +1448,34 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
             return;
           }
         }
-        /* Do not report PASS until a second DCEP OPEN/ACK on a different,
-         * reliable-unordered SID and its exact binary echo also succeed. */
-        if (c11_open_unordered_channel(app) != 0) return;
+        {
+          cnet_sctp_webrtc_payload empty_text = {0};
+          if (cnet_sctp_webrtc_prepare(0, NULL, 0u, &empty_text) !=
+              CNET_SCTP_WEBRTC_OK) {
+            c11_fail(app, "C11 WebRTC empty-text framing failed");
+            return;
+          }
+          app->c11_empty_text_pending = 1;
+          if (c11_send_message(app, message.stream_id, empty_text.ppid,
+                               empty_text.wire_bytes,
+                               empty_text.wire_size) != 0)
+            return;
+        }
+        TLOG_INFO("Private C11 SCTP fragmented echo verified; empty-text PPID 56 sent");
+      }
+    } else if (message.ppid == CNET_SCTP_WEBRTC_EMPTY_BINARY_PPID &&
+               app->is_offerer && app->janus_echo_mode) {
+      if (!c11_echo_channel_ready(app, message.stream_id) ||
+          !app->c11_empty_binary_pending || payload_size != 1u ||
+          payload[0] != 0u) {
+        c11_fail(app, "Janus C11 SCTP empty-binary echo did not match exactly");
         return;
       }
+      app->c11_empty_binary_pending = 0;
+      /* Do not report PASS until a second DCEP OPEN/ACK on a different,
+       * reliable-unordered SID and its exact binary echo also succeed. */
+      if (c11_open_unordered_channel(app) != 0) return;
+      return;
     } else {
       c11_fail(app, "unexpected PPID or DataChannel message for public EchoTest");
       return;
