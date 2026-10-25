@@ -1085,11 +1085,15 @@ static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
   }
   return c11_send_packet(app, packet, packet_size);
 }
+static uint16_t c11_local_sid(const app_state_t *app) {
+  return app->c11_local_is_dtls_server ? 1u : 0u;
+}
+
 static int c11_open_datachannel(app_state_t *app) {
   uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
   size_t open_size = 0u;
   uint16_t streams = app->c11_assoc.config.outbound_streams;
-  uint16_t sid = app->c11_local_is_dtls_server ? 1u : 0u;
+  uint16_t sid = c11_local_sid(app);
   cnet_sctp_dcep_status status;
   if (app->c11_assoc.peer_inbound_streams < streams)
     streams = app->c11_assoc.peer_inbound_streams;
@@ -1197,10 +1201,16 @@ static void c11_handle_dcep(app_state_t *app,
       return;
     }
   }
+  /* Only ACK of our own OPEN is evidence that our local DataChannel exists.
+   * A remote-initiated OPEN also becomes ready after we send its ACK, but
+   * must never unlock the public test payload on a different SID. */
   if (app->is_offerer && app->janus_echo_mode && app->c11_dcep_open_sent &&
+      reply_size == 0u && message->stream_id == c11_local_sid(app) &&
       cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id) &&
       !atomic_exchange(&app->message_sent, 1)) {
     static const char hello[] = "hello over signaled ICE";
+    TLOG_INFOF("Private C11 DCEP ACK admitted on local SID {}",
+               message->stream_id);
     if (c11_send_message(app, message->stream_id,
                          CNET_SCTP_WEBRTC_TEXT_PPID, hello, sizeof(hello) - 1u) != 0)
       return;
@@ -1254,6 +1264,15 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
                app->is_offerer && app->janus_echo_mode) {
       static const char prefix[] = "Janus EchoTest here! You wrote: ";
       static const char expected[] = "hello over signaled ICE";
+      /* The exact echo must be on the channel we opened, and after its ACK
+       * and our text send. An arbitrary valid-looking SCTP DATA message is
+       * not proof of the local DCEP handshake. */
+      if (!app->c11_dcep_open_sent || !atomic_load(&app->message_sent) ||
+          message.stream_id != c11_local_sid(app) ||
+          !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id)) {
+        c11_fail(app, "Janus C11 SCTP echo arrived on unacknowledged or wrong SID");
+        return;
+      }
       if (payload_size != sizeof(prefix) - 1u + sizeof(expected) - 1u ||
           memcmp(payload, prefix, sizeof(prefix) - 1u) != 0 ||
           memcmp(payload + sizeof(prefix) - 1u, expected, sizeof(expected) - 1u) != 0) {
