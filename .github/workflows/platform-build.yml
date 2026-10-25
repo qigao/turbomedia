@@ -133,8 +133,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
-          # Exact HEAD of clean master-based Salts SCTP integration PR #1281; test-only checkout.
-          ref: 916871996ccf4dcb6b042bd8306f19083b7ce795
+          # Immutable merged Salts PR #1281 commit; independent test-only C11 SCTP checkout.
+          ref: d6d936a86087a7f9a982126157d154e905580f30
           path: salts-sctp-prototype
 
       - uses: ./.github/actions/setup-native-deps
