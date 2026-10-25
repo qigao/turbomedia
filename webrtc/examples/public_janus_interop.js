@@ -13,7 +13,7 @@ const NATIVE_BIN = process.env.WEBRTC_SIGNALLED_PEER_BIN || process.argv[2] ||
 const TIMEOUT = Number(process.env.PUBLIC_WEBRTC_TIMEOUT_MS || 90000);
 const EXPECT_C11_SCTP = process.env.PUBLIC_WEBRTC_EXPECT_C11_SCTP === '1';
 const PASS_MARKER = EXPECT_C11_SCTP
-  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments and independent unordered SID returned'
+  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments, unordered SID and RFC6525 reset/reuse returned'
   : 'PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned';
 const PAYLOAD = 'hello over signaled ICE';
 const ECHO_PREFIX = 'Janus EchoTest here! You wrote: ';
@@ -370,6 +370,8 @@ async function main() {
       c11_fragmented_binary_bytes: EXPECT_C11_SCTP ? 20480 : null,
       c11_reliable_unordered_second_sid_exact_echo: EXPECT_C11_SCTP,
       c11_second_sid_binary_hex: EXPECT_C11_SCTP ? '00ff817fa5003c5a' : null,
+      c11_rfc6525_bidirectional_reset_reuse: EXPECT_C11_SCTP,
+      c11_reused_sid_binary_hex: EXPECT_C11_SCTP ? '5343545000fe2207' : null,
       native_exit_code: exit.code,
       sctp_backend: EXPECT_C11_SCTP ? 'salts-c11-test-only' : 'usrsctp',
       note: EXPECT_C11_SCTP

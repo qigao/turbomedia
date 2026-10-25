@@ -121,6 +121,12 @@ typedef struct {
   int c11_large_echo_pending;
   int c11_secondary_open_sent;
   int c11_unordered_sent;
+  int c11_reset_requested;
+  int c11_reset_sent;
+  int c11_reset_incoming_done;
+  int c11_reset_outgoing_done;
+  int c11_reuse_open_sent;
+  int c11_reuse_echo_sent;
 #endif
 } app_state_t;
 
@@ -1106,6 +1112,10 @@ static uint16_t c11_unordered_sid(const app_state_t *app) {
 static const uint8_t c11_unordered_echo_payload[] = {
     0x00u, 0xffu, 0x81u, 0x7fu, 0xa5u, 0x00u, 0x3cu, 0x5au
 };
+/* Distinct payload after a real bidirectional reset and new OPEN/ACK. */
+static const uint8_t c11_reused_echo_payload[] = {
+    0x53u, 0x43u, 0x54u, 0x50u, 0x00u, 0xfeu, 0x22u, 0x07u
+};
 
 static const uint8_t c11_binary_echo_payload[] = {
     0x00u, 0x01u, 0x02u, 0x7fu, 0x80u, 0xffu, 0x00u
@@ -1192,8 +1202,10 @@ static int c11_open_unordered_channel(app_state_t *app) {
     c11_fail(app, "C11 second DataChannel SID not available");
     return -1;
   }
+  const char *label = app->c11_reuse_open_sent ? "reused" : "unordered";
+  size_t label_size = strlen(label);
   status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x80u, 0u, 0u,
-                              "unordered", sizeof("unordered") - 1u,
+                              label, label_size,
                               NULL, 0u, open, sizeof(open), &open_size);
   if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
     c11_fail(app, "C11 reliable-unordered DCEP OPEN rejected");
@@ -1202,7 +1214,67 @@ static int c11_open_unordered_channel(app_state_t *app) {
   if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
                        open, open_size) != 0) return -1;
   app->c11_secondary_open_sent = 1;
-  TLOG_INFOF("Private C11 DCEP reliable-unordered OPEN sent on SID {}", sid);
+  TLOG_INFOF("Private C11 DCEP reliable-unordered OPEN sent on SID {} reuse={}",
+             sid, app->c11_reuse_open_sent);
+  return 0;
+}
+
+/* The SCTP engine reports RFC 6525 completion in both directions. Only when
+ * BOTH are performed may the owning ULP retire this SID's old DCEP record.
+ * This is a private adapter proof, NOT a production DCEP retirement API. */
+static int c11_drain_reset_events(app_state_t *app) {
+  unsigned int i;
+  for (i = 0u; i < 2u * CNET_SCTP_DCEP_STREAMS; ++i) {
+    cnet_sctp_assoc_stream_reset_event event = {0};
+    cnet_sctp_assoc_status status =
+        cnet_sctp_assoc_take_stream_reset(&app->c11_assoc, &event);
+    if (status == CNET_SCTP_ASSOC_EMPTY) break;
+    if (status != CNET_SCTP_ASSOC_OK || !app->c11_reset_sent ||
+        event.stream_id != c11_unordered_sid(app) ||
+        event.result != CNET_SCTP_STREAM_RESET_PERFORMED) {
+      c11_fail(app, "C11 SCTP reset event failed or unexpected SID/result");
+      return -1;
+    }
+    if (event.incoming) {
+      if (app->c11_reset_incoming_done) {
+        c11_fail(app, "duplicate C11 incoming stream-reset completion");
+        return -1;
+      }
+      app->c11_reset_incoming_done = 1;
+    } else {
+      if (app->c11_reset_outgoing_done) {
+        c11_fail(app, "duplicate C11 outgoing stream-reset completion");
+        return -1;
+      }
+      app->c11_reset_outgoing_done = 1;
+    }
+    TLOG_INFOF("Private C11 RFC6525 SID {} reset completed direction={}",
+               event.stream_id, event.incoming ? "incoming" : "outgoing");
+  }
+  if (i == 2u * CNET_SCTP_DCEP_STREAMS) {
+    c11_fail(app, "C11 SCTP reset event drain exceeded bound");
+    return -1;
+  }
+  if (app->c11_reset_incoming_done && app->c11_reset_outgoing_done &&
+      !app->c11_reuse_open_sent) {
+    const uint16_t sid = c11_unordered_sid(app);
+    cnet_sctp_dcep_channel *channel = &app->c11_dcep.channels[sid];
+    if (!c11_is_owner(app) || !app->c11_reset_sent ||
+        !app->c11_secondary_open_sent || !channel->locally_initiated ||
+        channel->state != 2u) {
+      c11_fail(app, "C11 DCEP retirement denied before bidirectional reset");
+      return -1;
+    }
+    /* Private ULP projection: the upstream DCEP prototype currently has no
+     * per-SID retire API. Reclaim ONLY this channel's owned record after
+     * the real remote reciprocal reset; never reset the whole association. */
+    memset(channel, 0, sizeof(*channel));
+    app->c11_secondary_open_sent = 0;
+    app->c11_reuse_open_sent = 1;
+    if (c11_open_unordered_channel(app) != 0) return -1;
+    TLOG_INFOF("Private C11 RFC6525 bilateral reset admitted DCEP reuse SID {}",
+               sid);
+  }
   return 0;
 }
 static int c11_start_association(app_state_t *app) {
@@ -1298,16 +1370,31 @@ static void c11_handle_dcep(app_state_t *app,
     TLOG_INFO("Private C11 SCTP sent exact Janus EchoTest payload");
   }
   if (app->is_offerer && app->janus_echo_mode &&
-      app->c11_secondary_open_sent && !app->c11_unordered_sent &&
-      reply_size == 0u && message->stream_id == c11_unordered_sid(app) &&
+      app->c11_secondary_open_sent && reply_size == 0u &&
+      message->stream_id == c11_unordered_sid(app) &&
       cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
-    if (c11_send_message_with_order(
-            app, message->stream_id, CNET_SCTP_WEBRTC_BINARY_PPID, 1,
-            c11_unordered_echo_payload,
-            sizeof(c11_unordered_echo_payload)) != 0) return;
-    app->c11_unordered_sent = 1;
-    TLOG_INFOF("Private C11 DCEP ACK on unordered SID {}; sent U=1 PPID 53",
-               message->stream_id);
+    if (app->c11_reuse_open_sent) {
+      if (app->c11_reuse_echo_sent ||
+          !app->c11_reset_incoming_done || !app->c11_reset_outgoing_done) {
+        c11_fail(app, "C11 reused DCEP ACK without bilateral reset");
+        return;
+      }
+      if (c11_send_message_with_order(
+              app, message->stream_id, CNET_SCTP_WEBRTC_BINARY_PPID, 1,
+              c11_reused_echo_payload,
+              sizeof(c11_reused_echo_payload)) != 0) return;
+      app->c11_reuse_echo_sent = 1;
+      TLOG_INFOF("Private C11 reused DCEP SID {} ACK; sent U=1 PPID 53",
+                 message->stream_id);
+    } else if (!app->c11_unordered_sent) {
+      if (c11_send_message_with_order(
+              app, message->stream_id, CNET_SCTP_WEBRTC_BINARY_PPID, 1,
+              c11_unordered_echo_payload,
+              sizeof(c11_unordered_echo_payload)) != 0) return;
+      app->c11_unordered_sent = 1;
+      TLOG_INFOF("Private C11 DCEP ACK on unordered SID {}; sent U=1 PPID 53",
+                 message->stream_id);
+    }
   }
 }
 
@@ -1333,6 +1420,7 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
     return;
   }
   if (c11_send_packet(app, output, output_size) != 0) return;
+  if (c11_drain_reset_events(app) != 0) return;
 
   if (app->c11_assoc.state == CNET_SCTP_ASSOC_ESTABLISHED &&
       !app->c11_dcep_initialized) {
@@ -1385,18 +1473,36 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
       if (message.stream_id == c11_unordered_sid(app)) {
-        if (!app->c11_secondary_open_sent || !app->c11_unordered_sent ||
+        if (!app->c11_secondary_open_sent ||
             !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
-            !message.unordered ||
+            !message.unordered) {
+          c11_fail(app, "Janus C11 unordered echo SID, U flag or DCEP readiness mismatch");
+          return;
+        }
+        if (app->c11_reuse_open_sent) {
+          if (!app->c11_reset_incoming_done || !app->c11_reset_outgoing_done ||
+              !app->c11_reuse_echo_sent ||
+              payload_size != sizeof(c11_reused_echo_payload) ||
+              memcmp(payload, c11_reused_echo_payload,
+                     sizeof(c11_reused_echo_payload)) != 0) {
+            c11_fail(app, "Janus C11 reused-SID echo bytes or reset state mismatch");
+            return;
+          }
+          puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments, unordered SID and RFC6525 reset/reuse returned");
+          atomic_store(&app->completed, 1);
+          app_request_stop(app);
+          return;
+        }
+        if (!app->c11_unordered_sent ||
             payload_size != sizeof(c11_unordered_echo_payload) ||
             memcmp(payload, c11_unordered_echo_payload,
                    sizeof(c11_unordered_echo_payload)) != 0) {
-          c11_fail(app, "Janus C11 reliable-unordered echo SID, flag or bytes mismatch");
+          c11_fail(app, "Janus C11 reliable-unordered first echo bytes mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments and independent unordered SID returned");
-        atomic_store(&app->completed, 1);
-        app_request_stop(app);
+        app->c11_reset_requested = 1;
+        TLOG_INFOF("Private C11 independent unordered SID {} echo passed; RFC6525 reset requested",
+                   message.stream_id);
         return;
       }
       if (!c11_echo_channel_ready(app, message.stream_id) ||
@@ -1480,10 +1586,30 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
       return;
     }
     if (c11_send_packet(app, output, output_size) != 0) return;
+    if (c11_drain_reset_events(app) != 0) return;
   }
   if (app->c11_assoc.state == CNET_SCTP_ASSOC_FAILED) {
     c11_fail(app, "C11 SCTP association exhausted its retry budget");
     return;
+  }
+  if (app->c11_reset_requested && !app->c11_reset_sent) {
+    output_size = 0u;
+    status = cnet_sctp_assoc_reset_stream(&app->c11_assoc, c11_clock(app),
+               c11_unordered_sid(app), output, sizeof(output), &output_size);
+    if (status == CNET_SCTP_ASSOC_BUSY ||
+        status == CNET_SCTP_ASSOC_RETRANSMIT_PENDING) {
+      /* Wait for outstanding DATA to retire; never reset an inflight SID. */
+      return;
+    }
+    if (status != CNET_SCTP_ASSOC_OK || output_size == 0u) {
+      TLOG_ERRORF("C11 RFC6525 outgoing reset rejected status={}", (int)status);
+      c11_fail(app, "C11 SCTP outgoing stream reset denied");
+      return;
+    }
+    app->c11_reset_sent = 1;
+    if (c11_send_packet(app, output, output_size) != 0) return;
+    TLOG_INFOF("Private C11 RFC6525 outgoing reset sent for SID {}",
+               c11_unordered_sid(app));
   }
   if (!app->c11_large_echo_pending ||
       app->c11_assoc.state != CNET_SCTP_ASSOC_ESTABLISHED) return;
