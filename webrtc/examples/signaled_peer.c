@@ -118,6 +118,7 @@ typedef struct {
   int c11_dcep_open_sent;
   int c11_local_is_dtls_server;
   int c11_binary_echo_pending;
+  int c11_large_echo_pending;
 #endif
 } app_state_t;
 
@@ -1094,6 +1095,33 @@ static const uint8_t c11_binary_echo_payload[] = {
     0x00u, 0x01u, 0x02u, 0x7fu, 0x80u, 0xffu, 0x00u
 };
 
+/* 20 KiB exceeds one SCTP DATA record and 16 outstanding TX slots.
+ * A deterministic binary pattern spans NUL/high-byte values and proves the
+ * whole message was reassembled by an independent public Janus peer. */
+#define C11_PUBLIC_FRAGMENT_BYTES (20u * 1024u)
+static uint8_t c11_fragment_byte(size_t index) {
+  return (uint8_t)((index * 131u + (index >> 3u) +
+                    (index >> 9u) * 7u) & 0xffu);
+}
+
+static int c11_queue_large_echo(app_state_t *app, uint16_t sid) {
+  uint8_t message[C11_PUBLIC_FRAGMENT_BYTES];
+  cnet_sctp_assoc_status status;
+  size_t i;
+  for (i = 0u; i < sizeof(message); ++i)
+    message[i] = c11_fragment_byte(i);
+  status = cnet_sctp_assoc_queue_message(&app->c11_assoc, c11_clock(app),
+              sid, CNET_SCTP_WEBRTC_BINARY_PPID, 0,
+              message, sizeof(message));
+  if (status != CNET_SCTP_ASSOC_OK) {
+    c11_fail(app, "C11 SCTP 20 KiB binary message queue rejected");
+    return -1;
+  }
+  app->c11_large_echo_pending = 1;
+  TLOG_INFO("Private C11 SCTP queued 20480-byte fragmented binary echo");
+  return 0;
+}
+
 static int c11_echo_channel_ready(const app_state_t *app, uint16_t sid) {
   return app->c11_dcep_open_sent && atomic_load(&app->message_sent) &&
          sid == c11_local_sid(app) &&
@@ -1301,17 +1329,35 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
       if (!c11_echo_channel_ready(app, message.stream_id) ||
-          !app->c11_binary_echo_pending ||
-          payload_size != sizeof(c11_binary_echo_payload) ||
-          memcmp(payload, c11_binary_echo_payload,
-                 sizeof(c11_binary_echo_payload)) != 0) {
-        c11_fail(app, "Janus C11 SCTP binary echo SID or bytes did not match");
+          !app->c11_binary_echo_pending) {
+        c11_fail(app, "Janus C11 SCTP binary echo on an unacknowledged SID");
         return;
       }
-      puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text and binary DataChannel payloads returned");
-      atomic_store(&app->completed, 1);
-      app_request_stop(app);
-      return;
+      if (!app->c11_large_echo_pending) {
+        if (payload_size != sizeof(c11_binary_echo_payload) ||
+            memcmp(payload, c11_binary_echo_payload,
+                   sizeof(c11_binary_echo_payload)) != 0) {
+          c11_fail(app, "Janus C11 SCTP initial binary echo bytes did not match");
+          return;
+        }
+        if (c11_queue_large_echo(app, message.stream_id) != 0) return;
+      } else {
+        size_t i;
+        if (payload_size != C11_PUBLIC_FRAGMENT_BYTES) {
+          c11_fail(app, "Janus C11 SCTP fragmented echo length did not match");
+          return;
+        }
+        for (i = 0u; i < payload_size; ++i) {
+          if (payload[i] != c11_fragment_byte(i)) {
+            c11_fail(app, "Janus C11 SCTP fragmented echo bytes did not match");
+            return;
+          }
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary and 20480-byte fragmented echoes returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
     } else {
       c11_fail(app, "unexpected PPID or DataChannel message for public EchoTest");
       return;
@@ -1345,6 +1391,7 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
   uint64_t deadline = 0u;
   int has_deadline = 0;
   cnet_sctp_assoc_status status;
+  unsigned int fragments;
   (void)arg2;
   if (!app || !app->c11_assoc_initialized || !c11_is_owner(app)) return;
   status = cnet_sctp_assoc_next_deadline(&app->c11_assoc, &deadline, &has_deadline);
@@ -1352,16 +1399,39 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
     c11_fail(app, "C11 SCTP deadline query failed");
     return;
   }
-  if (!has_deadline || c11_clock(app) < deadline) return;
-  status = cnet_sctp_assoc_advance(&app->c11_assoc, c11_clock(app),
-                                  output, sizeof(output), &output_size);
-  if (status != CNET_SCTP_ASSOC_OK) {
-    c11_fail(app, "C11 SCTP retransmission deadline failed");
-    return;
+  /* A due T1/T3 or fast retransmission always precedes new fragments.
+   * Every packet stays on the existing Peer Owner and encrypted DTLS path. */
+  if (has_deadline && c11_clock(app) >= deadline) {
+    status = cnet_sctp_assoc_advance(&app->c11_assoc, c11_clock(app),
+                                    output, sizeof(output), &output_size);
+    if (status != CNET_SCTP_ASSOC_OK) {
+      c11_fail(app, "C11 SCTP retransmission deadline failed");
+      return;
+    }
+    if (c11_send_packet(app, output, output_size) != 0) return;
   }
-  if (c11_send_packet(app, output, output_size) != 0) return;
   if (app->c11_assoc.state == CNET_SCTP_ASSOC_FAILED) {
     c11_fail(app, "C11 SCTP association exhausted its retry budget");
+    return;
+  }
+  if (!app->c11_large_echo_pending ||
+      app->c11_assoc.state != CNET_SCTP_ASSOC_ESTABLISHED) return;
+
+  /* Bounded per-tick pump; DATA cwnd/rwnd/ticket pressure is normal and
+   * retried after a peer SACK or the next Owner deadline. No extra worker,
+   * socket, busy-wait, unbounded queue or implicit application fallback. */
+  for (fragments = 0u; fragments < 4u; ++fragments) {
+    output_size = 0u;
+    status = cnet_sctp_assoc_pump_message(&app->c11_assoc, c11_clock(app),
+                                          output, sizeof(output), &output_size);
+    if (status == CNET_SCTP_ASSOC_EMPTY ||
+        status == CNET_SCTP_ASSOC_CAPACITY ||
+        status == CNET_SCTP_ASSOC_RETRANSMIT_PENDING) break;
+    if (status != CNET_SCTP_ASSOC_OK || output_size == 0u) {
+      c11_fail(app, "C11 SCTP fragmented DATA pump failed");
+      return;
+    }
+    if (c11_send_packet(app, output, output_size) != 0) return;
   }
 }
 
