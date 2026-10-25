@@ -119,6 +119,8 @@ typedef struct {
   int c11_local_is_dtls_server;
   int c11_binary_echo_pending;
   int c11_large_echo_pending;
+  int c11_secondary_open_sent;
+  int c11_unordered_sent;
 #endif
 } app_state_t;
 
@@ -1074,22 +1076,36 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
   }
   return 0;
 }
-static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
-                            const void *payload, size_t payload_size) {
+static int c11_send_message_with_order(app_state_t *app, uint16_t sid,
+                                       uint32_t ppid, int unordered,
+                                       const void *payload, size_t payload_size) {
   uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
   size_t packet_size = 0u;
   cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message(
-      &app->c11_assoc, c11_clock(app), sid, ppid, 0, payload, payload_size,
-      packet, sizeof(packet), &packet_size);
+      &app->c11_assoc, c11_clock(app), sid, ppid, unordered,
+      payload, payload_size, packet, sizeof(packet), &packet_size);
   if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    TLOG_ERRORF("C11 SCTP send refused sid={} ppid={} unordered={} status={}",
+                sid, ppid, unordered, (int)status);
     c11_fail(app, "C11 SCTP DATA send was rejected");
     return -1;
   }
   return c11_send_packet(app, packet, packet_size);
 }
+static int c11_send_message(app_state_t *app, uint16_t sid, uint32_t ppid,
+                            const void *payload, size_t payload_size) {
+  return c11_send_message_with_order(app, sid, ppid, 0, payload, payload_size);
+}
 static uint16_t c11_local_sid(const app_state_t *app) {
   return app->c11_local_is_dtls_server ? 1u : 0u;
 }
+static uint16_t c11_unordered_sid(const app_state_t *app) {
+  return (uint16_t)(c11_local_sid(app) + 2u);
+}
+
+static const uint8_t c11_unordered_echo_payload[] = {
+    0x00u, 0xffu, 0x81u, 0x7fu, 0xa5u, 0x00u, 0x3cu, 0x5au
+};
 
 static const uint8_t c11_binary_echo_payload[] = {
     0x00u, 0x01u, 0x02u, 0x7fu, 0x80u, 0xffu, 0x00u
@@ -1161,6 +1177,32 @@ static int c11_open_datachannel(app_state_t *app) {
   app->c11_dcep_open_sent = 1;
   TLOG_INFOF("Private C11 SCTP association established; DCEP OPEN sent on SID {}",
              sid);
+  return 0;
+}
+/* Follow the proven ordered SID 1 exchange with an independent, reliable
+ * unordered channel. DCEP OPEN itself remains reliably ordered (PPID 50).
+ * The new SID uses local DTLS-role parity, never an arbitrary remote SID. */
+static int c11_open_unordered_channel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  uint16_t sid = c11_unordered_sid(app);
+  cnet_sctp_dcep_status status;
+  if (!app->c11_dcep_initialized || app->c11_secondary_open_sent ||
+      sid >= app->c11_dcep.streams) {
+    c11_fail(app, "C11 second DataChannel SID not available");
+    return -1;
+  }
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x80u, 0u, 0u,
+                              "unordered", sizeof("unordered") - 1u,
+                              NULL, 0u, open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 reliable-unordered DCEP OPEN rejected");
+    return -1;
+  }
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
+                       open, open_size) != 0) return -1;
+  app->c11_secondary_open_sent = 1;
+  TLOG_INFOF("Private C11 DCEP reliable-unordered OPEN sent on SID {}", sid);
   return 0;
 }
 static int c11_start_association(app_state_t *app) {
@@ -1255,6 +1297,18 @@ static void c11_handle_dcep(app_state_t *app,
       return;
     TLOG_INFO("Private C11 SCTP sent exact Janus EchoTest payload");
   }
+  if (app->is_offerer && app->janus_echo_mode &&
+      app->c11_secondary_open_sent && !app->c11_unordered_sent &&
+      reply_size == 0u && message->stream_id == c11_unordered_sid(app) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    if (c11_send_message_with_order(
+            app, message->stream_id, CNET_SCTP_WEBRTC_BINARY_PPID, 1,
+            c11_unordered_echo_payload,
+            sizeof(c11_unordered_echo_payload)) != 0) return;
+    app->c11_unordered_sent = 1;
+    TLOG_INFOF("Private C11 DCEP ACK on unordered SID {}; sent U=1 PPID 53",
+               message->stream_id);
+  }
 }
 
 static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
@@ -1330,6 +1384,21 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
       TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
+      if (message.stream_id == c11_unordered_sid(app)) {
+        if (!app->c11_secondary_open_sent || !app->c11_unordered_sent ||
+            !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
+            !message.unordered ||
+            payload_size != sizeof(c11_unordered_echo_payload) ||
+            memcmp(payload, c11_unordered_echo_payload,
+                   sizeof(c11_unordered_echo_payload)) != 0) {
+          c11_fail(app, "Janus C11 reliable-unordered echo SID, flag or bytes mismatch");
+          return;
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments and independent unordered SID returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
       if (!c11_echo_channel_ready(app, message.stream_id) ||
           !app->c11_binary_echo_pending) {
         c11_fail(app, "Janus C11 SCTP binary echo on an unacknowledged SID");
@@ -1355,9 +1424,9 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
             return;
           }
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary and 20480-byte fragmented echoes returned");
-        atomic_store(&app->completed, 1);
-        app_request_stop(app);
+        /* Do not report PASS until a second DCEP OPEN/ACK on a different,
+         * reliable-unordered SID and its exact binary echo also succeed. */
+        if (c11_open_unordered_channel(app) != 0) return;
         return;
       }
     } else {
