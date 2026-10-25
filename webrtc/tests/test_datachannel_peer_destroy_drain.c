@@ -1055,19 +1055,23 @@ static void abort_partial_delivery(turbo_dc_peer_t *peer,
   deliver_sctp_notification(peer, &event, sizeof(event));
 }
 
-static void reset_incoming_stream(turbo_dc_peer_t *peer,
-                                  sctp_assoc_t association_id,
-                                  uint16_t stream_id) {
-  uint8_t bytes[sizeof(struct sctp_stream_reset_event) + sizeof(uint16_t)];
+static void reset_streams(turbo_dc_peer_t *peer,
+                          sctp_assoc_t association_id, uint16_t flags,
+                          const uint16_t *stream_ids, size_t count) {
+  uint8_t bytes[sizeof(struct sctp_stream_reset_event) +
+                2u * sizeof(uint16_t)];
   struct sctp_stream_reset_event event;
+  size_t length = sizeof(event) + count * sizeof(uint16_t);
+  assert(count <= 2u && (count == 0u || stream_ids != NULL));
   memset(&event, 0, sizeof(event));
   event.strreset_type = SCTP_STREAM_RESET_EVENT;
-  event.strreset_flags = SCTP_STREAM_RESET_INCOMING_SSN;
-  event.strreset_length = sizeof(bytes);
+  event.strreset_flags = flags;
+  event.strreset_length = (uint32_t)length;
   event.strreset_assoc_id = association_id;
   memcpy(bytes, &event, sizeof(event));
-  memcpy(bytes + sizeof(event), &stream_id, sizeof(stream_id));
-  deliver_sctp_notification(peer, bytes, sizeof(bytes));
+  if (count > 0u)
+    memcpy(bytes + sizeof(event), stream_ids, count * sizeof(uint16_t));
+  deliver_sctp_notification(peer, bytes, length);
 }
 
 static void test_sctp_partial_delivery_reassembly(void) {
@@ -1129,14 +1133,6 @@ static void test_sctp_partial_delivery_reassembly(void) {
   assert(probe.messages == 3u && probe.last_length == 1u &&
          probe.last_byte == 'y');
 
-  deliver_webrtc_fragment(&probe, probe.sid, 14u, association_id,
-                           SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
-  reset_incoming_stream(probe.peer, association_id, probe.sid);
-  deliver_webrtc_fragment(&probe, probe.sid, 14u, association_id,
-                           SCTP_PPID_STRING, 0u, MSG_EOR, two, sizeof(two));
-  assert(probe.messages == 4u && probe.last_length == 1u &&
-         probe.last_byte == 'y');
-
   limit = (uint8_t *)malloc(SCTP_REASSEMBLY_MESSAGE_MAX);
   assert(limit != NULL);
   memset(limit, 'z', SCTP_REASSEMBLY_MESSAGE_MAX);
@@ -1147,7 +1143,7 @@ static void test_sctp_partial_delivery_reassembly(void) {
                            SCTP_PPID_STRING, 0u, MSG_EOR,
                            limit + SCTP_REASSEMBLY_MESSAGE_MAX / 2u,
                            SCTP_REASSEMBLY_MESSAGE_MAX / 2u);
-  assert(probe.messages == 5u &&
+  assert(probe.messages == 4u &&
          probe.last_length == SCTP_REASSEMBLY_MESSAGE_MAX &&
          probe.last_byte == 'z');
 
@@ -1157,7 +1153,7 @@ static void test_sctp_partial_delivery_reassembly(void) {
   deliver_webrtc_fragment(&probe, probe.sid, 16u, association_id,
                            SCTP_PPID_STRING, 0u, MSG_EOR, one, sizeof(one));
   free(limit);
-  assert(probe.messages == 5u);
+  assert(probe.messages == 4u);
   assert(turbo_dc_peer_get_error(probe.peer).code ==
          TURBO_DC_ERROR_SCTP_RECEIVE);
 
@@ -1175,6 +1171,104 @@ static void test_sctp_partial_delivery_reassembly(void) {
   assert(turbo_dc_peer_get_state(probe.peer) == TURBO_DC_STATE_FAILED);
 
   turbo_dc_channel_close(probe.channel);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+static void stream_reset_close_probe(turbo_dc_channel_t *channel,
+                                     void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  assert(dc_peer_is_on_transport_owner(probe->peer));
+  assert(channel != NULL && channel->closing && !channel->is_open);
+  ++probe->closes;
+  /* A reentrant application close is idempotent while the SCTP callback
+   * keeps the retired Channel allocation leased. */
+  turbo_dc_channel_close(channel);
+}
+
+static void test_incoming_stream_reset_closes_channels(void) {
+  static const uint8_t partial[] = {'p'};
+  const sctp_assoc_t association_id = 91u;
+  turbo_dc_config_t config = {0};
+  channel_lease_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  turbo_dc_channel_t *first;
+  turbo_dc_channel_t *second;
+  uint16_t first_id;
+  uint16_t second_id;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  first = turbo_dc_channel_create(probe.peer, "reset-first", NULL);
+  second = turbo_dc_channel_create(probe.peer, "reset-second", NULL);
+  assert(first != NULL && second != NULL);
+  first_id = turbo_dc_channel_get_id(first);
+  second_id = turbo_dc_channel_get_id(second);
+  turbo_dc_channel_set_user_data(first, &probe);
+  turbo_dc_channel_set_user_data(second, &probe);
+  turbo_dc_channel_on_close(first, stream_reset_close_probe);
+  turbo_dc_channel_on_close(second, stream_reset_close_probe);
+
+  probe.channel = first;
+  probe.sid = first_id;
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  probe.channel = second;
+  probe.sid = second_id;
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  assert(turbo_dc_channel_is_open(first));
+  assert(turbo_dc_channel_is_open(second));
+
+  /* Outgoing-only completion and denied incoming resets do not represent a
+   * peer close. They must leave the live channel published. */
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_OUTGOING_SSN, &first_id, 1u);
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_INCOMING_SSN | SCTP_STREAM_RESET_DENIED,
+                &first_id, 1u);
+  assert(probe.closes == 0u && turbo_dc_channel_is_open(first));
+
+  deliver_webrtc_fragment(&probe, first_id, 7u, association_id,
+                           SCTP_PPID_STRING, 0u, 0,
+                           partial, sizeof(partial));
+  assert(probe.peer->sctp.reassembly[0].used);
+
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_INCOMING_SSN, &first_id, 1u);
+  assert(probe.closes == 1u);
+  cmeta_mutex_lock(&probe.peer->operation_mutex);
+  for (size_t i = 0u; i < SCTP_REASSEMBLY_SLOTS; ++i)
+    assert(!probe.peer->sctp.reassembly[i].used ||
+           probe.peer->sctp.reassembly[i].stream_id != first_id);
+  assert(peer_get_channel(probe.peer, first_id) == NULL);
+  assert(!roaring_bitmap_contains(probe.peer->channel_ids, first_id));
+  assert(peer_get_channel(probe.peer, second_id) == second);
+  cmeta_mutex_unlock(&probe.peer->operation_mutex);
+
+  /* A repeated notification is callback-idempotent. RFC 6525 defines an
+   * empty successful list as all streams, so it retires the other channel. */
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_INCOMING_SSN, &first_id, 1u);
+  assert(probe.closes == 1u);
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_INCOMING_SSN, NULL, 0u);
+  assert(probe.closes == 2u);
+  cmeta_mutex_lock(&probe.peer->operation_mutex);
+  assert(peer_get_channel(probe.peer, second_id) == NULL);
+  assert(!roaring_bitmap_contains(probe.peer->channel_ids, second_id));
+  cmeta_mutex_unlock(&probe.peer->operation_mutex);
+  reset_streams(probe.peer, association_id,
+                SCTP_STREAM_RESET_INCOMING_SSN, NULL, 0u);
+  assert(probe.closes == 2u);
+
   turbo_dc_peer_destroy(probe.peer);
   turbo_dc_context_destroy(ctx);
 }
@@ -1462,6 +1556,7 @@ int main(void) {
   test_incoming_dcep_uses_full_reliability_parameter();
   test_webrtc_empty_ppid_framing();
   test_sctp_partial_delivery_reassembly();
+  test_incoming_stream_reset_closes_channels();
   test_local_dcep_text_validation();
   test_outgoing_dcep_and_prinfo_use_full_policy();
   test_sctp_callback_retains_closed_channel();

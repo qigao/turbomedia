@@ -2430,7 +2430,8 @@ size_t turbo_dc_channel_buffered_amount(turbo_dc_channel_t *channel) {
                ? query.buffered_amount : 0;
 }
 
-static void dc_channel_close_owner_impl(turbo_dc_channel_t *channel) {
+static void dc_channel_close_owner_impl_mode(turbo_dc_channel_t *channel,
+                                             int reset_outgoing) {
     turbo_dc_peer_t *peer;
     turbo_dc_close_cb on_close;
     void *user_data;
@@ -2453,10 +2454,72 @@ static void dc_channel_close_owner_impl(turbo_dc_channel_t *channel) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 
     /* Native calls and user code may reenter; never hold operation_mutex. */
-    if (peer->sctp.socket && sctp_reset_channel_stream(peer, id) != 0)
+    if (reset_outgoing && peer->sctp.socket &&
+        sctp_reset_channel_stream(peer, id) != 0)
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "stream reset failed");
     if (on_close) on_close(channel, user_data);
     dc_channel_release(channel);
+}
+
+static void dc_channel_close_owner_impl(turbo_dc_channel_t *channel) {
+    dc_channel_close_owner_impl_mode(channel, 1);
+}
+
+void dc_channel_handle_stream_reset(turbo_dc_peer_t *peer, uint16_t stream_id,
+                                    int reset_outgoing) {
+    turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
+    if (!channel) return;
+    dc_channel_close_owner_impl_mode(channel, reset_outgoing);
+    dc_channel_release(channel);
+}
+
+void dc_channel_handle_all_streams_reset(turbo_dc_peer_t *peer,
+                                         int reset_outgoing) {
+    turbo_dc_channel_t **channels;
+    size_t capacity;
+    size_t count = 0u;
+    size_t slot;
+    size_t i;
+
+    if (!peer) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    capacity = peer->channels_initialized ? hash_map_size(&peer->channels) : 0u;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (capacity == 0u) return;
+
+    channels = (turbo_dc_channel_t **)calloc(capacity, sizeof(*channels));
+    if (!channels) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                          "could not snapshot channels for all-stream reset");
+        return;
+    }
+
+    /* Snapshot every channel before invoking callbacks. A callback may create
+     * another channel, but that new generation was not part of this reset. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->channels_initialized) {
+        for (slot = 0u;
+             slot < hash_map_capacity(&peer->channels) && count < capacity;
+             ++slot) {
+            const uint16_t *id = (const uint16_t *)hash_map_key_at(
+                &peer->channels, slot);
+            turbo_dc_channel_t **entry = (turbo_dc_channel_t **)
+                hash_map_value_at(&peer->channels, slot);
+            turbo_dc_channel_t *channel = entry ? *entry : NULL;
+            if (id && channel && !channel->closing &&
+                channel->callback_refs < UINT32_MAX - 1u) {
+                ++channel->callback_refs;
+                channels[count++] = channel;
+            }
+        }
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+
+    for (i = 0u; i < count; ++i) {
+        dc_channel_close_owner_impl_mode(channels[i], reset_outgoing);
+        dc_channel_release(channels[i]);
+    }
+    free(channels);
 }
 
 static void dc_channel_close_owner_task(void *arg1, void *arg2) {
