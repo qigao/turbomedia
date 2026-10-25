@@ -133,9 +133,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
-          # Immutable Salts PR #1292 candidate; independent test-only C11 SCTP checkout.
-          # Includes RFC 8260 and full-1200-byte-PMTU peer fragment admission.
-          ref: 50410af47445cffc009333cde19acf720287323e
+          # Immutable Salts PR #1294 candidate; independent test-only C11 SCTP checkout.
+          # Includes RFC 8260 and bounded 1280-byte WebRTC peer DATA ingress.
+          ref: 1507598b98e0621f913c5f5e8e51ee982b6a4973
           path: salts-sctp-prototype
 
       - uses: ./.github/actions/setup-native-deps
