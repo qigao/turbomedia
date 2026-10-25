@@ -13,7 +13,7 @@ const NATIVE_BIN = process.env.WEBRTC_SIGNALLED_PEER_BIN || process.argv[2] ||
 const TIMEOUT = Number(process.env.PUBLIC_WEBRTC_TIMEOUT_MS || 90000);
 const EXPECT_C11_SCTP = process.env.PUBLIC_WEBRTC_EXPECT_C11_SCTP === '1';
 const PASS_MARKER = EXPECT_C11_SCTP
-  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse and negotiated PR-SCTP RTX1 echo returned'
+  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, PR-SCTP RTX1 and injected-loss FORWARD-TSN recovery returned'
   : 'PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned';
 const PAYLOAD = 'hello over signaled ICE';
 const ECHO_PREFIX = 'Janus EchoTest here! You wrote: ';
@@ -374,6 +374,9 @@ async function main() {
       c11_reused_sid_binary_hex: EXPECT_C11_SCTP ? '5343545000fe2207' : null,
       c11_pr_sctp_max_retransmits_1_echo: EXPECT_C11_SCTP,
       c11_pr_sctp_rtx1_payload_hex: EXPECT_C11_SCTP ? '505201f0007fab12' : null,
+      c11_pr_sctp_injected_loss_drops: EXPECT_C11_SCTP ? 2 : null,
+      c11_pr_sctp_forward_tsn_observed: EXPECT_C11_SCTP,
+      c11_pr_sctp_recovered_ordered_payload_hex: EXPECT_C11_SCTP ? '5245434f5600fc02' : null,
       native_exit_code: exit.code,
       sctp_backend: EXPECT_C11_SCTP ? 'salts-c11-test-only' : 'usrsctp',
       note: EXPECT_C11_SCTP
