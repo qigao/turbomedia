@@ -7,6 +7,12 @@ name: Windows media binary cache
       - 'docs/ci/windows-media-cache.md'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
+      # Changes to the locked vcpkg recipe can invalidate the *entire*
+      # Platform Build media closure, not only the RTSP IOCP subset.
+      - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
+      - 'vcpkg-overlays/**'
+      - 'vcpkg-triplets/**'
   workflow_dispatch:
     inputs:
       scope:
@@ -28,17 +34,20 @@ concurrency:
 
 jobs:
   produce:
-    name: Produce and independently restore x64-windows ${{ inputs.scope || 'rtsp-iocp' }}
+    name: Produce and independently restore x64-windows ${{ github.event_name == 'pull_request' && 'media' || inputs.scope || 'rtsp-iocp' }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
-    timeout-minutes: ${{ inputs.scope == 'media' && 180 || 20 }}
+    timeout-minutes: ${{ (github.event_name == 'pull_request' || inputs.scope == 'media') && 180 || 20 }}
     permissions:
       contents: read
       packages: write
     env:
       X_VCPKG_NUGET_ID_PREFIX: turbomedia-media
       TM_RECIPE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      TM_CACHE_SCOPE: ${{ inputs.scope || 'rtsp-iocp' }}
+      # PR recipe/tooling changes must warm the same full x64-windows closure
+      # as Platform Build's cache-only consumer. Keeping the narrower
+      # rtsp-iocp option for manual dispatch avoids unnecessary work there.
+      TM_CACHE_SCOPE: ${{ github.event_name == 'pull_request' && 'media' || inputs.scope || 'rtsp-iocp' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
