@@ -147,6 +147,13 @@ typedef struct {
   int c11_pr_timed_loss_active;
   int c11_pr_timed_recovery_sent;
   uint64_t c11_pr_timed_drop_ms;
+  /* In the test-only timed phase retain the exact first FWD-TSN packet.
+   * One control drop is permitted, then an identical retransmission is
+   * required before the private Owner releases the ordered successor. */
+  unsigned int c11_pr_forward_loss_drops;
+  unsigned int c11_pr_forward_emissions;
+  size_t c11_pr_forward_saved_size;
+  uint8_t c11_pr_forward_saved[CNET_SCTP_ASSOC_MAX_PACKET];
 #endif
 } app_state_t;
 
@@ -1102,7 +1109,7 @@ static uint32_t c11_be32(const uint8_t *p) {
          ((uint32_t)p[2] << 8u) | (uint32_t)p[3];
 }
 static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size) {
-  int drop = 0, forward = 0;
+  int drop = 0, forward = 0, drop_forward = 0;
   if (size == 0u) return 0;
   if (!packet || size > CNET_SCTP_ASSOC_MAX_PACKET) {
     c11_fail(app, "C11 SCTP packet exceeded local egress limit");
@@ -1145,6 +1152,33 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
             return -1;
           }
         }
+        if (app->c11_pr_timed_loss_active) {
+          if (header.chunk_count != 1u) {
+            c11_fail(app, "C11 timed FORWARD-TSN loss fixture rejects bundles");
+            return -1;
+          }
+          if (app->c11_pr_forward_emissions == 0u) {
+            memcpy(app->c11_pr_forward_saved, packet, size);
+            app->c11_pr_forward_saved_size = size;
+            app->c11_pr_forward_emissions = 1u;
+            app->c11_pr_forward_loss_drops = 1u;
+            drop_forward = 1;
+            TLOG_INFOF("Private C11 deliberately dropped first TIMED FORWARD-TSN for TSN {}",
+                       app->c11_pr_loss_tsn);
+          } else if (app->c11_pr_forward_emissions == 1u) {
+            if (size != app->c11_pr_forward_saved_size ||
+                memcmp(packet, app->c11_pr_forward_saved, size) != 0) {
+              c11_fail(app, "C11 timed FORWARD-TSN retransmit bytes changed");
+              return -1;
+            }
+            app->c11_pr_forward_emissions = 2u;
+            TLOG_INFOF("Private C11 TIMED FORWARD-TSN retransmission byte-identical for TSN {}",
+                       app->c11_pr_loss_tsn);
+          } else {
+            c11_fail(app, "C11 timed FORWARD-TSN exceeded one retransmission");
+            return -1;
+          }
+        }
         forward = 1;
       }
       if (chunk.type != 0u && chunk.type != 64u) continue;
@@ -1184,12 +1218,22 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
       return -1;
     }
   }
-  if (drop) return 0; /* Only in the isolated rtc_signaled_peer_c11 executable. */
+  if (drop || drop_forward) {
+    /* Both losses occur only inside rtc_signaled_peer_c11, and neither
+     * synthesizes an ACK, mutates the Association or changes its clock. */
+    return 0;
+  }
   if (dtls_test_write_application_data(app->dc_peer, packet, size) != 0) {
     c11_fail(app, "failed to write SCTP packet as authenticated DTLS application data");
     return -1;
   }
   if (forward) {
+    if (app->c11_pr_timed_loss_active &&
+        (app->c11_pr_forward_loss_drops != 1u ||
+         app->c11_pr_forward_emissions != 2u)) {
+      c11_fail(app, "C11 timed FORWARD-TSN not retransmitted after controlled loss");
+      return -1;
+    }
     app->c11_pr_forward_sent = 1;
     TLOG_INFOF("Private C11 RFC3758 FORWARD-TSN sent for abandoned TSN {}",
                app->c11_pr_loss_tsn);
@@ -1851,13 +1895,15 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
         if (!app->c11_pr_forward_sent ||
             !app->c11_pr_timed_recovery_sent ||
             app->c11_pr_loss_drops != 1 ||
+            app->c11_pr_forward_loss_drops != 1u ||
+            app->c11_pr_forward_emissions != 2u ||
             payload_size != sizeof(c11_pr_timed_recovery_payload) ||
             memcmp(payload, c11_pr_timed_recovery_payload,
                    sizeof(c11_pr_timed_recovery_payload)) != 0) {
           c11_fail(app, "Janus C11 TIMED expiry or ordered recovery mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss and TIMED 500ms expiry FORWARD-TSN ordered recovery returned");
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, TIMED 500ms expiry, lost FORWARD-TSN retransmission and ordered recovery returned");
         atomic_store(&app->completed, 1);
         app_request_stop(app);
         return;
