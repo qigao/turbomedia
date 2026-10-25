@@ -1136,6 +1136,11 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
                        chunk.value[5u]);
       tsn = c11_be32(chunk.value);
       if (sid != (app->c11_local_is_dtls_server ? 5u : 4u)) continue;
+      /* DCEP PPID 50 is never faulted. I-DATA has PPID only in a
+       * beginning (B) fragment; this test admits one-fragment PR DATA. */
+      if (chunk.type == 64u && (chunk.flags & 0x02u) == 0u) continue;
+      if (c11_be32(chunk.value + (chunk.type == 64u ? 12u : 8u)) !=
+          CNET_SCTP_WEBRTC_BINARY_PPID) continue;
       if (app->c11_pr_loss_drops == 0) app->c11_pr_loss_tsn = tsn;
       if (tsn != app->c11_pr_loss_tsn) continue;
       if (app->c11_pr_loss_drops >= 2) {
@@ -1146,6 +1151,10 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
       drop = 1;
       TLOG_INFOF("Private C11 fault injected drop #{} on PR-SCTP TSN {}",
                  app->c11_pr_loss_drops, tsn);
+    }
+    if (drop && header.chunk_count != 1u) {
+      c11_fail(app, "C11 PR-SCTP loss fixture refuses bundled control/data packet");
+      return -1;
     }
   }
   if (drop) return 0; /* Only in the isolated rtc_signaled_peer_c11 executable. */
