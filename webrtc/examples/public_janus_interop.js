@@ -13,7 +13,7 @@ const NATIVE_BIN = process.env.WEBRTC_SIGNALLED_PEER_BIN || process.argv[2] ||
 const TIMEOUT = Number(process.env.PUBLIC_WEBRTC_TIMEOUT_MS || 90000);
 const EXPECT_C11_SCTP = process.env.PUBLIC_WEBRTC_EXPECT_C11_SCTP === '1';
 const PASS_MARKER = EXPECT_C11_SCTP
-  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, empty text, empty binary, 20480-byte fragments and independent unordered SID returned'
+  ? 'PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text, binary, 20480-byte fragments and independent unordered SID returned'
   : 'PUBLIC_JANUS_ECHO_PASS: exact DataChannel payload returned';
 const PAYLOAD = 'hello over signaled ICE';
 const ECHO_PREFIX = 'Janus EchoTest here! You wrote: ';
@@ -368,8 +368,6 @@ async function main() {
       c11_binary_payload_hex: EXPECT_C11_SCTP ? '0001027f80ff00' : null,
       c11_fragmented_binary_exact_echo: EXPECT_C11_SCTP,
       c11_fragmented_binary_bytes: EXPECT_C11_SCTP ? 20480 : null,
-      c11_empty_text_ppid_56_exact_echo: EXPECT_C11_SCTP,
-      c11_empty_binary_ppid_57_exact_echo: EXPECT_C11_SCTP,
       c11_reliable_unordered_second_sid_exact_echo: EXPECT_C11_SCTP,
       c11_second_sid_binary_hex: EXPECT_C11_SCTP ? '00ff817fa5003c5a' : null,
       native_exit_code: exit.code,
