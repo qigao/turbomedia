@@ -154,6 +154,10 @@ typedef struct {
   unsigned int c11_pr_forward_emissions;
   size_t c11_pr_forward_saved_size;
   uint8_t c11_pr_forward_saved[CNET_SCTP_ASSOC_MAX_PACKET];
+  int c11_pr_unordered_timed_open_sent;
+  int c11_pr_unordered_timed_payload_sent;
+  int c11_pr_unordered_timed_loss_active;
+  int c11_pr_unordered_timed_recovery_sent;
 #endif
 } app_state_t;
 
@@ -1143,7 +1147,8 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
           c11_fail(app, "C11 PR-SCTP FORWARD-TSN before expected loss budget");
           return -1;
         }
-        if (app->c11_pr_timed_loss_active) {
+        if (app->c11_pr_timed_loss_active ||
+            app->c11_pr_unordered_timed_loss_active) {
           const uint64_t now = c11_clock(app);
           if (!app->c11_pr_timed_drop_ms ||
               now < app->c11_pr_timed_drop_ms ||
@@ -1179,6 +1184,16 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
             return -1;
           }
         }
+        if (app->c11_pr_unordered_timed_loss_active) {
+          const uint16_t sid = c11_pr_unordered_timed_sid(app);
+          if (chunk.type != 194u || chunk.value_size < 12u ||
+              chunk.value[4u] != (uint8_t)(sid >> 8u) ||
+              chunk.value[5u] != (uint8_t)sid ||
+              chunk.value[6u] != 0u || chunk.value[7u] != 1u) {
+            c11_fail(app, "C11 unordered TIMED expected RFC8260 I-FORWARD-TSN MID entry");
+            return -1;
+          }
+        }
         forward = 1;
       }
       if (chunk.type != 0u && chunk.type != 64u) continue;
@@ -1190,6 +1205,11 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
                        chunk.value[5u]);
       tsn = c11_be32(chunk.value);
       if (sid != app->c11_pr_fault_sid) continue;
+      if (app->c11_pr_unordered_timed_loss_active &&
+          (chunk.flags & 0x04u) == 0u) {
+        c11_fail(app, "C11 unordered TIMED dropped DATA without SCTP U flag");
+        return -1;
+      }
       /* DCEP PPID 50 is never faulted. I-DATA has PPID only in a
        * beginning (B) fragment; this test admits one-fragment PR DATA. */
       if (chunk.type == 64u && (chunk.flags & 0x02u) == 0u) continue;
@@ -1203,7 +1223,8 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
         return -1;
       }
       ++app->c11_pr_loss_drops;
-      if (app->c11_pr_timed_loss_active &&
+      if ((app->c11_pr_timed_loss_active ||
+           app->c11_pr_unordered_timed_loss_active) &&
           app->c11_pr_loss_drops == 1 &&
           !app->c11_pr_timed_drop_ms) {
         c11_fail(app, "C11 timed DATA admission timestamp not captured");
@@ -1304,7 +1325,7 @@ static int c11_send_pr_rtx0(app_state_t *app, uint16_t sid,
  * admission under bounded CWND/RWND pressure, never the lost DATA itself. */
 static int c11_send_pr_timed(app_state_t *app, uint16_t sid,
                             const void *payload, size_t payload_size,
-                            int allow_backpressure) {
+                            int unordered, int allow_backpressure) {
   const cnet_sctp_data_reliability policy = {
       CNET_SCTP_DATA_RELIABILITY_TIMED, C11_PR_TIMED_LIFETIME_MS
   };
@@ -1315,11 +1336,13 @@ static int c11_send_pr_timed(app_state_t *app, uint16_t sid,
   /* Capture the EXACT engine-admission time used for expiry, before wire
    * serialization. Sampling again at the drop hook can be 1ms later and
    * falsely reject a correctly timed FORWARD-TSN on a tick boundary. */
-  if (app->c11_pr_timed_loss_active && app->c11_pr_loss_drops == 0)
+  if ((app->c11_pr_timed_loss_active ||
+       app->c11_pr_unordered_timed_loss_active) &&
+      app->c11_pr_loss_drops == 0)
     app->c11_pr_timed_drop_ms = now;
   status = cnet_sctp_assoc_send_message_pr(
       &app->c11_assoc, now, sid, CNET_SCTP_WEBRTC_BINARY_PPID,
-      0, &policy, payload, payload_size,
+      unordered, &policy, payload, payload_size,
       packet, sizeof(packet), &packet_size);
   if (allow_backpressure &&
       (status == CNET_SCTP_ASSOC_CAPACITY ||
@@ -1347,6 +1370,18 @@ static uint16_t c11_pr_zero_sid(const app_state_t *app) {
 static uint16_t c11_pr_timed_sid(const app_state_t *app) {
   return (uint16_t)(c11_local_sid(app) + 8u);
 }
+static uint16_t c11_pr_unordered_timed_sid(const app_state_t *app) {
+  return (uint16_t)(c11_local_sid(app) + 10u);
+}
+static const uint8_t c11_pr_unordered_timed_echo_payload[] = {
+    0x55u, 0x54u, 0x49u, 0x4du, 0x45u, 0x00u, 0x82u, 0x20u
+};
+static const uint8_t c11_pr_unordered_timed_lost_payload[] = {
+    0x55u, 0x4cu, 0x4fu, 0x53u, 0x54u, 0x00u, 0x82u, 0xa1u
+};
+static const uint8_t c11_pr_unordered_timed_recovery_payload[] = {
+    0x55u, 0x52u, 0x45u, 0x43u, 0x4fu, 0x00u, 0x82u, 0xa2u
+};
 static const uint8_t c11_pr_timed_echo_payload[] = {
     0x54u, 0x49u, 0x4du, 0x45u, 0x44u, 0x00u, 0x93u, 0x16u
 };
@@ -1577,6 +1612,45 @@ static int c11_open_pr_timed_channel(app_state_t *app) {
   return 0;
 }
 
+/* Separate DTLS-role-correct SID for partial-reliable UNORDERED delivery.
+ * This intentionally requires RFC8260 I-DATA/I-FORWARD, beyond the prior
+ * ordered TIMED and reliable-unordered test variants. */
+static int c11_open_pr_unordered_timed_channel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  const uint16_t sid = c11_pr_unordered_timed_sid(app);
+  cnet_sctp_dcep_status status;
+  if (!app->c11_pr_timed_recovery_sent ||
+      !app->c11_pr_forward_sent ||
+      app->c11_pr_forward_loss_drops != 1u ||
+      app->c11_pr_forward_emissions != 2u ||
+      app->c11_pr_unordered_timed_open_sent ||
+      !app->c11_assoc.peer_forward_tsn_supported ||
+      !app->c11_assoc.peer_interleaving_supported ||
+      !app->c11_assoc.data.config.interleaving_supported ||
+      sid >= app->c11_dcep.streams) {
+    c11_fail(app, "C11 unordered TIMED channel premature or no I-DATA negotiation");
+    return -1;
+  }
+  /* The preceding ordered TIMED/FWD retransmission already proved its own
+   * complete echo. Disable its fault filter before sending a new DCEP OPEN. */
+  app->c11_pr_loss_active = 0;
+  app->c11_pr_timed_loss_active = 0;
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x82u, 0u,
+                              C11_PR_TIMED_LIFETIME_MS,
+                              "pr-utimed", sizeof("pr-utimed") - 1u,
+                              NULL, 0u, open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 unordered TIMED 500ms DCEP OPEN rejected");
+    return -1;
+  }
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
+                       open, open_size) != 0) return -1;
+  app->c11_pr_unordered_timed_open_sent = 1;
+  TLOG_INFOF("Private C11 unordered TIMED 500ms DCEP OPEN on SID {}", sid);
+  return 0;
+}
+
 static int c11_drain_reset_events(app_state_t *app) {
   unsigned int i;
   for (i = 0u; i < 2u * CNET_SCTP_DCEP_STREAMS; ++i) {
@@ -1778,10 +1852,23 @@ static void c11_handle_dcep(app_state_t *app,
       cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
     if (c11_send_pr_timed(app, message->stream_id,
                           c11_pr_timed_echo_payload,
-                          sizeof(c11_pr_timed_echo_payload), 0) != 0)
+                          sizeof(c11_pr_timed_echo_payload), 0, 0) != 0)
       return;
     app->c11_pr_timed_payload_sent = 1;
     TLOG_INFOF("Private C11 DCEP TIMED SID {} ACK; nominal PPID53 sent",
+               message->stream_id);
+  }
+  if (app->is_offerer && app->janus_echo_mode &&
+      app->c11_pr_unordered_timed_open_sent &&
+      !app->c11_pr_unordered_timed_payload_sent && reply_size == 0u &&
+      message->stream_id == c11_pr_unordered_timed_sid(app) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    if (c11_send_pr_timed(app, message->stream_id,
+                          c11_pr_unordered_timed_echo_payload,
+                          sizeof(c11_pr_unordered_timed_echo_payload),
+                          1, 0) != 0) return;
+    app->c11_pr_unordered_timed_payload_sent = 1;
+    TLOG_INFOF("Private C11 unordered TIMED 500ms SID {} ACK; U=1 PPID53 sent",
                message->stream_id);
   }
 }
@@ -1860,6 +1947,52 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
       TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
+      if (message.stream_id == c11_pr_unordered_timed_sid(app)) {
+        if (!app->c11_pr_unordered_timed_open_sent ||
+            !app->c11_pr_unordered_timed_payload_sent ||
+            !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
+            !message.unordered) {
+          c11_fail(app, "Janus C11 unordered TIMED SID/U/DCEP mismatch");
+          return;
+        }
+        if (!app->c11_pr_unordered_timed_loss_active) {
+          if (payload_size != sizeof(c11_pr_unordered_timed_echo_payload) ||
+              memcmp(payload, c11_pr_unordered_timed_echo_payload,
+                     sizeof(c11_pr_unordered_timed_echo_payload)) != 0) {
+            c11_fail(app, "Janus C11 unordered TIMED nominal echo mismatch");
+            return;
+          }
+          app->c11_pr_unordered_timed_loss_active = 1;
+          app->c11_pr_loss_drops = 0;
+          app->c11_pr_loss_budget = 1u;
+          app->c11_pr_loss_tsn = 0u;
+          app->c11_pr_fault_sid = message.stream_id;
+          app->c11_pr_forward_sent = 0;
+          app->c11_pr_timed_drop_ms = 0u;
+          app->c11_pr_loss_active = 1;
+          if (c11_send_pr_timed(app, message.stream_id,
+                                c11_pr_unordered_timed_lost_payload,
+                                sizeof(c11_pr_unordered_timed_lost_payload),
+                                1, 0) != 0 || app->c11_pr_loss_drops != 1)
+            return;
+          TLOG_INFOF("Private C11 unordered TIMED 500ms loss SID {}, awaiting I-FORWARD",
+                     message.stream_id);
+          return;
+        }
+        if (!app->c11_pr_forward_sent ||
+            !app->c11_pr_unordered_timed_recovery_sent ||
+            app->c11_pr_loss_drops != 1 ||
+            payload_size != sizeof(c11_pr_unordered_timed_recovery_payload) ||
+            memcmp(payload, c11_pr_unordered_timed_recovery_payload,
+                   sizeof(c11_pr_unordered_timed_recovery_payload)) != 0) {
+          c11_fail(app, "Janus C11 unordered TIMED I-FORWARD recovery mismatch");
+          return;
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, ordered TIMED lost-FORWARD retransmission and unordered TIMED I-FORWARD-TSN recovery returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
       if (message.stream_id == c11_pr_timed_sid(app)) {
         if (!app->c11_pr_timed_open_sent ||
             !app->c11_pr_timed_payload_sent ||
@@ -1885,7 +2018,7 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           app->c11_pr_loss_active = 1;
           if (c11_send_pr_timed(app, message.stream_id,
                                 c11_pr_timed_lost_payload,
-                                sizeof(c11_pr_timed_lost_payload), 0) != 0 ||
+                                sizeof(c11_pr_timed_lost_payload), 0, 0) != 0 ||
               app->c11_pr_loss_drops != 1)
             return;
           TLOG_INFOF("Private C11 TIMED 500ms loss on SID {}; awaiting expiry",
@@ -1903,9 +2036,9 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           c11_fail(app, "Janus C11 TIMED expiry or ordered recovery mismatch");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, RTX1+RTX0 loss, TIMED 500ms expiry, lost FORWARD-TSN retransmission and ordered recovery returned");
-        atomic_store(&app->completed, 1);
-        app_request_stop(app);
+        /* The full ordered TIMED/FWD-loss result is a prerequisite. Now
+         * extend it to a distinct partial-reliable unordered DCEP channel. */
+        if (c11_open_pr_unordered_timed_channel(app) != 0) return;
         return;
       }
       if (message.stream_id == c11_pr_zero_sid(app)) {
@@ -2133,12 +2266,29 @@ static void c11_poll_owner_task(void *arg1, void *arg2) {
       !app->c11_assoc.data.forward_active) {
     const int sent = c11_send_pr_timed(app, c11_pr_timed_sid(app),
                           c11_pr_timed_recovery_payload,
-                          sizeof(c11_pr_timed_recovery_payload), 1);
+                          sizeof(c11_pr_timed_recovery_payload), 0, 1);
     if (sent < 0) return;
     if (sent == 0) {
       app->c11_pr_timed_recovery_sent = 1;
       TLOG_INFOF("Private C11 TIMED FORWARD-TSN ACKed; ordered successor sent on SID {}",
                  c11_pr_timed_sid(app));
+    }
+  }
+  /* Post-expiry unordered successor is submitted only after the real peer
+   * cumulatively ACKs its RFC8260 I-FORWARD. The U bit is preserved. */
+  if (app->c11_pr_unordered_timed_loss_active &&
+      app->c11_pr_forward_sent &&
+      !app->c11_pr_unordered_timed_recovery_sent &&
+      !app->c11_assoc.data.forward_active) {
+    const int sent = c11_send_pr_timed(app, c11_pr_unordered_timed_sid(app),
+                           c11_pr_unordered_timed_recovery_payload,
+                           sizeof(c11_pr_unordered_timed_recovery_payload),
+                           1, 1);
+    if (sent < 0) return;
+    if (sent == 0) {
+      app->c11_pr_unordered_timed_recovery_sent = 1;
+      TLOG_INFOF("Private C11 unordered TIMED I-FORWARD ACKed; U=1 successor sent on SID {}",
+                 c11_pr_unordered_timed_sid(app));
     }
   }
   if (app->c11_reset_requested && !app->c11_reset_sent) {
