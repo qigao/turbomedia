@@ -117,6 +117,7 @@ typedef struct {
   int c11_dcep_initialized;
   int c11_dcep_open_sent;
   int c11_local_is_dtls_server;
+  int c11_binary_echo_pending;
 #endif
 } app_state_t;
 
@@ -1089,6 +1090,16 @@ static uint16_t c11_local_sid(const app_state_t *app) {
   return app->c11_local_is_dtls_server ? 1u : 0u;
 }
 
+static const uint8_t c11_binary_echo_payload[] = {
+    0x00u, 0x01u, 0x02u, 0x7fu, 0x80u, 0xffu, 0x00u
+};
+
+static int c11_echo_channel_ready(const app_state_t *app, uint16_t sid) {
+  return app->c11_dcep_open_sent && atomic_load(&app->message_sent) &&
+         sid == c11_local_sid(app) &&
+         cnet_sctp_dcep_ready(&app->c11_dcep, sid);
+}
+
 static int c11_open_datachannel(app_state_t *app) {
   uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
   size_t open_size = 0u;
@@ -1264,22 +1275,40 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
                app->is_offerer && app->janus_echo_mode) {
       static const char prefix[] = "Janus EchoTest here! You wrote: ";
       static const char expected[] = "hello over signaled ICE";
-      /* The exact echo must be on the channel we opened, and after its ACK
-       * and our text send. An arbitrary valid-looking SCTP DATA message is
-       * not proof of the local DCEP handshake. */
-      if (!app->c11_dcep_open_sent || !atomic_load(&app->message_sent) ||
-          message.stream_id != c11_local_sid(app) ||
-          !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id)) {
-        c11_fail(app, "Janus C11 SCTP echo arrived on unacknowledged or wrong SID");
+      /* Require an ACKed local DCEP channel and the exact text payload.
+       * A second text reply before binary must fail, not complete the test. */
+      if (!c11_echo_channel_ready(app, message.stream_id) ||
+          app->c11_binary_echo_pending) {
+        c11_fail(app, "Janus C11 text echo arrived on wrong SID or duplicate phase");
         return;
       }
       if (payload_size != sizeof(prefix) - 1u + sizeof(expected) - 1u ||
           memcmp(payload, prefix, sizeof(prefix) - 1u) != 0 ||
           memcmp(payload + sizeof(prefix) - 1u, expected, sizeof(expected) - 1u) != 0) {
-        c11_fail(app, "Janus C11 SCTP echo payload did not match exactly");
+        c11_fail(app, "Janus C11 SCTP text echo payload did not match exactly");
         return;
       }
-      puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact DataChannel payload returned");
+      /* Janus EchoTest replies to binary messages byte-for-byte, unlike the
+       * prefixed text reply. Verify a binary payload with NUL/high bytes on
+       * the same negotiated SID before emitting any C11 success marker. */
+      app->c11_binary_echo_pending = 1;
+      if (c11_send_message(app, message.stream_id,
+                           CNET_SCTP_WEBRTC_BINARY_PPID,
+                           c11_binary_echo_payload,
+                           sizeof(c11_binary_echo_payload)) != 0)
+        return;
+      TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
+    } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
+               app->is_offerer && app->janus_echo_mode) {
+      if (!c11_echo_channel_ready(app, message.stream_id) ||
+          !app->c11_binary_echo_pending ||
+          payload_size != sizeof(c11_binary_echo_payload) ||
+          memcmp(payload, c11_binary_echo_payload,
+                 sizeof(c11_binary_echo_payload)) != 0) {
+        c11_fail(app, "Janus C11 SCTP binary echo SID or bytes did not match");
+        return;
+      }
+      puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: exact text and binary DataChannel payloads returned");
       atomic_store(&app->completed, 1);
       app_request_stop(app);
       return;
