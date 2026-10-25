@@ -136,6 +136,12 @@ typedef struct {
   int c11_pr_forward_sent;
   int c11_pr_recovery_sent;
   uint32_t c11_pr_loss_tsn;
+  uint16_t c11_pr_fault_sid;
+  unsigned int c11_pr_loss_budget;
+  int c11_pr_zero_open_sent;
+  int c11_pr_zero_payload_sent;
+  int c11_pr_zero_loss_active;
+  int c11_pr_zero_recovery_sent;
 #endif
 } app_state_t;
 
@@ -1121,7 +1127,8 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
         if (chunk.value_size < 4u ||
             (uint32_t)(advanced - app->c11_pr_loss_tsn) >=
                 UINT32_C(0x80000000) ||
-            app->c11_pr_loss_drops != 2) {
+            (unsigned int)app->c11_pr_loss_drops !=
+                app->c11_pr_loss_budget) {
           c11_fail(app, "C11 PR-SCTP FORWARD-TSN before two permitted loss drops");
           return -1;
         }
@@ -1135,7 +1142,7 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
       sid = (uint16_t)(((uint16_t)chunk.value[4u] << 8u) |
                        chunk.value[5u]);
       tsn = c11_be32(chunk.value);
-      if (sid != (app->c11_local_is_dtls_server ? 5u : 4u)) continue;
+      if (sid != app->c11_pr_fault_sid) continue;
       /* DCEP PPID 50 is never faulted. I-DATA has PPID only in a
        * beginning (B) fragment; this test admits one-fragment PR DATA. */
       if (chunk.type == 64u && (chunk.flags & 0x02u) == 0u) continue;
@@ -1143,8 +1150,9 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
           CNET_SCTP_WEBRTC_BINARY_PPID) continue;
       if (app->c11_pr_loss_drops == 0) app->c11_pr_loss_tsn = tsn;
       if (tsn != app->c11_pr_loss_tsn) continue;
-      if (app->c11_pr_loss_drops >= 2) {
-        c11_fail(app, "C11 PR-SCTP RTX1 exceeded its negotiated retransmit budget");
+      if ((unsigned int)app->c11_pr_loss_drops >=
+          app->c11_pr_loss_budget) {
+        c11_fail(app, "C11 PR-SCTP exceeded its negotiated retransmit budget");
         return -1;
       }
       ++app->c11_pr_loss_drops;
@@ -1211,6 +1219,24 @@ static int c11_send_pr_rtx1(app_state_t *app, uint16_t sid,
   }
   return c11_send_packet(app, packet, packet_size);
 }
+static int c11_send_pr_rtx0(app_state_t *app, uint16_t sid,
+                           const void *payload, size_t payload_size) {
+  const cnet_sctp_data_reliability policy = {
+      CNET_SCTP_DATA_RELIABILITY_RETRANSMITS, 0u
+  };
+  uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
+  size_t packet_size = 0u;
+  cnet_sctp_assoc_status status = cnet_sctp_assoc_send_message_pr(
+      &app->c11_assoc, c11_clock(app), sid, CNET_SCTP_WEBRTC_BINARY_PPID,
+      0, &policy, payload, payload_size, packet, sizeof(packet),
+      &packet_size);
+  if (status != CNET_SCTP_ASSOC_OK || packet_size == 0u) {
+    TLOG_ERRORF("C11 PR-SCTP RTX0 send refused status={}", (int)status);
+    c11_fail(app, "C11 SCTP PR-SCTP RTX0 data admission rejected");
+    return -1;
+  }
+  return c11_send_packet(app, packet, packet_size);
+}
 static uint16_t c11_local_sid(const app_state_t *app) {
   return app->c11_local_is_dtls_server ? 1u : 0u;
 }
@@ -1220,6 +1246,18 @@ static uint16_t c11_unordered_sid(const app_state_t *app) {
 static uint16_t c11_pr_rtx_sid(const app_state_t *app) {
   return (uint16_t)(c11_local_sid(app) + 4u);
 }
+static uint16_t c11_pr_zero_sid(const app_state_t *app) {
+  return (uint16_t)(c11_local_sid(app) + 6u);
+}
+static const uint8_t c11_pr_zero_echo_payload[] = {
+    0x50u, 0x52u, 0x00u, 0xf0u, 0x30u, 0x00u, 0x5au, 0x19u
+};
+static const uint8_t c11_pr_zero_lost_payload[] = {
+    0xd0u, 0x00u, 0x00u, 0xf0u, 0xabu, 0xceu, 0x22u, 0x11u
+};
+static const uint8_t c11_pr_zero_recovery_payload[] = {
+    0x4eu, 0x4fu, 0x52u, 0x54u, 0x58u, 0x00u, 0xf1u, 0x03u
+};
 static const uint8_t c11_pr_rtx_echo_payload[] = {
     0x50u, 0x52u, 0x01u, 0xf0u, 0x00u, 0x7fu, 0xabu, 0x12u
 };
@@ -1369,6 +1407,37 @@ static int c11_open_pr_rtx_channel(app_state_t *app) {
                        open, open_size) != 0) return -1;
   app->c11_pr_rtx_open_sent = 1;
   TLOG_INFOF("Private C11 PR-SCTP DCEP RTX1 OPEN sent on SID {}", sid);
+  return 0;
+}
+
+static int c11_open_pr_zero_channel(app_state_t *app) {
+  uint8_t open[CNET_SCTP_DCEP_OPEN_MAX];
+  size_t open_size = 0u;
+  const uint16_t sid = c11_pr_zero_sid(app);
+  cnet_sctp_dcep_status status;
+  if (!app->c11_pr_recovery_sent || !app->c11_pr_forward_sent ||
+      app->c11_pr_loss_drops != 2 || app->c11_pr_zero_open_sent ||
+      !app->c11_assoc.peer_forward_tsn_supported ||
+      !app->c11_assoc.data.config.forward_tsn_supported ||
+      sid >= app->c11_dcep.streams) {
+    c11_fail(app, "C11 RTX0 DCEP OPEN before RTX1 proof or missing capability");
+    return -1;
+  }
+  /* RFC 8832 0x01 + 0: ordered channel with zero retransmission allowance.
+   * A separate SID prevents mixing the previously negotiated RTX1 policy. */
+  status = cnet_sctp_dcep_open(&app->c11_dcep, sid, 0x01u, 0u, 0u,
+                              "pr-rtx0", sizeof("pr-rtx0") - 1u,
+                              NULL, 0u, open, sizeof(open), &open_size);
+  if (status != CNET_SCTP_DCEP_OK || open_size == 0u) {
+    c11_fail(app, "C11 PR-SCTP RTX0 DCEP OPEN rejected");
+    return -1;
+  }
+  /* Disable the previous SID's test-only fault filter before DCEP OPEN. */
+  app->c11_pr_loss_active = 0;
+  if (c11_send_message(app, sid, CNET_SCTP_DCEP_PPID,
+                       open, open_size) != 0) return -1;
+  app->c11_pr_zero_open_sent = 1;
+  TLOG_INFOF("Private C11 PR-SCTP RTX0 DCEP OPEN sent on SID {}", sid);
   return 0;
 }
 
@@ -1556,6 +1625,17 @@ static void c11_handle_dcep(app_state_t *app,
     TLOG_INFOF("Private C11 PR-SCTP RTX1 ACK on SID {}; sent ordered PPID 53",
                message->stream_id);
   }
+  if (app->is_offerer && app->janus_echo_mode &&
+      app->c11_pr_zero_open_sent && !app->c11_pr_zero_payload_sent &&
+      reply_size == 0u && message->stream_id == c11_pr_zero_sid(app) &&
+      cnet_sctp_dcep_ready(&app->c11_dcep, message->stream_id)) {
+    if (c11_send_pr_rtx0(app, message->stream_id,
+                         c11_pr_zero_echo_payload,
+                         sizeof(c11_pr_zero_echo_payload)) != 0) return;
+    app->c11_pr_zero_payload_sent = 1;
+    TLOG_INFOF("Private C11 PR-SCTP RTX0 ACK on SID {}; sent ordered PPID 53",
+               message->stream_id);
+  }
 }
 
 static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
@@ -1632,6 +1712,54 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
       TLOG_INFO("Private C11 SCTP exact text echo received; binary PPID 53 sent");
     } else if (message.ppid == CNET_SCTP_WEBRTC_BINARY_PPID &&
                app->is_offerer && app->janus_echo_mode) {
+      if (message.stream_id == c11_pr_zero_sid(app)) {
+        if (!app->c11_pr_zero_open_sent || !app->c11_pr_zero_payload_sent ||
+            !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
+            message.unordered) {
+          c11_fail(app, "Janus C11 RTX0 SID/ordered/DCEP mismatch");
+          return;
+        }
+        if (!app->c11_pr_zero_loss_active) {
+          if (payload_size != sizeof(c11_pr_zero_echo_payload) ||
+              memcmp(payload, c11_pr_zero_echo_payload,
+                     sizeof(c11_pr_zero_echo_payload)) != 0) {
+            c11_fail(app, "Janus C11 PR-SCTP RTX0 nominal echo mismatch");
+            return;
+          }
+          app->c11_pr_zero_loss_active = 1;
+          app->c11_pr_loss_drops = 0;
+          app->c11_pr_loss_budget = 1u;
+          app->c11_pr_loss_tsn = 0u;
+          app->c11_pr_fault_sid = message.stream_id;
+          app->c11_pr_forward_sent = 0;
+          app->c11_pr_loss_active = 1;
+          if (c11_send_pr_rtx0(app, message.stream_id,
+                               c11_pr_zero_lost_payload,
+                               sizeof(c11_pr_zero_lost_payload)) != 0)
+            return;
+          if (app->c11_pr_loss_drops != 1 ||
+              c11_send_pr_rtx0(app, message.stream_id,
+                               c11_pr_zero_recovery_payload,
+                               sizeof(c11_pr_zero_recovery_payload)) != 0)
+            return;
+          app->c11_pr_zero_recovery_sent = 1;
+          TLOG_INFOF("Private C11 RTX0 loss fixture armed on SID {}; ordered successor sent",
+                     message.stream_id);
+          return;
+        }
+        if (!app->c11_pr_zero_recovery_sent ||
+            !app->c11_pr_forward_sent || app->c11_pr_loss_drops != 1 ||
+            payload_size != sizeof(c11_pr_zero_recovery_payload) ||
+            memcmp(payload, c11_pr_zero_recovery_payload,
+                   sizeof(c11_pr_zero_recovery_payload)) != 0) {
+          c11_fail(app, "Janus C11 RTX0 abandoned DATA leaked or recovery mismatch");
+          return;
+        }
+        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, PR-SCTP RTX1+RTX0 injected-loss FORWARD-TSN ordered recovery returned");
+        atomic_store(&app->completed, 1);
+        app_request_stop(app);
+        return;
+      }
       if (message.stream_id == c11_pr_rtx_sid(app)) {
         if (!app->c11_pr_rtx_open_sent || !app->c11_pr_rtx_payload_sent ||
             !cnet_sctp_dcep_ready(&app->c11_dcep, message.stream_id) ||
@@ -1649,6 +1777,10 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           /* Reuse this negotiated maxRetransmits=1 channel for one controlled
            * two-packet loss. The following distinct RTX1 DATA is NOT dropped,
            * and cannot be delivered in order until Janus processes FWD-TSN. */
+          app->c11_pr_fault_sid = message.stream_id;
+          app->c11_pr_loss_budget = 2u;
+          app->c11_pr_loss_drops = 0;
+          app->c11_pr_forward_sent = 0;
           app->c11_pr_loss_active = 1;
           if (c11_send_pr_rtx1(app, message.stream_id,
                                c11_pr_lost_payload,
@@ -1672,9 +1804,9 @@ static void c11_on_dtls_application_data(turbo_dc_peer_t *peer,
           c11_fail(app, "Janus C11 PR-SCTP abandoned DATA leaked or ordered recovery failed");
           return;
         }
-        puts("PUBLIC_JANUS_C11_SCTP_ECHO_PASS: text, binary, 20480-byte fragments, unordered, RFC6525 reset/reuse, PR-SCTP RTX1 and injected-loss FORWARD-TSN recovery returned");
-        atomic_store(&app->completed, 1);
-        app_request_stop(app);
+        /* First prove the RTX1 loss/recovery independently, then transition
+         * to a NEW DCEP RTX0 SID without weakening the prior assertions. */
+        if (c11_open_pr_zero_channel(app) != 0) return;
         return;
       }
       if (message.stream_id == c11_unordered_sid(app)) {
