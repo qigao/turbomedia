@@ -1185,7 +1185,10 @@ static int c11_send_packet(app_state_t *app, const uint8_t *packet, size_t size)
           }
         }
         if (app->c11_pr_unordered_timed_loss_active) {
-          const uint16_t sid = c11_pr_unordered_timed_sid(app);
+          /* The fault SID was admitted and fixed before this hook; unlike
+           * c11_pr_unordered_timed_sid() it is already available here,
+           * before the later helper definitions in this C11 translation. */
+          const uint16_t sid = app->c11_pr_fault_sid;
           if (chunk.type != 194u || chunk.value_size < 12u ||
               chunk.value[4u] != (uint8_t)(sid >> 8u) ||
               chunk.value[5u] != (uint8_t)sid ||
