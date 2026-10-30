@@ -116,7 +116,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
   if(TEST_NAME STREQUAL "test_encoder")
-    target_include_directories(${TEST_TARGET_NAME} PRIVATE ${STB_INCLUDE_DIR})
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${STB_INCLUDE_DIR}
+      ${PROJECT_SOURCE_DIR}/encoder/src)
   endif()
   
   # M15d: desktop-only real CNet RTSP/RFC2250 MPEG-2 RTP -> bounded

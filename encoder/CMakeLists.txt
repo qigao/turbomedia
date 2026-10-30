@@ -3,6 +3,7 @@
 # Both dependencies are already required by the parent TurboMedia project.
 add_library(turbo_media_encoder SHARED
   src/turbo_media_encoder_image.c
+  src/turbo_media_webp_xmp.c
   src/turbo_media_encoder_video.c)
 turbo_media_configure_component(turbo_media_encoder Encoder)
 target_include_directories(turbo_media_encoder

@@ -34,9 +34,16 @@ has an alternate runtime fallback provider.
 
 PNG preserves native `parameters` tEXt and JPEG the sd-style `parameters`
 COM marker. These additions are bounded and tested by decoding the resulting
-image. **Not migration-ready for sd yet:** WebP XMP metadata embedding
-is not implemented; nonempty WebP metadata explicitly fails
-`TM_ENCODER_EUNSUPPORTED` before writing bytes.
+image. WebP XMP is now written by TurboMedia into a validated
+extended RIFF/VP8X still image. The WebP source must be an available real
+FFmpeg WebP codec; callers supply complete UTF-8 XMP XML, and the internal
+RIFF rewrite rejects duplicate XMP, animation, malformed input, unsupported
+chunks, and over-capacity metadata without selecting a fallback.
+The in-repo RIFF tests run even on SDKs without an FFmpeg WebP encoder.
+
+**Still not sd migration-ready:** a real WebP encode+XMP test on a platform
+with that codec enabled, audio+video mux, AVI/animated WebP compatibility,
+and platform SDK qualification remain open. No existing sd runtime changes.
 
 The same versioned C11 Encoder now includes a first **silent VP8/WebM**
 one-shot media path: borrowed raw frame arrays are converted to I420, encoded

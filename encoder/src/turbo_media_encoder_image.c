@@ -1,4 +1,5 @@
 #include "turbo_media_encoder.h"
+#include "turbo_media_webp_xmp.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
@@ -127,8 +128,20 @@ static tm_encoder_status tm_encoder_emit_metadata(
 
     if (image->metadata_bytes == 0)
         return tm_encoder_emit(sink, payload, payload_size);
-    if (image->output_format == TM_ENCODER_IMAGE_WEBP)
-        return TM_ENCODER_EUNSUPPORTED;
+    if (image->output_format == TM_ENCODER_IMAGE_WEBP) {
+        size_t wrapped = 0;
+        /* The caller supplies ready-to-store XMP XML. TurboMedia validates
+         * and constructs the RIFF/VP8X/XMP container itself, with no second
+         * encoder or unbounded metadata buffer. */
+        result = tm_encoder_webp_wrap_xmp(
+            payload, payload_size, image->width, image->height,
+            metadata, image->metadata_bytes,
+            sink->max_bytes - sink->written,
+            sink->write, sink->user, &wrapped);
+        if (result == TM_ENCODER_OK)
+            sink->written += wrapped;
+        return result;
+    }
     if (image->output_format == TM_ENCODER_IMAGE_JPEG) {
         size_t jpeg_length;
         if (payload_size < 4 || payload[0] != 0xff || payload[1] != 0xd8 ||
@@ -356,12 +369,11 @@ tm_encoder_status tm_encoder_image_encode(
         options->height > TM_ENCODER_MAX_IMAGE_SIDE ||
         options->quality < 1u || options->quality > 100u)
         return TM_ENCODER_EINVAL;
-    /* Explicitly fail unsupported metadata before any sink call.
-     * PNG tEXt and JPEG COM are embedded as original sd "parameters".
-     * WebP XMP needs the owned RIFF/VP8X mux implementation before use. */
+    /* PNG/JPEG receive the caller-prepared parameters text; WebP receives
+     * caller-prepared XMP XML. Reject invalid embedded NUL and absent bytes,
+     * but never silently omit metadata or swap to another codec provider. */
     if (options->metadata_bytes &&
         (!options->metadata_utf8 ||
-         options->output_format == TM_ENCODER_IMAGE_WEBP ||
          memchr(options->metadata_utf8, '\0', options->metadata_bytes)))
         return TM_ENCODER_EUNSUPPORTED;
 

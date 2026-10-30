@@ -55,19 +55,24 @@ typedef struct tm_encoder_image_v1 {
  * the caller (the sink may already have received an incomplete prefix). */
 typedef int (*tm_encoder_write_fn)(void *user, const uint8_t *bytes, size_t size);
 
-/* Exact selected FFmpeg backend only: no fallback, no other codec. */
+/* Explicit format selection: TurboMedia stb for PNG/JPEG; the selected
+ * FFmpeg WebP backend only if available. No fallback at runtime. */
 TURBO_MEDIA_API int tm_encoder_image_available(uint32_t output_format);
 
 /* Versioned, owner-serialized C11 one-frame image encoding.
  * The API owns all codec contexts and packets; no FFmpeg types are public.
  * Quality is 1..100 for lossy formats, ignored for lossless PNG.
- * Metadata bytes are the caller-prepared sd-style "parameters" string.
- * PNG adds the parameters tEXt chunk after IHDR; JPEG adds its exact COM
- * marker. Neither call borrows metadata after returning.
+ * PNG/JPEG metadata bytes are caller-prepared "parameters" text, emitted
+ * as PNG tEXt after IHDR or the native JPEG COM marker respectively.
+ * WebP metadata bytes MUST be caller-prepared UTF-8 XMP XML: TurboMedia
+ * constructs a validated extended RIFF/VP8X image and "XMP " chunk.
+ * The WebP encoder is only available if the selected FFmpeg SDK includes it;
+ * otherwise return EUNSUPPORTED, never switch to another provider.
+ * No call borrows metadata after returning.
  *
- * LIMITATION: WebP XMP metadata, AVI/animated WebP and VP8+WebM encoding
- * remain unsupported. WebP with metadata fails EUNSUPPORTED BEFORE any
- * sink call; do not migrate sd until all selected formats preserve metadata.
+ * LIMITATION: animated WebP/AVI and WebM video with an audio track remain
+ * unsupported. WebP XMP is supported for strictly validated still images;
+ * unsupported RIFF structure is explicitly rejected before output.
  * Output byte cap is enforced before sink delivery, NOT before internal
  * FFmpeg packet/codec allocation; it is not a process RSS/GPU budget.
  */

@@ -1,5 +1,6 @@
 #include <tinytest.h>
 #include <turbo_media_encoder.h>
+#include "turbo_media_webp_xmp.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixfmt.h>
@@ -221,6 +222,84 @@ suite("TurboMedia C11 still-image encoder output contract") {
             check_equal(sink.writes, 0);
         }
 
+        it("adds a fully bounded extended WebP XMP chunk and validates RIFF byte order")
+        {
+            /* One structural simple-VP8 RIFF fixture. This tests container
+             * rewriting independently of FFmpeg WebP codec availability;
+             * the fake VP8 bitstream is NOT a decoded-image test. */
+            const uint8_t simple[] = {
+                'R','I','F','F',22,0,0,0,'W','E','B','P',
+                'V','P','8',' ',10,0,0,0,
+                0,0,0,0,0,0,0,0,0,0
+            };
+            const uint8_t xmp[] = "<x:xmpmeta/>";
+            image_sink sink = {0};
+            size_t written = 777;
+            size_t trailer;
+            check_equal(tm_encoder_webp_wrap_xmp(
+                simple, sizeof(simple), 8, 8, xmp, sizeof(xmp) - 1u,
+                sizeof(sink.bytes), collect_encoded, &sink, &written),
+                TM_ENCODER_OK);
+            check_equal(sink.count, written);
+            check_true(written > sizeof(simple) + 18u + 8u);
+            check_true(memcmp(sink.bytes, "RIFF", 4) == 0);
+            check_true(memcmp(sink.bytes + 8, "WEBP", 4) == 0);
+            check_true(memcmp(sink.bytes + 12, "VP8X", 4) == 0);
+            check_equal(sink.bytes[20] & 0x04u, 0x04u);
+            check_equal(sink.bytes[24], 7u); /* width minus one */
+            check_equal(sink.bytes[27], 7u); /* height minus one */
+            check_true(memcmp(sink.bytes + 30, simple + 12,
+                              sizeof(simple) - 12) == 0);
+            trailer = 12u + 18u + sizeof(simple) - 12u;
+            check_true(memcmp(sink.bytes + trailer, "XMP ", 4) == 0);
+            check_true(memcmp(sink.bytes + trailer + 8,
+                              xmp, sizeof(xmp) - 1u) == 0);
+            check_equal((uint32_t)sink.bytes[4] |
+                        ((uint32_t)sink.bytes[5] << 8),
+                        (uint32_t)(sink.count - 8u));
+            /* Odd-sized metadata must be padded with exactly one zero byte.
+             * No partial output is emitted on capacity or duplicate XMP. */
+            memset(&sink, 0, sizeof(sink));
+            written = 42;
+            check_equal(tm_encoder_webp_wrap_xmp(
+                simple, sizeof(simple), 8, 8, xmp, sizeof(xmp) - 1u,
+                trailer + 8u + sizeof(xmp) - 2u,
+                collect_encoded, &sink, &written),
+                TM_ENCODER_ECAPACITY);
+            check_equal(written, 0u);
+            check_equal(sink.writes, 0);
+        }
+
+        it("rejects malformed, duplicate-XMP and animated WebP without emitting bytes")
+        {
+            uint8_t source[] = {
+                'R','I','F','F',22,0,0,0,'W','E','B','P',
+                'V','P','8',' ',10,0,0,0,
+                0,0,0,0,0,0,0,0,0,0
+            };
+            const uint8_t xmp[] = "<x:xmpmeta/>";
+            image_sink sink = {0};
+            image_sink already = {0};
+            size_t n = 0;
+            size_t written = 0;
+            check_equal(tm_encoder_webp_wrap_xmp(
+                source, sizeof(source), 8, 8, xmp, sizeof(xmp) - 1u,
+                sizeof(already.bytes), collect_encoded, &already, &n),
+                TM_ENCODER_OK);
+            check_equal(tm_encoder_webp_wrap_xmp(
+                already.bytes, already.count, 8, 8,
+                xmp, sizeof(xmp) - 1u,
+                sizeof(sink.bytes), collect_encoded, &sink, &written),
+                TM_ENCODER_EUNSUPPORTED);
+            check_equal(sink.writes, 0);
+            source[4] = 0xff; /* incorrect RIFF size */
+            check_equal(tm_encoder_webp_wrap_xmp(
+                source, sizeof(source), 8, 8, xmp, sizeof(xmp) - 1u,
+                sizeof(sink.bytes), collect_encoded, &sink, &written),
+                TM_ENCODER_EINVAL);
+            check_equal(sink.writes, 0);
+        }
+
         it("exposes WebP only if the installed FFmpeg SDK has its real codec") {
             uint8_t pixels[8 * 8 * 3] = {0};
             image_sink sink = {0};
@@ -228,6 +307,8 @@ suite("TurboMedia C11 still-image encoder output contract") {
             size_t written = 0;
             tm_encoder_status outcome;
             options.output_format = TM_ENCODER_IMAGE_WEBP;
+            options.metadata_utf8 = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>";
+            options.metadata_bytes = strlen(options.metadata_utf8);
             outcome = tm_encoder_image_encode(&options, collect_encoded,
                                               &sink, &written);
             if (tm_encoder_image_available(TM_ENCODER_IMAGE_WEBP)) {
@@ -236,6 +317,11 @@ suite("TurboMedia C11 still-image encoder output contract") {
                     check_true(sink.count > 12);
                     check_true(memcmp(sink.bytes, "RIFF", 4) == 0);
                     check_true(memcmp(sink.bytes + 8, "WEBP", 4) == 0);
+                    check_true(memcmp(sink.bytes + 12, "VP8X", 4) == 0);
+                    check_true((sink.bytes[20] & 0x04u) != 0);
+                    check_true(contains_bytes(
+                        sink.bytes, sink.count, options.metadata_utf8,
+                        options.metadata_bytes));
                     check_true(decode_actual_dimensions(options.output_format,
                                                         &sink, 8, 8, pixels));
                 }
