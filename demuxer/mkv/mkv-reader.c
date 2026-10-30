@@ -1107,11 +1107,35 @@ int mkv_reader_last_discard_padding_ns(
     return 0;
 }
 
+/* A Matroska Block timestamp is SIGNED. Multiplication by the
+ * unsigned nanosecond TimestampScale previously converted negative ticks
+ * to huge positive timestamps. Preserve negative preroll and reject
+ * arithmetic overflow before calling the packet-allocation callback. */
+static int mkv_ticks_to_milliseconds(
+    int64_t ticks, uint64_t scale_ns, int64_t *out_ms)
+{
+    uint64_t magnitude, converted, limit;
+    if (!out_ms || !scale_ns) return -EINVAL;
+    magnitude = ticks < 0 ?
+        (uint64_t)(-(ticks + 1)) + 1u : (uint64_t)ticks;
+    if (magnitude > UINT64_MAX / scale_ns)
+        return -ERANGE;
+    converted = (magnitude * scale_ns) / UINT64_C(1000000);
+    limit = (uint64_t)INT64_MAX + (ticks < 0 ? 1u : 0u);
+    if (converted > limit) return -ERANGE;
+    if (ticks >= 0) *out_ms = (int64_t)converted;
+    else if (converted == (uint64_t)INT64_MAX + 1u)
+        *out_ms = INT64_MIN;
+    else *out_ms = -(int64_t)converted;
+    return 0;
+}
+
 int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* param)
 {
 	int r;
 	void* ptr;
 	struct mkv_sample_t* sample;
+    int64_t pts_ms, dts_ms;
     if (!reader || !onread) return -1;
     reader->last_discard_padding_ns = 0;
     if (reader->parse_failed) return -EINVAL;
@@ -1136,7 +1160,13 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
     if (reader->io.error != 0) return reader->io.error;
 
 	sample = &reader->mkv.samples[reader->offset];
-	ptr = onread(param, sample->track, sample->bytes, sample->pts * reader->mkv.timescale / 1000000, sample->dts * reader->mkv.timescale / 1000000, sample->flags);
+    if (mkv_ticks_to_milliseconds(
+            sample->pts, reader->mkv.timescale, &pts_ms) != 0 ||
+        mkv_ticks_to_milliseconds(
+            sample->dts, reader->mkv.timescale, &dts_ms) != 0)
+        return -ERANGE;
+	ptr = onread(param, sample->track, sample->bytes,
+                 pts_ms, dts_ms, sample->flags);
 	if (!ptr)
 		return -ENOMEM;
 

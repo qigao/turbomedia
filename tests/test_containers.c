@@ -1030,7 +1030,7 @@ suite("container adapters") {
     }
 
     group("bounded imported Matroska lacing") {
-        it("supports 256 fixed-size frames and rejects bad Xiph/EBML sizes") {
+        it("bounds RFC 9559 lacing, FlagLacing and signed preroll timestamps") {
             static const uint8_t block_prefix[] = {
                 0xa3u, 0x41u, 0x05u, 0x81u, 0u, 0u, 0x80u
             };
@@ -1043,7 +1043,8 @@ suite("container adapters") {
             turbo_muxer_t *muxer = NULL;
             turbo_demuxer_t *demuxer = NULL;
             uint8_t *container = NULL, *mutated = NULL;
-            size_t bytes = 0, block_at = SIZE_MAX, pos;
+            size_t bytes = 0, block_at = SIZE_MAX;
+            size_t flag_lacing_at = SIZE_MAX, pos;
             int track = -1, variant;
             /* A 257-byte packet plus the 4-byte SimpleBlock header needs
              * a two-byte EBML size. This also validates real header width. */
@@ -1073,27 +1074,56 @@ suite("container adapters") {
                     break;
                 }
             }
+            /* The owned writer marks every track FlagLacing=0. A test
+             * that mutates the Block to enable lacing must also enable
+             * the track's flag, otherwise the imported file is invalid. */
+            for (pos = 0; pos + 3u <= bytes; ++pos) {
+                if (container[pos] == 0x9cu &&
+                    container[pos + 1u] == 0x81u &&
+                    container[pos + 2u] == 0u) {
+                    flag_lacing_at = pos + 2u;
+                    break;
+                }
+            }
             check_true(block_at != SIZE_MAX);
-            if (block_at == SIZE_MAX) goto lace_cleanup;
+            check_true(flag_lacing_at != SIZE_MAX);
+            if (block_at == SIZE_MAX || flag_lacing_at == SIZE_MAX)
+                goto lace_cleanup;
             mutated = (uint8_t *)malloc(bytes);
             check_not_null(mutated);
             if (!mutated) goto lace_cleanup;
-            for (variant = 0; variant < 5; ++variant) {
+            for (variant = 0; variant < 7; ++variant) {
                 int result, count = 0;
                 int expected = variant == 0 ? 256 :
-                               variant == 3 || variant == 4 ? 1 : -1;
+                               variant == 3 || variant == 4 ? 2 :
+                               variant == 5 ? 1 : -1;
                 memcpy(mutated, container, bytes);
                 dc.data = mutated;
                 dc.data_size = bytes;
-                /* Lace-count consumes the first payload byte. */
-                mutated[block_at + 7u] =
-                    variant == 0 || variant == 1 ? 255u :
-                    variant == 2 ? 1u : 0u;
-                mutated[block_at + 6u] = variant == 0 ? 0x84u :
-                    variant == 1 || variant == 3 ? 0x82u : 0x86u;
-                if (variant == 2) {
-                    /* First EBML lace length unknown (0xff): invalid. */
-                    mutated[block_at + 8u] = 0xffu;
+                if (variant != 5) {
+                    /* Lace-count consumes one data byte; all valid cases
+                     * encode at least TWO frames, as required by RFC 9559. */
+                    mutated[block_at + 7u] =
+                        variant == 0 || variant == 1 || variant == 6 ?
+                            255u : 1u;
+                    mutated[block_at + 6u] =
+                        variant == 0 || variant == 6 ? 0x84u :
+                        variant == 1 || variant == 3 ? 0x82u : 0x86u;
+                    if (variant != 6)
+                        mutated[flag_lacing_at] = 1u;
+                    if (variant == 2) {
+                        /* First EBML lace length unknown (0xff). */
+                        mutated[block_at + 8u] = 0xffu;
+                    } else if (variant == 3 || variant == 4) {
+                        /* Two frames, first length=1, last=254 bytes. */
+                        mutated[block_at + 8u] =
+                            variant == 3 ? 0x01u : 0x81u;
+                    }
+                } else {
+                    /* Signed relative timestamp -2 ticks is allowed for
+                     * decoding preroll even though presentation is negative. */
+                    mutated[block_at + 4u] = 0xffu;
+                    mutated[block_at + 5u] = 0xfeu;
                 }
                 demuxer = turbo_demuxer_create_by_name("mkv", &dc);
                 check_not_null(demuxer);
@@ -1104,11 +1134,13 @@ suite("container adapters") {
                     ++count;
                     if (variant == 0) {
                         check_equal(output.size, 1u);
-                        check_equal(output.data[0], 0x7eu);
+                    } else if (variant == 3 || variant == 4) {
+                        check_equal(output.size, count == 1 ? 1u : 254u);
                     } else {
-                        check_equal(output.size, 256u);
-                        check_equal(output.data[0], 0x7eu);
+                        check_equal(output.size, 257u);
+                        check_equal(output.pts, INT64_C(-2));
                     }
+                    check_equal(output.data[0], 0x7eu);
                     turbo_demuxer_free_packet(&output);
                     if (count > 256) break; /* bounded even on error */
                 }

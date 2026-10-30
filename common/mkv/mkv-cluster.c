@@ -79,18 +79,28 @@ int mkv_cluster_simple_block_read(struct mkv_t* mkv,
     track_number = (int)track_id;
     track = mkv_track_find(mkv, (unsigned)track_number);
     if (!track) return -EINVAL;
-    if (cluster->timestamp > INT64_MAX) return -ERANGE;
+    /* Matroska Block timestamps are signed relative to Cluster. A
+     * negative resulting timestamp is discouraged, not prohibited:
+     * RFC 9559 requires decoding such frames without presenting them.
+     * Reject only actual signed overflow. */
+    if (cluster->timestamp > INT64_MAX ||
+        (relative_timestamp > 0 &&
+         cluster->timestamp > (uint64_t)(INT64_MAX - relative_timestamp)))
+        return -ERANGE;
     timestamp_ticks = (int64_t)cluster->timestamp + relative_timestamp;
-    if (timestamp_ticks < 0) return -EINVAL;
     duration = track->duration / mkv->timescale;
     lacing = (flags >> 1) & 0x03u;
+    /* RFC 9559: FlagLacing=0 forbids all laced Blocks on the track. */
+    if (lacing != MKV_LACING_NONE && !track->flag_lacing)
+        return -EINVAL;
 
     if (lacing != MKV_LACING_NONE) {
         if (payload - start >= (uint64_t)bytes)
             return -EINVAL; /* missing lace-count byte */
         lace_count = mkv_buffer_r8(io);
-        if (mkv_buffer_error(io) != 0) return -EINVAL;
-        frame_count = (unsigned)lace_count + 1u; /* 1..256, never uint8 */
+        if (mkv_buffer_error(io) != 0 || lace_count == 0u)
+            return -EINVAL; /* lacing MUST NOT encode only one frame */
+        frame_count = (unsigned)lace_count + 1u; /* 2..256, never uint8 */
     }
 
     if (lacing == MKV_LACING_XIPH) {
@@ -152,10 +162,17 @@ int mkv_cluster_simple_block_read(struct mkv_t* mkv,
     }
     for (i = 0; i < frame_count; ++i)
         if (lengths[i] == 0u) return -EINVAL;
-    if (duration > 0 &&
-        (uint64_t)(frame_count - 1u) >
-            ((uint64_t)INT64_MAX - (uint64_t)timestamp_ticks) / duration)
-        return -ERANGE;
+    if (duration > 0) {
+        /* Limit the unsigned product before casting it to int64_t.
+         * For a negative first timestamp, extra headroom exists but
+         * keeping the product <= INT64_MAX avoids implementation-defined
+         * casts while still allowing valid negative preroll frames. */
+        uint64_t headroom = timestamp_ticks < 0 ?
+            (uint64_t)INT64_MAX :
+            (uint64_t)(INT64_MAX - timestamp_ticks);
+        if ((uint64_t)(frame_count - 1u) > headroom / duration)
+            return -ERANGE;
+    }
 
     if (flags & 0x80u) f |= MKV_FLAGS_KEYFRAME;
     if (flags & 0x08u) f |= MKV_FLAGS_INVISIBLE;
