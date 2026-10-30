@@ -22,3 +22,19 @@ Player 提供阻塞和后台线程两种播放流程：
 - `turbo_player_seek_ms`：请求时间戳跳转并刷新解码状态。
 
 `ffmpeg_probe` 也接受 `--async` 和 `--seek-ms N`，用于冒烟验证这些路径。
+
+## Bounded raw-image Encoder — Draft API
+
+`TurboMedia::Encoder` has a versioned C11 one-shot `tm_encoder_image_encode()`
+for borrowed GRAY8/GA8/RGB24/RGBA32 frames. The component uses only the
+selected FFmpeg image encoder (PNG / MJPEG / WebP when installed) and a
+mandatory bounded output sink. It does not install a second format or
+re-encode through a fallback provider.
+
+**Not migration-ready for sd yet:** generation metadata injection into PNG,
+JPEG and WebP is not implemented; nonempty metadata fails
+`TM_ENCODER_EUNSUPPORTED` before sending bytes. AVI, animated WebP, and
+end-to-end audio+video frame-to-WebM encode also remain open. The existing
+sd local output must not be misidentified as TurboMedia-backed until these
+contracts, exact package identity and platform-native CI pass.
+See [Issue #272](https://github.com/qigao/turbomedia/issues/272).

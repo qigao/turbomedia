@@ -56,6 +56,12 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS Salts::Capture)
   elseif(TEST_NAME STREQUAL "test_codec")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec)
+  elseif(TEST_NAME STREQUAL "test_encoder")
+    # Tests decode their actual PNG/JPEG/WebP outputs using the one selected
+    # FFmpeg package, never a local fake codec or external CLI.
+    list(APPEND TEST_LINK_LIBS TurboMedia::Encoder
+                               TurboMediaFFmpeg::avcodec
+                               TurboMediaFFmpeg::avutil)
   elseif(TEST_NAME STREQUAL "test_containers")
     list(APPEND TEST_LINK_LIBS TurboMedia::Muxer TurboMedia::Demuxer)
   elseif(TEST_NAME STREQUAL "test_integration")

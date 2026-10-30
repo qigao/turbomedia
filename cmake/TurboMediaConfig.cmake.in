@@ -49,7 +49,7 @@ find_dependency(Chttp CONFIG REQUIRED
 # The exported target file contains all TurboMedia components, but FFmpeg is
 # only a dependency of this component closure.  Keep non-media consumers
 # (for example Core or WebRTC) usable without FFmpeg development files.
-set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Pipeline Streamer RtcApps)
+set(_TurboMedia_ffmpeg_components Encoder Muxer Demuxer Player Pipeline Streamer RtcApps)
 set(_TurboMedia_requires_ffmpeg FALSE)
 if(NOT TurboMedia_FIND_COMPONENTS)
   set(_TurboMedia_requires_ffmpeg TRUE)
