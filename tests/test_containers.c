@@ -160,16 +160,24 @@ static int matroska_info_segment_uuid_presence(
     const uint8_t *bytes, size_t size)
 {
     static const uint8_t info_id[] = {0x15, 0x49, 0xa9, 0x66};
+    static const uint8_t timescale_id[] = {0x2a, 0xd7, 0xb1};
     size_t i, j, end;
     if (!bytes || size < 6u) return -1;
     for (i = 0; i + 5u <= size; ++i) {
         size_t payload;
         if (memcmp(bytes + i, info_id, sizeof(info_id)) != 0)
             continue;
-        /* This current writer uses a one-byte EBML data length for Info. */
-        if (!(bytes[i + 4u] & 0x80u)) return -1;
+        /* A SeekHead/SeekID has the exact same Info ID BYTES but is
+         * binary data, not an Info Master. Accept only the current
+         * writer's actual one-byte-size Info, whose first child is
+         * TimestampScale (0x2AD7B1). */
+        if (!(bytes[i + 4u] & 0x80u)) continue;
         payload = (size_t)(bytes[i + 4u] & 0x7fu);
-        if (payload > size - i - 5u) return -1;
+        if (payload < sizeof(timescale_id) ||
+            payload > size - i - 5u ||
+            memcmp(bytes + i + 5u, timescale_id,
+                   sizeof(timescale_id)) != 0)
+            continue;
         end = i + 5u + payload;
         for (j = i + 5u; j + 1u < end; ++j)
             if (bytes[j] == 0x73u && bytes[j + 1u] == 0xa4u)

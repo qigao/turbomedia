@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <errno.h>
 #include <limits.h>
 
@@ -124,7 +125,8 @@ static int tm_ffmpeg_webm_read(void *opaque, uint8_t *dst, int want) {
 static int64_t tm_ffmpeg_webm_seek(void *opaque, int64_t offset, int whence) {
     tm_ffmpeg_webm_memory *r = (tm_ffmpeg_webm_memory *)opaque;
     int64_t base, next;
-    if (!r || r->length > INT64_MAX) return AVERROR(EINVAL);
+    if (!r || (uint64_t)r->length > (uint64_t)INT64_MAX)
+        return AVERROR(EINVAL);
     whence &= ~AVSEEK_FORCE;
     if (whence == AVSEEK_SIZE) return (int64_t)r->length;
     if (whence == SEEK_SET) base = 0;
@@ -150,7 +152,8 @@ static int tm_ffmpeg_webm_read_seek_verify(
     uint8_t *io_buffer = NULL;
     int video = -1, audio = -1, seen_video = 0, seen_audio = 0;
     int status = -1, i;
-    if (!bytes || !size || size > INT64_MAX || target_ms < 0)
+    if (!bytes || !size || (uint64_t)size > (uint64_t)INT64_MAX ||
+        target_ms < 0)
         return -1;
     memory.bytes = bytes;
     memory.length = size;
@@ -197,7 +200,11 @@ static int tm_ffmpeg_webm_read_seek_verify(
 done:
     av_packet_free(&packet);
     avformat_close_input(&format);
-    if (io) avio_context_free(&io);
+    /* Per FFmpeg's avio_read_callback example, AVIOContext owns the
+     * current, possibly reallocated buffer, but avio_context_free does
+     * not release it. Free the current buffer before the context. */
+    if (io) av_freep(&io->buffer);
+    avio_context_free(&io);
     av_free(io_buffer);
     return status;
 }
