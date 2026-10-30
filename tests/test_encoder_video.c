@@ -272,6 +272,182 @@ finished:
 }
 
 suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
+    group("native Opus seek and decoder discontinuity") {
+        it("resets the codec and delivers exact PCM after cue-based preroll") {
+            enum { FRAME_COUNT = 70, SAMPLE_COUNT = 336000 };
+            uint8_t (*pixels)[16 * 16 * 3] = NULL;
+            tm_encoder_video_frame_v1 *frames = NULL;
+            float *pcm = NULL;
+            tm_encoder_video_v1 video;
+            tm_encoder_audio_v1 audio = TM_ENCODER_AUDIO_V1_INIT;
+            video_result sink = {0};
+            turbo_demuxer_config_t demux_config = {0};
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_codec_t *decoder = NULL;
+            turbo_audio_codec_config_t codec_config = {0};
+            turbo_demuxer_track_timing_v1 track =
+                TURBO_DEMUXER_TRACK_TIMING_V1_INIT;
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
+            turbo_demuxer_packet_t packet = {0};
+            size_t written = 0, kept_samples = 0;
+            size_t before_target = 0, nonzero = 0, n, i;
+            int first_decoded = 0, audio_packets = 0, trimmed = 0;
+            int read_status = -1;
+            int64_t anchor_ms = -1, prior_pts = -1;
+            const int64_t target_ms = INT64_C(5940);
+            const int64_t duration_ms = INT64_C(7000);
+            tm_encoder_status result;
+
+            pixels = (uint8_t (*)[16 * 16 * 3])
+                malloc(FRAME_COUNT * sizeof(*pixels));
+            frames = (tm_encoder_video_frame_v1 *)
+                calloc(FRAME_COUNT, sizeof(*frames));
+            pcm = (float *)malloc(SAMPLE_COUNT * sizeof(*pcm));
+            sink.capacity = 4u * 1024u * 1024u;
+            sink.bytes = (uint8_t *)malloc(sink.capacity);
+            check_not_null(pixels);
+            check_not_null(frames);
+            check_not_null(pcm);
+            check_not_null(sink.bytes);
+            if (!pixels || !frames || !pcm || !sink.bytes) goto cleanup;
+            prepare_frames(pixels, frames, FRAME_COUNT);
+            video = init_video(frames, FRAME_COUNT);
+            video.max_output_bytes = sink.capacity;
+            for (i = 0; i < SAMPLE_COUNT; ++i)
+                pcm[i] = i % 100u < 50u ? 0.65f : -0.65f;
+            audio.samples = pcm;
+            audio.sample_count = SAMPLE_COUNT;
+            audio.sample_capacity_bytes = SAMPLE_COUNT * sizeof(*pcm);
+            result = tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL, &written);
+            check_equal(result, TM_ENCODER_OK);
+            check_equal(written, sink.size);
+            check_equal(sink.writes, 1u);
+            if (result != TM_ENCODER_OK || !written) goto cleanup;
+
+            turbo_demuxer_registry_init();
+            demux_config.data = sink.bytes;
+            demux_config.data_size = written;
+            demuxer = turbo_demuxer_create_by_name("webm", &demux_config);
+            check_not_null(demuxer);
+            if (!demuxer) goto cleanup;
+            check_equal(turbo_demuxer_open(demuxer), 0);
+            if (turbo_demuxer_get_stream_count(demuxer) != 2 ||
+                turbo_demuxer_get_track_timing(demuxer, 1, &track) != 0)
+                goto cleanup;
+            check_true(track.codec_delay_ns > 0);
+            check_true(track.seek_preroll_ns >= UINT64_C(80000000));
+
+            codec_config.sample_rate = 48000;
+            codec_config.channels = 1;
+            codec_config.bitrate = 64000;
+            codec_config.frame_size_ms = 20;
+            codec_config.complexity = 5;
+            decoder = turbo_codec_create_decoder("opus", &codec_config);
+            check_not_null(decoder);
+            if (!decoder) goto cleanup;
+            /* Decode initial packets first to establish a nonempty decoder
+             * state, then retire this owner across the discontinuity. */
+            while (first_decoded < 3 &&
+                   (read_status = turbo_demuxer_read_packet(
+                        demuxer, &packet)) == 1) {
+                if (packet.stream_index == 1) {
+                    int16_t samples[960];
+                    size_t sample_bytes = sizeof(samples);
+                    check_equal(turbo_codec_decode(
+                        decoder, packet.data, packet.size,
+                        (uint8_t *)samples, &sample_bytes), TURBO_CODEC_OK);
+                    ++first_decoded;
+                }
+                turbo_demuxer_free_packet(&packet);
+            }
+            turbo_demuxer_free_packet(&packet);
+            check_equal(first_decoded, 3);
+            if (first_decoded != 3) goto cleanup;
+            turbo_codec_destroy(decoder);
+            decoder = NULL;
+
+            check_equal(turbo_demuxer_seek_opus_preroll(
+                demuxer, 1, target_ms, &anchor_ms), 0);
+            /* The conservative threshold is 5940ms-86.5ms=5853.5ms.
+             * A future keyframe at 6000ms must never be selected. */
+            check_true(anchor_ms >= 0 && anchor_ms <= INT64_C(5853));
+            if (anchor_ms < 0 || anchor_ms > INT64_C(5853))
+                goto cleanup;
+            decoder = turbo_codec_create_decoder("opus", &codec_config);
+            check_not_null(decoder);
+            if (!decoder) goto cleanup;
+            while ((read_status = turbo_demuxer_read_packet_with_timing(
+                        demuxer, &packet, &timing)) == 1) {
+                check_true(packet.pts >= prior_pts);
+                prior_pts = packet.pts;
+                if (packet.stream_index == 1) {
+                    int16_t samples[960];
+                    size_t decoded_bytes = sizeof(samples);
+                    size_t valid;
+                    int64_t first_sample_ns;
+                    check_equal(turbo_codec_decode(
+                        decoder, packet.data, packet.size,
+                        (uint8_t *)samples, &decoded_bytes), TURBO_CODEC_OK);
+                    if (decoded_bytes > sizeof(samples) ||
+                        decoded_bytes % sizeof(int16_t)) {
+                        turbo_demuxer_free_packet(&packet);
+                        goto cleanup;
+                    }
+                    ++audio_packets;
+                    valid = decoded_bytes / sizeof(int16_t);
+                    if (timing.discard_padding_ns > 0) {
+                        uint64_t trim = (
+                            (uint64_t)timing.discard_padding_ns *
+                            UINT64_C(48000) + UINT64_C(500000000)) /
+                            UINT64_C(1000000000);
+                        check_true(trim <= valid);
+                        if (trim > valid) {
+                            turbo_demuxer_free_packet(&packet);
+                            goto cleanup;
+                        }
+                        valid -= (size_t)trim;
+                        ++trimmed;
+                    }
+                    first_sample_ns =
+                        packet.pts * INT64_C(1000000) -
+                        (int64_t)track.codec_delay_ns;
+                    for (n = 0; n < valid; ++n) {
+                        int64_t position_ns = first_sample_ns +
+                            (int64_t)((n * UINT64_C(1000000000)) /
+                                      UINT64_C(48000));
+                        if (position_ns < target_ms * INT64_C(1000000))
+                            ++before_target; /* decoded, never presented */
+                        else if (position_ns <
+                                 duration_ms * INT64_C(1000000)) {
+                            ++kept_samples;
+                            if (samples[n] != 0) ++nonzero;
+                        }
+                    }
+                } else {
+                    check_equal(timing.discard_padding_ns, INT64_C(0));
+                }
+                turbo_demuxer_free_packet(&packet);
+                if (audio_packets > 400) goto cleanup;
+            }
+            check_equal(read_status, 0);
+            check_true(audio_packets > 8);
+            check_true(before_target >= 4u * 960u); /* >=80ms decoded */
+            check_equal(trimmed, 1);
+            check_true(nonzero > 0);
+            check_equal(kept_samples, (size_t)(duration_ms - target_ms) * 48u);
+        cleanup:
+            turbo_demuxer_free_packet(&packet);
+            turbo_codec_destroy(decoder);
+            turbo_demuxer_destroy(demuxer);
+            free(sink.bytes);
+            free(pcm);
+            free(frames);
+            free(pixels);
+        }
+    }
+
     group("C11 float PCM / exact-duration Opus WebM v2") {
         it("resamples 44.1kHz stereo with original rate in OpusHead") {
             av_profile_probe got = run_av_profile(44100u, 2u, 10u, 13230u);

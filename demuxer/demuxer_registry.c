@@ -230,6 +230,7 @@ int turbo_mkv_demuxer_last_discard_padding_ns(
 int turbo_mkv_demuxer_get_track_timing(
     void *ctx, int stream_index,
     uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns);
+int turbo_mkv_demuxer_seek_floor(void *ctx, int64_t *timestamp_ms);
 #endif
 
 int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer, 
@@ -283,6 +284,49 @@ int turbo_demuxer_seek(turbo_demuxer_t *demuxer, int64_t timestamp_ms, int flags
     }
 
     return demuxer->ops->seek(demuxer->ctx, timestamp_ms, flags);
+}
+
+int turbo_demuxer_seek_opus_preroll(
+    turbo_demuxer_t *demuxer, int audio_stream_index,
+    int64_t presentation_target_ms, int64_t *selected_cue_ms) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    turbo_demuxer_track_timing_v1 timing =
+        TURBO_DEMUXER_TRACK_TIMING_V1_INIT;
+    turbo_stream_info_t info = {0};
+    uint64_t budget_ns, budget_ms;
+    int64_t anchor;
+    int result;
+    if (!demuxer || !demuxer->ctx || !selected_cue_ms ||
+        presentation_target_ms < 0 ||
+        (demuxer->ops != &turbo_mkv_demuxer_ops &&
+         demuxer->ops != &turbo_webm_demuxer_ops))
+        return -1;
+    if (turbo_demuxer_get_stream_info(
+            demuxer, audio_stream_index, &info) != 0 ||
+        info.type != TURBO_CODEC_TYPE_AUDIO || !info.codec_name ||
+        strcmp(info.codec_name, "opus") != 0 ||
+        turbo_demuxer_get_track_timing(
+            demuxer, audio_stream_index, &timing) != 0)
+        return -1;
+    if (timing.seek_preroll_ns >
+        UINT64_MAX - timing.codec_delay_ns)
+        return -1;
+    /* Conservative rewind. Unit conversion is explicit: TrackEntry is
+     * nanoseconds, the legacy Matroska seek contract is milliseconds. */
+    budget_ns = timing.seek_preroll_ns + timing.codec_delay_ns;
+    budget_ms = budget_ns / UINT64_C(1000000);
+    if (budget_ns % UINT64_C(1000000)) ++budget_ms;
+    anchor = (uint64_t)presentation_target_ms > budget_ms ?
+        presentation_target_ms - (int64_t)budget_ms : 0;
+    result = turbo_mkv_demuxer_seek_floor(demuxer->ctx, &anchor);
+    if (result != 0) return result;
+    *selected_cue_ms = anchor; /* Cue may be inside an earlier Cluster */
+    return 0;
+#else
+    (void)demuxer; (void)audio_stream_index;
+    (void)presentation_target_ms; (void)selected_cue_ms;
+    return -1;
+#endif
 }
 
 int turbo_demuxer_get_stream_count(turbo_demuxer_t *demuxer) {

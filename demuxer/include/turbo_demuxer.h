@@ -206,6 +206,22 @@ TURBO_MEDIA_API void turbo_demuxer_free_packet(turbo_demuxer_packet_t *packet);
  */
 TURBO_MEDIA_API int turbo_demuxer_seek(turbo_demuxer_t *demuxer, int64_t timestamp_ms, int flags);
 
+/* Opus/WebM seek anchor only (ABI-preserving separate function).
+ * Request a presentation timestamp in MILLISECONDS; select the latest
+ * available Cue not later than target - ceil((SeekPreRoll+CodecDelay)/1ms)
+ * and return the chosen Cue timestamp in MILLISECONDS. The actual
+ * first packet may be earlier, since decoding starts at the Cluster
+ * containing that Cue. This is conservative and may decode extra audio.
+ * No future Cue is accepted, and absence of a prior Cue is an ERROR.
+ * The caller MUST reset its Opus decoder, decode preroll, convert packet
+ * timestamps to a common unit, and discard decoded PCM before the target,
+ * as well as any per-block signed DiscardPadding. No implicit trimming,
+ * decoder reset, or alternate provider is performed by this helper.
+ * Only the built-in WebM/MKV Opus track supports this operation. */
+TURBO_MEDIA_API int turbo_demuxer_seek_opus_preroll(
+    turbo_demuxer_t *demuxer, int audio_stream_index,
+    int64_t presentation_target_ms, int64_t *selected_cue_ms);
+
 /**
  * 获取流数量
  */

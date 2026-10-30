@@ -61,6 +61,12 @@ int mkv_reader_last_discard_padding_ns(
 /// @return 0-ok, other-error
 int mkv_reader_seek(mkv_reader_t* mkv, int64_t* timestamp);
 
+/* Conservative cue seek: select the last cue not later than the supplied
+ * millisecond timestamp. On success update it to the selected cue time.
+ * Unlike mkv_reader_seek(), this cannot jump forward past a preroll
+ * threshold. No decoder instance is reset by the reader. */
+int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms);
+
 #ifdef __cplusplus
 }
 #endif

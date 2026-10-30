@@ -437,6 +437,14 @@ suite("container adapters") {
                     demuxer, 0, &timing), 0);
                 check_equal(timing.codec_delay_ns, delay);
                 check_equal(timing.seek_preroll_ns, preroll);
+                /* Audio-only WebM without Cues is not enough to prove a
+                 * safe preroll seek. Fail closed; don't silently jump. */
+                {
+                    int64_t selected = INT64_C(-123);
+                    check_true(turbo_demuxer_seek_opus_preroll(
+                        demuxer, 0, 100, &selected) != 0);
+                    check_equal(selected, INT64_C(-123));
+                }
                 {
                     turbo_demuxer_track_timing_v1 bad = timing;
                     bad.version++;
@@ -595,6 +603,120 @@ suite("container adapters") {
             audio.extradata_size = sizeof(opus_head);
             audio.sample_rate = 44100;
             check_true(turbo_muxer_add_stream(muxer, &audio, &stream_id) != 0);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
+    group("Opus seek/preroll cue admission") {
+        it("never chooses a future cue across real WebM cluster boundaries") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            const uint8_t vp8[5] = {0x10, 0, 0, 0, 0};
+            const uint8_t opus[4] = {0xf8, 0xff, 0xfe, 0};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t input = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_demuxer_packet_t output = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
+            turbo_demuxer_track_timing_v1 track =
+                TURBO_DEMUXER_TRACK_TIMING_V1_INIT;
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *container = NULL;
+            size_t size = 0;
+            int video = -1, audio = -1, i;
+            int64_t anchor = -77;
+
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_VIDEO;
+            stream.codec_name = "vp8";
+            stream.width = stream.height = 16;
+            stream.framerate = 10;
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &video), 0);
+            stream = (turbo_stream_info_t){0};
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "opus";
+            stream.sample_rate = 48000;
+            stream.channels = 1;
+            stream.extradata = opus_head;
+            stream.extradata_size = sizeof(opus_head);
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &audio), 0);
+            if (video < 0 || audio < 0) goto cleanup;
+            for (i = 0; i < 3; ++i) {
+                input.stream_id = video;
+                input.data = vp8;
+                input.size = sizeof(vp8);
+                input.pts = input.dts = (int64_t)i * INT64_C(6000000);
+                input.duration = 6000000;
+                input.is_keyframe = 1;
+                check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+                input.stream_id = audio;
+                input.data = opus;
+                input.size = sizeof(opus);
+                input.pts = input.dts =
+                    (int64_t)i * INT64_C(6000000) + INT64_C(20000);
+                input.duration = 20000;
+                check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+            }
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &container, &size), 0);
+            if (!container || !size) goto cleanup;
+            dc.data = container;
+            dc.data_size = size;
+            demuxer = turbo_demuxer_create_by_name("webm", &dc);
+            check_not_null(demuxer);
+            if (!demuxer) goto cleanup;
+            check_equal(turbo_demuxer_open(demuxer), 0);
+            check_equal(turbo_demuxer_get_stream_count(demuxer), 2);
+            check_equal(turbo_demuxer_get_track_timing(
+                demuxer, audio, &track), 0);
+            check_equal(track.codec_delay_ns, UINT64_C(6500000));
+            check_equal(track.seek_preroll_ns, UINT64_C(80000000));
+
+            /* The legacy nearest-cue choice could select 12000ms here,
+             * which is later than the requested 11980ms presentation time
+             * and misses the mandatory 80ms Opus decoder warmup. */
+            check_true(turbo_demuxer_seek_opus_preroll(
+                demuxer, video, 11980, &anchor) != 0);
+            check_true(turbo_demuxer_seek_opus_preroll(
+                demuxer, audio, -1, &anchor) != 0);
+            check_true(turbo_demuxer_seek_opus_preroll(
+                demuxer, audio, 11980, NULL) != 0);
+            check_equal(anchor, INT64_C(-77));
+            check_equal(turbo_demuxer_seek_opus_preroll(
+                demuxer, audio, 11980, &anchor), 0);
+            check_equal(anchor, INT64_C(6000));
+            check_equal(turbo_demuxer_read_packet_with_timing(
+                demuxer, &output, &timing), 1);
+            check_equal(output.stream_index, video);
+            check_equal(output.pts, INT64_C(6000));
+            check_equal(timing.discard_padding_ns, INT64_C(0));
+            turbo_demuxer_free_packet(&output);
+
+            check_equal(turbo_demuxer_seek_opus_preroll(
+                demuxer, audio, 12120, &anchor), 0);
+            check_equal(anchor, INT64_C(12000));
+            check_equal(turbo_demuxer_read_packet(
+                demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(12000));
+            turbo_demuxer_free_packet(&output);
+
+            check_equal(turbo_demuxer_seek_opus_preroll(
+                demuxer, audio, 50, &anchor), 0);
+            check_equal(anchor, INT64_C(0));
+            check_equal(turbo_demuxer_read_packet(
+                demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(0));
+        cleanup:
+            turbo_demuxer_free_packet(&output);
+            turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
         }
     }

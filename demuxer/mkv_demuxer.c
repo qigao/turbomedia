@@ -282,6 +282,16 @@ static int mkv_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags)
     return mkv_reader_seek(ctx->reader, &timestamp);
 }
 
+/* Conservative cue placement for Opus preroll. Unlike the legacy seek
+ * which returns the nearest cue, this one only selects cue <= threshold. */
+int turbo_mkv_demuxer_seek_floor(void *ctx_ptr, int64_t *timestamp_ms) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    if (!ctx || !ctx->opened || !ctx->reader || !timestamp_ms ||
+        *timestamp_ms < 0)
+        return SALTS_EINVAL;
+    return mkv_reader_seek_floor(ctx->reader, timestamp_ms);
+}
+
 static int mkv_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     if (!ctx || !ctx->opened || vec_size(&ctx->streams) > INT_MAX)

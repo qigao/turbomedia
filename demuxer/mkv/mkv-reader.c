@@ -1156,6 +1156,53 @@ int mkv_reader_read(mkv_reader_t* reader, void* buffer, size_t bytes, mkv_reader
 	return 1;
 }
 
+/* Real seek admission for Opus preroll: the old nearest-Cue function can
+ * select a future keyframe. This separate floor operation cannot. */
+int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms)
+{
+#if !defined(MKV_LIVE_STREAMING)
+    uint64_t tick, ns, anchor_ns;
+    size_t lo, hi, mid;
+    const struct mkv_cue_position_t *cue;
+    if (!reader || !timestamp_ms || *timestamp_ms < 0 ||
+        !reader->mkv.timescale || !reader->mkv.cue.count)
+        return -EINVAL;
+    if ((uint64_t)*timestamp_ms > UINT64_MAX / UINT64_C(1000000))
+        return -ERANGE;
+    ns = (uint64_t)*timestamp_ms * UINT64_C(1000000);
+    tick = ns / reader->mkv.timescale;
+    lo = 0;
+    hi = reader->mkv.cue.count;
+    /* Upper bound: first Cue strictly after requested decoding time. */
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2;
+        if (reader->mkv.cue.positions[mid].timestamp <= tick)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == 0) return -ENOENT; /* never jump to future cue */
+    cue = &reader->mkv.cue.positions[lo - 1];
+    if (cue->cluster > INT64_MAX ||
+        cue->timestamp > UINT64_MAX / reader->mkv.timescale)
+        return -ERANGE;
+    anchor_ns = cue->timestamp * reader->mkv.timescale;
+    if (anchor_ns / UINT64_C(1000000) > INT64_MAX)
+        return -ERANGE;
+    mkv_buffer_seek(&reader->io, cue->cluster);
+    if (reader->io.error != 0) return reader->io.error;
+    reader->offset = reader->mkv.count;
+    reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
+    *timestamp_ms = (int64_t)(anchor_ns / UINT64_C(1000000));
+    return 0;
+#else
+    (void)reader;
+    (void)timestamp_ms;
+    return -ENOTSUP; /* no random-access cue map in live streaming */
+#endif
+}
+
 int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 {
 	uint64_t clock;
