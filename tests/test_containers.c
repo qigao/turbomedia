@@ -1029,6 +1029,108 @@ suite("container adapters") {
         }
     }
 
+    group("bounded imported Matroska lacing") {
+        it("supports 256 fixed-size frames and rejects bad Xiph/EBML sizes") {
+            static const uint8_t block_prefix[] = {
+                0xa3u, 0x41u, 0x05u, 0x81u, 0u, 0u, 0x80u
+            };
+            uint8_t audio_bytes[257];
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t input = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_demuxer_packet_t output = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *container = NULL, *mutated = NULL;
+            size_t bytes = 0, block_at = SIZE_MAX, pos;
+            int track = -1, variant;
+            /* A 257-byte packet plus the 4-byte SimpleBlock header needs
+             * a two-byte EBML size. This also validates real header width. */
+            memset(audio_bytes, 0x7eu, sizeof(audio_bytes));
+            config.format = TURBO_MUXER_MKV;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "mp3";
+            stream.sample_rate = 44100;
+            stream.channels = 2;
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &track), 0);
+            if (track < 0) goto lace_cleanup;
+            input.stream_id = track;
+            input.data = audio_bytes;
+            input.size = sizeof(audio_bytes);
+            input.is_keyframe = 1;
+            input.duration = 26000;
+            check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &container, &bytes), 0);
+            for (pos = 0; pos + sizeof(block_prefix) + 1u <= bytes; ++pos) {
+                if (memcmp(container + pos, block_prefix,
+                           sizeof(block_prefix)) == 0) {
+                    block_at = pos;
+                    break;
+                }
+            }
+            check_true(block_at != SIZE_MAX);
+            if (block_at == SIZE_MAX) goto lace_cleanup;
+            mutated = (uint8_t *)malloc(bytes);
+            check_not_null(mutated);
+            if (!mutated) goto lace_cleanup;
+            for (variant = 0; variant < 5; ++variant) {
+                int result, count = 0;
+                int expected = variant == 0 ? 256 :
+                               variant == 3 || variant == 4 ? 1 : -1;
+                memcpy(mutated, container, bytes);
+                dc.data = mutated;
+                dc.data_size = bytes;
+                /* Lace-count consumes the first payload byte. */
+                mutated[block_at + 7u] =
+                    variant == 0 || variant == 1 ? 255u :
+                    variant == 2 ? 1u : 0u;
+                mutated[block_at + 6u] = variant == 0 ? 0x84u :
+                    variant == 1 || variant == 3 ? 0x82u : 0x86u;
+                if (variant == 2) {
+                    /* First EBML lace length unknown (0xff): invalid. */
+                    mutated[block_at + 8u] = 0xffu;
+                }
+                demuxer = turbo_demuxer_create_by_name("mkv", &dc);
+                check_not_null(demuxer);
+                if (!demuxer) break;
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                while ((result = turbo_demuxer_read_packet(
+                            demuxer, &output)) == 1) {
+                    ++count;
+                    if (variant == 0) {
+                        check_equal(output.size, 1u);
+                        check_equal(output.data[0], 0x7eu);
+                    } else {
+                        check_equal(output.size, 256u);
+                        check_equal(output.data[0], 0x7eu);
+                    }
+                    turbo_demuxer_free_packet(&output);
+                    if (count > 256) break; /* bounded even on error */
+                }
+                if (expected < 0) {
+                    check_true(result < 0);
+                    check_equal(count, 0);
+                } else {
+                    check_equal(result, 0);
+                    check_equal(count, expected);
+                }
+                turbo_demuxer_destroy(demuxer);
+                demuxer = NULL;
+                turbo_demuxer_free_packet(&output);
+            }
+        lace_cleanup:
+            turbo_demuxer_free_packet(&output);
+            turbo_demuxer_destroy(demuxer);
+            free(mutated);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
     group("bounded WebM writer") {
         it("rejects an oversized VP8 packet before extending memory past its limit") {
             turbo_muxer_config_t config = {0};

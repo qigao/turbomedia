@@ -1,5 +1,6 @@
 #include "mkv-internal.h"
 #include "mkv-buffer.h"
+#include <limits.h>
 
 enum
 {
@@ -11,24 +12,25 @@ enum
 
 static int mkv_alloc_samples(struct mkv_t* mkv, int n)
 {
-	void* p;
-	if (n + mkv->count <= mkv->capacity) {
-        memset(mkv->samples + mkv->count, 0,
-               (size_t)n * sizeof(struct mkv_sample_t));
-		return 0;
+    void* p;
+    size_t required;
+    if (!mkv || n <= 0 || mkv->count < 0 || mkv->capacity < 0 ||
+        mkv->count >= INT_MAX - n)
+        return -EINVAL;
+    required = (size_t)mkv->count + (size_t)n + 1u;
+    if (required > SIZE_MAX / sizeof(struct mkv_sample_t))
+        return -ENOMEM;
+    if ((size_t)mkv->count + (size_t)n > (size_t)mkv->capacity) {
+        p = realloc(mkv->samples, required * sizeof(struct mkv_sample_t));
+        if (!p) return -ENOMEM;
+        mkv->samples = (struct mkv_sample_t*)p;
+        mkv->capacity = (int)required;
     }
-
-	p = realloc(mkv->samples, sizeof(struct mkv_sample_t) * (mkv->count + n+1));
-	if(!p)
-		return -ENOMEM;
-
-	mkv->samples = (struct mkv_sample_t*)p;
-	mkv->capacity = mkv->count + n + 1;
-    /* realloc does not initialize a new sample; in particular, a regular
-     * SimpleBlock must never inherit a previous BlockGroup's trim value. */
+    /* Every new sample must start with zero trim/flags even if the
+     * allocation was recycled from an earlier cluster. */
     memset(mkv->samples + mkv->count, 0,
            (size_t)n * sizeof(struct mkv_sample_t));
-	return 0;
+    return 0;
 }
 
 static int mkv_add_rap(struct mkv_t* mkv, int i)
@@ -46,194 +48,141 @@ static int mkv_add_rap(struct mkv_t* mkv, int i)
 	return 0;
 }
 
-int mkv_cluster_simple_block_read(struct mkv_t* mkv, struct mkv_cluster_t* cluster, struct mkv_ioutil_t *io, int64_t bytes)
+int mkv_cluster_simple_block_read(struct mkv_t* mkv,
+    struct mkv_cluster_t* cluster, struct mkv_ioutil_t* io, int64_t bytes)
 {
-	int r;
-	int tid;
-	uint8_t i, j, n, f;
-	uint8_t flags;
-	uint64_t pos, pos2;
-	int64_t size, total;
-	int64_t lacing;
-	uint64_t duration;
-	int16_t timestamp;
-	struct mkv_track_t* track;
+    uint32_t lengths[256] = {0};
+    uint64_t start, payload, used, remaining, sum = 0, duration;
+    int64_t track_id, previous = 0, timestamp_ticks;
+    int16_t relative_timestamp;
+    uint8_t flags, lace_count = 0;
+    unsigned frame_count = 1u, i;
+    unsigned lacing;
+    int r, first_index, track_number;
+    int f = 0;
+    struct mkv_track_t* track;
 
-    /* EBML Block has a minimum four-byte header (track VINT, signed
-     * timestamp, flags). Refuse corrupt advertised sizes BEFORE subtracting
-     * 4 or narrowing to mkv_sample_t.bytes (uint32_t). A truncated block
-     * must never become a huge packet allocation. */
     if (!mkv || !cluster || !io || !mkv->timescale ||
         bytes < 4 || bytes > (int64_t)UINT32_MAX)
         return -EINVAL;
-
-	//if (0 != mkv_realloc(&cluster->blocks, cluster->count, &cluster->capacity, sizeof(struct mkv_block_t), 64))
-	//	return -ENOMEM;
-	//block = &cluster->blocks[cluster->count++];
-
-	// https://www.matroska.org/technical/basics.html#block-structure
-	pos = mkv_buffer_tell(io);
-	tid = (int)mkv_buffer_read_size(io);
-	timestamp = (int16_t)mkv_buffer_read_int(io, 2);
-	flags = (uint8_t)mkv_buffer_read_uint(io, 1);
-    if (mkv_buffer_error(io) != 0 ||
-        (mkv_buffer_tell(io) - pos) > (uint64_t)bytes)
+    start = mkv_buffer_tell(io);
+    if (mkv_buffer_error(io) != 0) return -EINVAL;
+    track_id = mkv_buffer_read_size(io);
+    relative_timestamp = (int16_t)mkv_buffer_read_int(io, 2);
+    flags = (uint8_t)mkv_buffer_read_uint(io, 1);
+    payload = mkv_buffer_tell(io);
+    if (mkv_buffer_error(io) != 0 || payload < start ||
+        payload - start > (uint64_t)bytes ||
+        track_id < 1 || track_id > INT_MAX)
         return -EINVAL;
-	total = 0; // Block Header
 
-	track = mkv_track_find(mkv, tid);
-	if (!track)
-		return -1;
+    track_number = (int)track_id;
+    track = mkv_track_find(mkv, (unsigned)track_number);
+    if (!track) return -EINVAL;
+    if (cluster->timestamp > INT64_MAX) return -ERANGE;
+    timestamp_ticks = (int64_t)cluster->timestamp + relative_timestamp;
+    if (timestamp_ticks < 0) return -EINVAL;
+    duration = track->duration / mkv->timescale;
+    lacing = (flags >> 1) & 0x03u;
 
-	// Number of nanoseconds (not scaled via TimestampScale) per frame 
-	// (track->duration / 1000000000 -> seconds) * 1000000000 / timescale
-	duration = track->duration / mkv->timescale;
+    if (lacing != MKV_LACING_NONE) {
+        if (payload - start >= (uint64_t)bytes)
+            return -EINVAL; /* missing lace-count byte */
+        lace_count = mkv_buffer_r8(io);
+        if (mkv_buffer_error(io) != 0) return -EINVAL;
+        frame_count = (unsigned)lace_count + 1u; /* 1..256, never uint8 */
+    }
 
-	f = 0;
-	if (flags & 0x80) { f |= MKV_FLAGS_KEYFRAME; }
-	if (flags & 0x08) { f |= MKV_FLAGS_INVISIBLE; }
-	if (flags & 0x01) { f |= MKV_FLAGS_DISCARDABLE; }
+    if (lacing == MKV_LACING_XIPH) {
+        for (i = 0; i < (unsigned)lace_count; ++i) {
+            uint32_t frame_length = 0;
+            uint8_t chunk;
+            do {
+                uint64_t at = mkv_buffer_tell(io);
+                if (mkv_buffer_error(io) != 0 || at < start ||
+                    at - start >= (uint64_t)bytes)
+                    return -EINVAL;
+                chunk = mkv_buffer_r8(io);
+                if (mkv_buffer_error(io) != 0 ||
+                    frame_length > UINT32_MAX - chunk)
+                    return -EINVAL;
+                frame_length += chunk;
+            } while (chunk == 255u);
+            if (!frame_length || sum > UINT32_MAX - frame_length)
+                return -EINVAL;
+            lengths[i] = frame_length;
+            sum += frame_length;
+        }
+    } else if (lacing == MKV_LACING_EBML) {
+        for (i = 0; i < (unsigned)lace_count; ++i) {
+            uint64_t at = mkv_buffer_tell(io);
+            int64_t delta;
+            if (mkv_buffer_error(io) != 0 || at < start ||
+                at - start >= (uint64_t)bytes)
+                return -EINVAL;
+            delta = i == 0 ? mkv_buffer_read_size(io) :
+                             mkv_buffer_read_signed_size(io);
+            if (mkv_buffer_error(io) != 0 ||
+                delta <= -previous ||
+                delta > (int64_t)UINT32_MAX - previous)
+                return -EINVAL;
+            previous += delta;
+            if (sum > UINT32_MAX - (uint64_t)previous)
+                return -EINVAL;
+            lengths[i] = (uint32_t)previous;
+            sum += (uint64_t)previous;
+        }
+    }
 
-	switch ((flags >> 1) & 0x03) // lacing
-	{
-	case MKV_LACING_XIPH: // Xiph lacing
-		n = (uint8_t)mkv_buffer_read_uint(io, 1);
-		r = mkv_alloc_samples(mkv, n + 1);
-		if (0 != r) return r;
+    payload = mkv_buffer_tell(io);
+    if (mkv_buffer_error(io) != 0 || payload < start ||
+        payload - start > (uint64_t)bytes)
+        return -EINVAL;
+    used = payload - start;
+    remaining = (uint64_t)bytes - used;
+    if (lacing == MKV_LACING_FIXED_SIZE) {
+        if (frame_count == 0u || !remaining ||
+            remaining % frame_count != 0u)
+            return -EINVAL;
+        for (i = 0; i < frame_count; ++i)
+            lengths[i] = (uint32_t)(remaining / frame_count);
+    } else {
+        if (sum >= remaining) return -EINVAL;
+        lengths[frame_count - 1u] = (uint32_t)(remaining - sum);
+    }
+    for (i = 0; i < frame_count; ++i)
+        if (lengths[i] == 0u) return -EINVAL;
+    if (duration > 0 &&
+        (uint64_t)(frame_count - 1u) >
+            ((uint64_t)INT64_MAX - (uint64_t)timestamp_ticks) / duration)
+        return -ERANGE;
 
-		for (i = 0; i < n; i++)
-		{
-			size = 0;
-			do
-			{
-				j = (uint8_t)mkv_buffer_read_uint(io, 1);
-				size += j;
-			} while (j == 255);
+    if (flags & 0x80u) f |= MKV_FLAGS_KEYFRAME;
+    if (flags & 0x08u) f |= MKV_FLAGS_INVISIBLE;
+    if (flags & 0x01u) f |= MKV_FLAGS_DISCARDABLE;
 
-			mkv->samples[mkv->count + i].bytes = (uint32_t)size;
-			total += size; // remain
-		}
-
-		pos2 = mkv_buffer_tell(io);
-		if (total + (int64_t)(pos2 - pos) > bytes)
-		{
-			assert(0);
-			return -1;
-		}
-
-		// last-frame(n+1)
-		mkv->samples[mkv->count + n].bytes = (uint32_t)(bytes - total - (pos2 - pos));
-
-		mkv->samples[mkv->count + 0].flags = f;
-		mkv->samples[mkv->count + 0].track = tid;
-		mkv->samples[mkv->count + 0].pts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].dts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].offset = mkv_buffer_tell(io);
-		for (i = 1; i < n + 1; i++)
-		{
-			//mkv->samples[i].flags = mkv->samples[0].flags;
-			mkv->samples[mkv->count + i].track = mkv->samples[mkv->count + 0].track;
-			mkv->samples[mkv->count + i].pts = mkv->samples[mkv->count + i - 1].pts + duration;
-			mkv->samples[mkv->count + i].dts = mkv->samples[mkv->count + i - 1].dts + duration;
-			mkv->samples[mkv->count + i].offset = mkv->samples[mkv->count + i - 1].offset + mkv->samples[mkv->count + i - 1].bytes;
-		}
-
-		mkv->count += n + 1;
-		break;
-
-	case MKV_LACING_FIXED_SIZE: // fixed-size 
-		n = (uint8_t)mkv_buffer_read_uint(io, 1);
-		r = mkv_alloc_samples(mkv, n + 1);
-		if (0 != r) return r;
-
-		size = (bytes - 5) / (n + 1);
-		assert(size * (n + 1) == bytes - 5);
-
-		mkv->samples[mkv->count + 0].flags = f;
-		mkv->samples[mkv->count + 0].track = tid;
-		mkv->samples[mkv->count + 0].pts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].dts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].bytes = (uint32_t)size;
-		mkv->samples[mkv->count + 0].offset = mkv_buffer_tell(io);
-		for (i = 1; i < n + 1; i++)
-		{
-			//mkv->samples[mkv->count + i].flags = mkv->samples[mkv->count + 0].flags;
-			mkv->samples[mkv->count + i].track = mkv->samples[mkv->count + 0].track;
-			mkv->samples[mkv->count + i].pts = mkv->samples[mkv->count + i - 1].pts + duration;
-			mkv->samples[mkv->count + i].dts = mkv->samples[mkv->count + i - 1].dts + duration;
-			mkv->samples[mkv->count + i].bytes = (uint32_t)size;
-			mkv->samples[mkv->count + i].offset = mkv->samples[mkv->count + i - 1].offset + mkv->samples[mkv->count + i - 1].bytes;
-		}
-
-		mkv->count += n + 1;
-		break;
-
-	case MKV_LACING_EBML: // EBML lacing
-		n = (uint8_t)mkv_buffer_read_uint(io, 1);
-		r = mkv_alloc_samples(mkv, n + 1);
-		if (0 != r) return r;
-
-		size = 0; // first one
-		for (i = 0; i < n; i++)
-		{
-			// The first size in the lace is unsigned as in EBML
-			// The others use a range shifting to get a sign on each value
-			lacing = 0 == i ? mkv_buffer_read_size(io) : mkv_buffer_read_signed_size(io);
-			size += lacing; // diff with previous size
-			mkv->samples[mkv->count + i].bytes = (uint32_t)size;
-			total += size; // remain
-		}
-
-		pos2 = mkv_buffer_tell(io);
-		if (total + (int64_t)(pos2 - pos) > bytes)
-		{
-			assert(0);
-			return -1;
-		}
-
-		// last-frame(n+1)
-		mkv->samples[mkv->count + n].bytes = (uint32_t)(bytes - total - (pos2 - pos));
-
-		mkv->samples[mkv->count + 0].flags = f;
-		mkv->samples[mkv->count + 0].track = tid;
-		mkv->samples[mkv->count + 0].pts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].dts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].offset = mkv_buffer_tell(io);
-		for (i = 1; i < n + 1; i++)
-		{
-			//mkv->samples[mkv->count + i].flags = mkv->samples[mkv->count + 0].flags;
-			mkv->samples[mkv->count + i].track = mkv->samples[mkv->count + 0].track;
-			mkv->samples[mkv->count + i].pts = mkv->samples[mkv->count + i - 1].pts + duration;
-			mkv->samples[mkv->count + i].dts = mkv->samples[mkv->count + i - 1].dts + duration;
-			mkv->samples[mkv->count + i].offset = mkv->samples[mkv->count + i - 1].offset + mkv->samples[mkv->count + i - 1].bytes;
-		}
-
-		mkv->count += n + 1;
-		break;
-
-	default: // no lacing
-		// frame
-		n = 0;
-		r = mkv_alloc_samples(mkv, 1);
-		if (0 != r) return r;
-
-		mkv->samples[mkv->count + 0].flags = f;
-		mkv->samples[mkv->count + 0].track = tid;
-		mkv->samples[mkv->count + 0].pts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].dts = cluster->timestamp + timestamp;
-		mkv->samples[mkv->count + 0].bytes = (uint32_t)(bytes - 4);
-		mkv->samples[mkv->count + 0].offset = mkv_buffer_tell(io);
-		mkv->count += 1;
-		break;
-	}
-
-	if (f & MKV_FLAGS_KEYFRAME)
-	{
-		assert(mkv->count >= n + 1);
-		mkv_add_rap(mkv, mkv->count - n - 1);
-	}
-
-	return 0;
+    r = mkv_alloc_samples(mkv, (int)frame_count);
+    if (r != 0) return r;
+    first_index = mkv->count;
+    for (i = 0; i < frame_count; ++i) {
+        struct mkv_sample_t* sample = &mkv->samples[first_index + (int)i];
+        sample->flags = i == 0 ? f : 0;
+        sample->track = track_number;
+        sample->pts = timestamp_ticks + (int64_t)(i * duration);
+        sample->dts = sample->pts;
+        sample->bytes = lengths[i];
+        sample->offset = payload;
+        payload += lengths[i];
+    }
+    mkv->count += (int)frame_count;
+    if (f & MKV_FLAGS_KEYFRAME) {
+        r = mkv_add_rap(mkv, first_index);
+        if (r != 0) {
+            mkv->count = first_index;
+            return r;
+        }
+    }
+    return 0;
 }
 
 /* Block and SimpleBlock share a four-byte payload header, but BlockGroup

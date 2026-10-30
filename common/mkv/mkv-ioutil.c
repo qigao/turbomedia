@@ -15,9 +15,10 @@ uint32_t mkv_buffer_read_id(struct mkv_ioutil_t* io)
 {
     size_t n;
     uint32_t v;
-    uint8_t ptr[16];
+    uint8_t ptr[16] = {0};
 
     mkv_buffer_read(io, ptr, 1);
+    if (io->error) return 0; /* never use unread stack bytes */
     n = 8 - s_ebml_log2_tab[ptr[0]];
     //if (n > max)
     //{
@@ -39,12 +40,13 @@ int64_t mkv_buffer_read_size(struct mkv_ioutil_t* io)
 {
     size_t i, n;
     int64_t v;
-    uint8_t ptr[16];
+    uint8_t ptr[16] = {0};
 
     if (io->error)
         return 0;
 
     mkv_buffer_read(io, ptr, 1);
+    if (io->error) return 0;
     n = 8 - s_ebml_log2_tab[ptr[0]];
     //if (n > max)
     //{
@@ -78,9 +80,10 @@ int64_t mkv_buffer_read_signed_size(struct mkv_ioutil_t* io)
 {
     size_t i, n;
     int64_t v;
-    uint8_t ptr[16];
+    uint8_t ptr[16] = {0};
 
     mkv_buffer_read(io, ptr, 1);
+    if (io->error) return 0; /* never use unread stack bytes */
     n = 8 - s_ebml_log2_tab[ptr[0]];
     //if (n > max)
     //{
