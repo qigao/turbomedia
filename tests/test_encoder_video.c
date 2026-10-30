@@ -3,6 +3,7 @@
 #include <turbo_demuxer.h>
 
 #include <stdint.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,6 +69,129 @@ static void prepare_frames(uint8_t pixels[][16 * 16 * 3],
 }
 
 suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
+    group("C11 48kHz float PCM Opus/WebM v2") {
+        it("encodes real non-silent Opus and VP8 packets in two WebM tracks") {
+            uint8_t pixels[3][16 * 16 * 3];
+            tm_encoder_video_frame_v1 frames[3];
+            tm_encoder_video_v1 video;
+            float pcm[14400];
+            tm_encoder_audio_v1 audio = TM_ENCODER_AUDIO_V1_INIT;
+            video_result sink = {0};
+            turbo_demuxer_config_t demux_cfg = {0};
+            turbo_stream_info_t info = {0};
+            turbo_demuxer_packet_t packet = {0};
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_audio_codec_config_t decoder_config = {0};
+            turbo_codec_t *decoder = NULL;
+            size_t written = 0, i;
+            int videos = 0, audios = 0, nonzero = 0;
+            int64_t previous_pts = -1;
+            prepare_frames(pixels, frames, 3);
+            video = init_video(frames, 3);
+            for (i = 0; i < 14400u; ++i)
+                pcm[i] = i % 100u < 50u ? 0.65f : -0.65f;
+            audio.samples = pcm;
+            audio.sample_count = 14400u;
+            audio.sample_capacity_bytes = sizeof(pcm);
+            sink.capacity = video.max_output_bytes;
+            sink.bytes = (uint8_t *)malloc(sink.capacity);
+            check_not_null(sink.bytes);
+            if (!sink.bytes) return;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink,
+                NULL, NULL, &written), TM_ENCODER_OK);
+            check_equal(written, sink.size);
+            check_equal(sink.writes, 1u);
+            if (written == 0) { free(sink.bytes); return; }
+            turbo_demuxer_registry_init();
+            demux_cfg.data = sink.bytes;
+            demux_cfg.data_size = sink.size;
+            demuxer = turbo_demuxer_create_by_name("webm", &demux_cfg);
+            check_not_null(demuxer);
+            if (demuxer) {
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                check_equal(turbo_demuxer_get_stream_count(demuxer), 2);
+                check_equal(turbo_demuxer_get_stream_info(demuxer, 1, &info), 0);
+                check_equal(info.codec_name, "opus");
+                check_equal(info.channels, 1);
+                decoder_config.sample_rate = 48000;
+                decoder_config.channels = 1;
+                decoder_config.bitrate = 64000;
+                decoder_config.frame_size_ms = 20;
+                decoder_config.complexity = 5;
+                decoder = turbo_codec_create_decoder("opus", &decoder_config);
+                check_not_null(decoder);
+                while (turbo_demuxer_read_packet(demuxer, &packet) == 1) {
+                    check_true(packet.pts >= previous_pts);
+                    previous_pts = packet.pts;
+                    if (packet.stream_index == 0) {
+                        ++videos;
+                    } else if (packet.stream_index == 1) {
+                        int16_t decoded[960];
+                        size_t decoded_size = sizeof(decoded);
+                        ++audios;
+                        if (decoder && turbo_codec_decode(
+                                decoder, packet.data, packet.size,
+                                (uint8_t *)decoded, &decoded_size) == TURBO_CODEC_OK) {
+                            size_t n;
+                            for (n = 0; n < decoded_size / sizeof(decoded[0]); ++n)
+                                if (decoded[n] != 0) ++nonzero;
+                        }
+                    }
+                    turbo_demuxer_free_packet(&packet);
+                    if (audios + videos > 18) break;
+                }
+                turbo_demuxer_free_packet(&packet);
+                check_equal(videos, 3);
+                check_equal(audios, 15);
+                check_true(nonzero > 0);
+                turbo_codec_destroy(decoder);
+                turbo_demuxer_destroy(demuxer);
+            }
+            free(sink.bytes);
+        }
+        it("rejects wrong sample rate, incomplete Opus frame, invalid PCM and cancel") {
+            uint8_t pixels[3][16 * 16 * 3];
+            tm_encoder_video_frame_v1 frames[3];
+            tm_encoder_video_v1 video;
+            float pcm[14400] = {0};
+            tm_encoder_audio_v1 audio = TM_ENCODER_AUDIO_V1_INIT;
+            video_result sink = {0};
+            size_t written = 111;
+            prepare_frames(pixels, frames, 3);
+            video = init_video(frames, 3);
+            audio.samples = pcm;
+            audio.sample_count = 14400u;
+            audio.sample_capacity_bytes = sizeof(pcm);
+            audio.sample_rate = 44100;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EUNSUPPORTED);
+            check_equal(written, 0u);
+            audio.sample_rate = 48000;
+            audio.sample_count = 14401u;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EUNSUPPORTED);
+            audio.sample_count = 14400u;
+            audio.sample_capacity_bytes = 1;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EINVAL);
+            audio.sample_capacity_bytes = sizeof(pcm);
+            pcm[0] = NAN; /* NaN: cannot become valid PCM16 */
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EINVAL);
+            pcm[0] = 0;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, cancel_now,
+                NULL, &written), TM_ENCODER_ECANCELLED);
+            check_equal(sink.writes, 0u);
+            check_equal(written, 0u);
+        }
+    }
+
     group("exact TurboMedia codec and muxer") {
         it("encodes RGB input into native VP8 WebM with real demuxed frames") {
             uint8_t pixels[3][16 * 16 * 3];

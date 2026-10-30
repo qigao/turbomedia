@@ -62,11 +62,21 @@ pre-skip timebase and writes both CodecDelay and 80ms SeekPreRoll. Existing
 The in-repo native CTests inspect both emitted Matroska fields and reject
 missing/mismatched OpusHead metadata.
 
-**Strict remaining limitations:** an audio request fails
-`TM_ENCODER_EUNSUPPORTED` in the current one-shot VP8/WebM Encoder.
-Float PCM resampling, Opus packet interleaving, and partial-last-frame trim
-are still open in Issue #274; the track timing prerequisite alone is not
-an audible-video implementation. The WebM in-memory writer now enforces the
+The `tm_encoder_webm_encode_av_v2()` entrypoint adds a **strict**
+borrowed interleaved float-PCM soundtrack. The first qualified A/V profile
+accepts 48 kHz mono/stereo audio whose duration exactly matches the VP8
+frame sequence and consists of complete 20ms Opus frames. Invalid float
+samples (NaN/Inf), capacity errors and cancellation fail before publishing
+any output. TurboMedia converts finite PCM to PCM16 using a bounded
+per-packet stack buffer, calls its **existing Opus Codec**, builds
+`OpusHead` with the real encoder pre-skip and interleaves packets by PTS
+through its **existing WebM Muxer**. The original `tm_encoder_webm_encode()`
+remains silent-only and explicitly rejects audio arguments.
+
+**Strict remaining limitations:** other source sample rates, fractional
+last Opus frames, resampling, sample-accurate end trimming and actual sd
+integration remain open in Issue #274. They return EUNSUPPORTED rather
+than silently truncating, resampling, or dropping soundtrack data. The WebM in-memory writer now enforces the
 per-task output limit during write and seek; this still does not bound
 libvpx/swscale working-set allocations or network reader copies.
 Animated WebP, AVI, WebP XMP, audio+video interleaving, bounded muxer internal

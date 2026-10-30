@@ -115,6 +115,35 @@ typedef struct tm_encoder_video_v1 {
     sizeof(tm_encoder_video_v1), TM_ENCODER_VIDEO_V1, \
     0u, 0u, 24u, 0u, NULL, 0u, NULL, 0u, 0u, 0u }
 
+/* V2 audio input is borrowed interleaved floating PCM. This first native
+ * A/V profile accepts only 48 kHz, mono/stereo and exact 20ms-aligned audio
+ * with a duration exactly matching the frame sequence; unsupported rates or
+ * fractional final Opus frames FAIL before codec setup, without silently
+ * resampling or dropping samples. A later version must add source-rate
+ * conversion and end-trim while preserving this strict V1 contract. */
+#define TM_ENCODER_AUDIO_V1 1u
+typedef struct tm_encoder_audio_v1 {
+    uint32_t size, version, sample_rate, channels;
+    const float *samples; /* borrowed through the encode call */
+    size_t sample_count; /* count PER channel */
+    size_t sample_capacity_bytes;
+    uint32_t reserved;
+} tm_encoder_audio_v1;
+#define TM_ENCODER_AUDIO_V1_INIT { \
+    sizeof(tm_encoder_audio_v1), TM_ENCODER_AUDIO_V1, \
+    48000u, 1u, NULL, 0u, 0u, 0u }
+
+/* VP8 + Opus WebM; 48k PCM16 conversion and actual Opus lookahead remain
+ * private to TurboMedia::Encoder. Both audio and video are required;
+ * no soundless-success or alternate encoder. Encoder owns the muxer and
+ * discards its entire uncommitted output on error/cancellation. */
+TURBO_MEDIA_API tm_encoder_status tm_encoder_webm_encode_av_v2(
+    const tm_encoder_video_v1 *video,
+    const tm_encoder_audio_v1 *audio,
+    tm_encoder_write_fn write, void *write_user,
+    tm_encoder_should_cancel_fn cancelled, void *cancel_user,
+    size_t *written);
+
 typedef int (*tm_encoder_should_cancel_fn)(void *user);
 
 /* Encodes one complete raw-video sequence into a single WebM container.

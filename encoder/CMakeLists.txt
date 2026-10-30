@@ -8,6 +8,7 @@ add_library(turbo_media_encoder SHARED
 turbo_media_configure_component(turbo_media_encoder Encoder)
 target_include_directories(turbo_media_encoder
   PRIVATE ${STB_INCLUDE_DIR}
+          ${PROJECT_SOURCE_DIR}/common/codec_helpers
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(turbo_media_encoder PRIVATE

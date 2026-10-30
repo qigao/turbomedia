@@ -1,11 +1,13 @@
 #include "turbo_media_encoder.h"
 #include "turbo_codec.h"
 #include "turbo_muxer.h"
+#include "opus-head.h"
 
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,14 +38,97 @@ static enum AVPixelFormat tm_video_input_format(uint32_t kind, unsigned *channel
     }
 }
 
-tm_encoder_status tm_encoder_webm_encode(
+typedef struct tm_audio_owner {
+    const tm_encoder_audio_v1 *input;
+    turbo_codec_t *codec;
+    turbo_muxer_t *muxer;
+    int track;
+    size_t current;
+    size_t packets;
+} tm_audio_owner;
+
+static tm_encoder_status tm_audio_preflight(const tm_encoder_video_v1 *video,
+                                           const tm_encoder_audio_v1 *audio) {
+    size_t total, samples;
+    if (!audio || audio->size != sizeof(*audio) ||
+        audio->version != TM_ENCODER_AUDIO_V1)
+        return TM_ENCODER_EVERSION;
+    if (!audio->samples || !audio->sample_count || audio->reserved ||
+        audio->channels < 1u || audio->channels > 2u)
+        return TM_ENCODER_EINVAL;
+    /* No silent SRC or trim: exact 48kHz / full 20ms frames, with source
+     * duration matching the requested video frame timeline. */
+    if (audio->sample_rate != 48000u)
+        return TM_ENCODER_EUNSUPPORTED;
+    if (!video->fps || video->frame_count > SIZE_MAX / 48000u)
+        return TM_ENCODER_EINVAL;
+    total = video->frame_count * 48000u;
+    if (total % video->fps != 0u)
+        return TM_ENCODER_EUNSUPPORTED;
+    samples = total / video->fps;
+    if (samples != audio->sample_count || samples % 960u != 0u)
+        return TM_ENCODER_EUNSUPPORTED;
+    if (samples > SIZE_MAX / audio->channels ||
+        samples * audio->channels > SIZE_MAX / sizeof(float) ||
+        audio->sample_capacity_bytes <
+            samples * audio->channels * sizeof(float))
+        return TM_ENCODER_EINVAL;
+    return TM_ENCODER_OK;
+}
+
+static tm_encoder_status tm_audio_emit_next(
+    tm_audio_owner *owner,
+    tm_encoder_should_cancel_fn cancelled, void *cancel_user) {
+    int16_t pcm[960u * 2u];
+    uint8_t compressed[4096u];
+    size_t n = sizeof(compressed);
+    size_t count = 960u * owner->input->channels;
+    size_t start, i;
+    turbo_encoded_frame_t info = {0};
+    turbo_muxer_packet_t packet = {0};
+    if (owner->current >= owner->packets)
+        return TM_ENCODER_EINVAL;
+    if (cancelled && cancelled(cancel_user))
+        return TM_ENCODER_ECANCELLED;
+    start = owner->current * count;
+    for (i = 0; i < count; ++i) {
+        float v = owner->input->samples[start + i];
+        if (!isfinite(v))
+            return TM_ENCODER_EINVAL;
+        if (v > 1.0f) v = 1.0f;
+        if (v < -1.0f) v = -1.0f;
+        pcm[i] = (int16_t)(v * 32767.0f + (v < 0.0f ? -0.5f : 0.5f));
+    }
+    if (turbo_codec_encode(owner->codec, (const uint8_t *)pcm,
+                           count * sizeof(int16_t), compressed,
+                           &n, &info) != TURBO_CODEC_OK || n == 0u)
+        return TM_ENCODER_ECODEC;
+    packet.stream_id = owner->track;
+    packet.data = compressed;
+    packet.size = n;
+    packet.pts = (int64_t)(owner->current * UINT64_C(20000));
+    packet.dts = packet.pts;
+    packet.duration = 20000;
+    packet.is_keyframe = 1;
+    if (turbo_muxer_write_packet(owner->muxer, &packet) != 0)
+        return TM_ENCODER_ECAPACITY;
+    ++owner->current;
+    return TM_ENCODER_OK;
+}
+
+static tm_encoder_status tm_encoder_webm_owner(
     const tm_encoder_video_v1 *options,
+    const tm_encoder_audio_v1 *audio,
     tm_encoder_write_fn write, void *write_user,
     tm_encoder_should_cancel_fn cancelled, void *cancel_user,
     size_t *written) {
     tm_encoder_status status = TM_ENCODER_EINVAL;
     turbo_video_codec_config_t codec_settings = {0};
     turbo_codec_t *codec = NULL;
+    turbo_codec_t *opus = NULL;
+    tm_audio_owner audio_owner = {0};
+    turbo_audio_codec_config_t opus_config = {0};
+    uint8_t opus_head_bytes[19];
     turbo_muxer_t *muxer = NULL;
     turbo_muxer_config_t muxer_settings = {0};
     turbo_stream_info_t stream = {0};
@@ -53,6 +138,8 @@ tm_encoder_status tm_encoder_webm_encode(
     uint8_t *yuv = NULL, *compressed = NULL, *container = NULL;
     size_t pixel_count, yuv_size, packet_capacity, frame_index, container_size = 0;
     int video_track = -1;
+    int audio_track = -1;
+    uint32_t pre_skip = 0;
     int width, height;
 
     if (written)
@@ -63,7 +150,12 @@ tm_encoder_status tm_encoder_webm_encode(
         options->version != TM_ENCODER_VIDEO_V1)
         return TM_ENCODER_EVERSION;
     if (options->audio_bytes || options->audio_pcm)
-        return TM_ENCODER_EUNSUPPORTED;  /* no silent soundtrack loss */
+        return TM_ENCODER_EUNSUPPORTED; /* V1 flags must never be ignored */
+    if (audio) {
+        status = tm_audio_preflight(options, audio);
+        if (status != TM_ENCODER_OK)
+            return status;
+    }
     if (!options->frames || options->reserved ||
         options->width < 2u || options->height < 2u ||
         options->width > TURBO_VIDEO_MAX_WIDTH ||
@@ -124,8 +216,53 @@ tm_encoder_status tm_encoder_webm_encode(
     stream.width = width;
     stream.height = height;
     stream.framerate = (int)options->fps;
-    if (turbo_muxer_add_stream(muxer, &stream, &video_track) != 0 ||
-        turbo_muxer_write_header(muxer) != 0) {
+    if (turbo_muxer_add_stream(muxer, &stream, &video_track) != 0) {
+        status = TM_ENCODER_ECODEC;
+        goto cleanup;
+    }
+    if (audio) {
+        struct opus_head_t head = {0};
+        opus_config.sample_rate = 48000;
+        opus_config.channels = (int)audio->channels;
+        opus_config.bitrate = 64000;
+        opus_config.frame_size_ms = 20;
+        opus_config.complexity = 5;
+        opus = turbo_codec_create_encoder("opus", &opus_config);
+        if (!opus) {
+            status = TM_ENCODER_EUNSUPPORTED;
+            goto cleanup;
+        }
+        if (turbo_codec_opus_lookahead_samples(opus, &pre_skip) !=
+                TURBO_CODEC_OK || !pre_skip || pre_skip > UINT16_MAX) {
+            status = TM_ENCODER_ECODEC;
+            goto cleanup;
+        }
+        head.version = 1;
+        head.channels = (uint8_t)audio->channels;
+        head.pre_skip = (uint16_t)pre_skip;
+        head.input_sample_rate = 48000;
+        if (opus_head_save(&head, opus_head_bytes, sizeof(opus_head_bytes)) != 19) {
+            status = TM_ENCODER_ECODEC;
+            goto cleanup;
+        }
+        stream = (turbo_stream_info_t){0};
+        stream.type = TURBO_CODEC_TYPE_AUDIO;
+        stream.codec_name = "opus";
+        stream.sample_rate = 48000;
+        stream.channels = (int)audio->channels;
+        stream.extradata = opus_head_bytes;
+        stream.extradata_size = sizeof(opus_head_bytes);
+        if (turbo_muxer_add_stream(muxer, &stream, &audio_track) != 0) {
+            status = TM_ENCODER_ECODEC;
+            goto cleanup;
+        }
+        audio_owner.input = audio;
+        audio_owner.codec = opus;
+        audio_owner.muxer = muxer;
+        audio_owner.track = audio_track;
+        audio_owner.packets = audio->sample_count / 960u;
+    }
+    if (turbo_muxer_write_header(muxer) != 0) {
         status = TM_ENCODER_ECODEC;
         goto cleanup;
     }
@@ -139,6 +276,16 @@ tm_encoder_status tm_encoder_webm_encode(
 
     for (frame_index = 0; frame_index < options->frame_count; ++frame_index) {
         const tm_encoder_video_frame_v1 *frame = &options->frames[frame_index];
+        if (audio) {
+            uint64_t timestamp = (uint64_t)frame_index *
+                                 UINT64_C(1000000) / options->fps;
+            while (audio_owner.current < audio_owner.packets &&
+                   (uint64_t)audio_owner.current * UINT64_C(20000) <= timestamp) {
+                status = tm_audio_emit_next(&audio_owner, cancelled, cancel_user);
+                if (status != TM_ENCODER_OK)
+                    goto cleanup;
+            }
+        }
         enum AVPixelFormat input_format;
         unsigned channels = 0;
         size_t minimum_stride, last_byte, encoded_len = packet_capacity;
@@ -214,6 +361,11 @@ tm_encoder_status tm_encoder_webm_encode(
         }
     }
 
+    while (audio && audio_owner.current < audio_owner.packets) {
+        status = tm_audio_emit_next(&audio_owner, cancelled, cancel_user);
+        if (status != TM_ENCODER_OK)
+            goto cleanup;
+    }
     if (cancelled && cancelled(cancel_user)) {
         status = TM_ENCODER_ECANCELLED;
         goto cleanup;
@@ -242,6 +394,30 @@ cleanup:
     free(compressed);
     free(yuv);
     turbo_muxer_destroy(muxer);
+    turbo_codec_destroy(opus);
     turbo_codec_destroy(codec);
     return status;
+}
+
+tm_encoder_status tm_encoder_webm_encode(
+    const tm_encoder_video_v1 *options,
+    tm_encoder_write_fn write, void *write_user,
+    tm_encoder_should_cancel_fn cancelled, void *cancel_user,
+    size_t *written) {
+    return tm_encoder_webm_owner(
+        options, NULL, write, write_user, cancelled, cancel_user, written);
+}
+
+tm_encoder_status tm_encoder_webm_encode_av_v2(
+    const tm_encoder_video_v1 *video,
+    const tm_encoder_audio_v1 *audio,
+    tm_encoder_write_fn write, void *write_user,
+    tm_encoder_should_cancel_fn cancelled, void *cancel_user,
+    size_t *written) {
+    if (!audio) {
+        if (written) *written = 0;
+        return TM_ENCODER_EINVAL;
+    }
+    return tm_encoder_webm_owner(
+        video, audio, write, write_user, cancelled, cancel_user, written);
 }
