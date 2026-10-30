@@ -250,7 +250,10 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_equal(got.tracks, 2);
             check_equal(got.audio_channels, 2);
             check_equal(got.audio_rate, 48000);
-            check_equal(got.opus_input_rate, 44100u);
+            /* WebM OpusHead and Track SamplingFrequency must match
+             * the actual 48kHz post-resample codec input. */
+            check_equal(got.opus_input_rate, (uint32_t)got.audio_rate);
+            check_equal(got.opus_input_rate, 48000u);
             check_true(got.pre_skip > 0u);
             check_true(got.has_codec_delay);
             check_true(got.has_preroll);
@@ -293,7 +296,7 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_equal(mono.status, TM_ENCODER_OK);
             check_equal(mono.tracks, 2);
             check_equal(mono.audio_channels, 1);
-            check_equal(mono.opus_input_rate, 24000u);
+            check_equal(mono.opus_input_rate, 48000u);
             check_equal(mono.video_packets, 3);
             check_true(mono.nonzero_left > 0);
             check_true(mono.pts_monotonic);
@@ -301,7 +304,7 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                         mono.pre_skip - (size_t)mono_tail, 6000u);
             check_equal(mono.duration_ms, 125);
             check_equal(low_rate.status, TM_ENCODER_OK);
-            check_equal(low_rate.opus_input_rate, 8000u);
+            check_equal(low_rate.opus_input_rate, 48000u);
             check_equal(low_rate.video_packets, 3);
             check_true(low_rate.audio_packets > 0);
             check_true(low_rate.nonzero_left > 0);

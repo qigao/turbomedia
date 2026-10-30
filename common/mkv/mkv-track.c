@@ -62,12 +62,12 @@ int mkv_add_audio(struct mkv_track_t* track, enum mkv_codec_t codec, int channel
                            extra_data_size, &head) != 19 ||
             head.version != 1u || head.channels != channel_count ||
             !head.pre_skip || head.channel_mapping_family != 0u ||
-            sample_rate != 48000 || !head.input_sample_rate)
+            sample_rate != 48000 ||
+            head.input_sample_rate != (uint32_t)sample_rate)
             return -EINVAL;
-        /* WebM decodes Opus on a 48 kHz timeline, regardless of the
-         * informational original source rate in OpusHead. Only the
-         * Matroska Audio/SamplingFrequency must be 48 kHz here.
-         * pre_skip is likewise always in 48k decoded samples. */
+        /* Matroska Opus mapping: SamplingFrequency MUST equal the
+         * OpusHead InputSampleRate. This owner feeds the codec after
+         * resampling to 48 kHz; pre_skip is in 48k decoded samples. */
         track->codec_delay_ns = (uint64_t)head.pre_skip *
                                 UINT64_C(1000000000) / UINT64_C(48000);
         track->seek_preroll_ns = UINT64_C(80000000);

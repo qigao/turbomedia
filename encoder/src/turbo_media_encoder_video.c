@@ -341,7 +341,11 @@ static tm_encoder_status tm_encoder_webm_owner(
         head.version = 1;
         head.channels = (uint8_t)audio->channels;
         head.pre_skip = (uint16_t)pre_skip;
-        head.input_sample_rate = audio->sample_rate; /* informational source rate */
+        /* WebM requires OpusHead/InputSampleRate to equal the Matroska
+         * SamplingFrequency. Both describe the actual post-resample input
+         * into this Opus encoder, which is always 48 kHz. The borrowed
+         * source rate remains on tm_encoder_audio_v1, not OpusHead. */
+        head.input_sample_rate = 48000;
         if (opus_head_save(&head, opus_head_bytes, sizeof(opus_head_bytes)) != 19) {
             status = TM_ENCODER_ECODEC;
             goto cleanup;

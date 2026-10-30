@@ -126,6 +126,9 @@ typedef struct tm_encoder_video_v1 {
  * uses direct conversion. A partial final 20 ms Opus input frame is
  * zero-padded; actual Opus lookahead and positive last-block Matroska
  * DiscardPadding restore the exact 48kHz presentation sample count.
+ * The original source rate stays in this borrowed API descriptor;
+ * OpusHead/InputSampleRate and Matroska SamplingFrequency BOTH record
+ * the post-resample 48kHz Opus encoder input (Matroska A_OPUS mapping).
  * Nonfinite PCM returns EINVAL before any output publication. */
 #define TM_ENCODER_AUDIO_V1 1u
 typedef struct tm_encoder_audio_v1 {
