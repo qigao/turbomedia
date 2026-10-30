@@ -45,6 +45,7 @@ typedef struct tm_audio_owner {
     int track;
     size_t current;
     size_t packets;
+    uint64_t tail_discard_ns;
 } tm_audio_owner;
 
 static tm_encoder_status tm_audio_preflight(const tm_encoder_video_v1 *video,
@@ -92,7 +93,14 @@ static tm_encoder_status tm_audio_emit_next(
         return TM_ENCODER_ECANCELLED;
     start = owner->current * count;
     for (i = 0; i < count; ++i) {
-        float v = owner->input->samples[start + i];
+        size_t frame_sample = owner->current * 960u +
+                              i / owner->input->channels;
+        float v;
+        if (frame_sample >= owner->input->sample_count) {
+            pcm[i] = 0; /* zero drain: do not read past the borrowed PCM */
+            continue;
+        }
+        v = owner->input->samples[start + i];
         if (!isfinite(v))
             return TM_ENCODER_EINVAL;
         if (v > 1.0f) v = 1.0f;
@@ -110,7 +118,10 @@ static tm_encoder_status tm_audio_emit_next(
     packet.dts = packet.pts;
     packet.duration = 20000;
     packet.is_keyframe = 1;
-    if (turbo_muxer_write_packet(owner->muxer, &packet) != 0)
+    if ((owner->current + 1u == owner->packets && owner->tail_discard_ns ?
+            turbo_muxer_write_packet_with_discard_padding(
+                owner->muxer, &packet, owner->tail_discard_ns) :
+            turbo_muxer_write_packet(owner->muxer, &packet)) != 0)
         return TM_ENCODER_ECAPACITY;
     ++owner->current;
     return TM_ENCODER_OK;
@@ -260,7 +271,20 @@ static tm_encoder_status tm_encoder_webm_owner(
         audio_owner.codec = opus;
         audio_owner.muxer = muxer;
         audio_owner.track = audio_track;
-        audio_owner.packets = audio->sample_count / 960u;
+        /* Encoded samples - actual Opus pre-skip - tail trim = source.
+         * Pad with bounded zeros only after the last borrowed sample. */
+        {
+            uint64_t needed = (uint64_t)audio->sample_count + pre_skip;
+            uint64_t count = (needed + 959u) / 960u;
+            uint64_t excess = count * 960u - needed;
+            if (!count || count > SIZE_MAX || excess >= 960u) {
+                status = TM_ENCODER_ECAPACITY;
+                goto cleanup;
+            }
+            audio_owner.packets = (size_t)count;
+            audio_owner.tail_discard_ns =
+                excess * UINT64_C(1000000000) / UINT64_C(48000);
+        }
     }
     if (turbo_muxer_write_header(muxer) != 0) {
         status = TM_ENCODER_ECODEC;

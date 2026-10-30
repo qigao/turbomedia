@@ -218,24 +218,53 @@ int mkv_cluster_simple_block_read(struct mkv_t* mkv, struct mkv_cluster_t* clust
 	return 0;
 }
 
-int mkv_cluster_simple_block_write(struct mkv_t* mkv, struct mkv_sample_t* sample, struct mkv_ioutil_t* io)
+/* Block and SimpleBlock share a four-byte payload header, but BlockGroup
+ * keyframe semantics use ReferenceBlock rather than SimpleBlock flag 0x80. */
+static void mkv_write_block_payload(struct mkv_sample_t* sample,
+                                    struct mkv_ioutil_t* io, int simple)
 {
-	uint8_t flags;
-	(void)mkv;
-	assert(sample->track > 0 && sample->track < 8);
+    uint8_t flags = 0;
+    if (simple && (sample->flags & MKV_FLAGS_KEYFRAME)) flags |= 0x80;
+    if (sample->flags & MKV_FLAGS_INVISIBLE) flags |= 0x08;
+    if (sample->flags & MKV_FLAGS_DISCARDABLE) flags |= 0x01;
+    mkv_buffer_w8(io, (uint8_t)(sample->track | 0x80));
+    mkv_buffer_w16(io, (uint16_t)sample->pts);
+    mkv_buffer_w8(io, flags); /* no lacing */
+    mkv_buffer_write(io, sample->data, sample->bytes);
+}
 
-	flags = sample->flags & MKV_FLAGS_KEYFRAME ? 0x80 : 0;
-	flags |= sample->flags & MKV_FLAGS_INVISIBLE ? 0x08 : 0;
-	flags |= sample->flags & MKV_FLAGS_DISCARDABLE ? 0x01 : 0;
+int mkv_cluster_simple_block_write(struct mkv_t* mkv,
+    struct mkv_sample_t* sample, struct mkv_ioutil_t* io)
+{
+    (void)mkv;
+    if (!sample || !io || sample->track < 1 || sample->track >= 8)
+        return -EINVAL;
+    mkv_buffer_write_master(io, 0xA3, UINT64_C(4) + sample->bytes, 0);
+    mkv_write_block_payload(sample, io, 1);
+    return mkv_buffer_error(io);
+}
 
-	// Segment/Cluster/SimpleBlock
-	mkv_buffer_write_master(io, 0xA3, 4 + sample->bytes, 0);
-	mkv_buffer_w8(io, (uint8_t)sample->track|0x80); // Track Number
-	mkv_buffer_w16(io, (uint16_t)sample->pts); // Timestamp (relative to Cluster timestamp, signed int16)
-	mkv_buffer_w8(io, flags); // SimpleBlock Header Flags
-
-	// no lacing
-
-	mkv_buffer_write(io, sample->data, sample->bytes);
-	return 0;
+int mkv_cluster_block_group_write(struct mkv_sample_t* sample,
+    struct mkv_ioutil_t* io, uint64_t tail_padding_ns)
+{
+    uint64_t block_bytes, group_bytes;
+    uint8_t signed_bytes[8];
+    unsigned n = 1, i;
+    if (!sample || !io || sample->track < 1 || sample->track >= 8 ||
+        tail_padding_ns == 0 || tail_padding_ns > INT64_MAX)
+        return -EINVAL;
+    /* Signed EBML integer: positive trims the END of the Block. */
+    while (n < 8 && tail_padding_ns >= (UINT64_C(1) << (n * 8 - 1)))
+        ++n;
+    for (i = 0; i < n; ++i)
+        signed_bytes[i] = (uint8_t)(tail_padding_ns >> ((n - i - 1) * 8));
+    block_bytes = UINT64_C(4) + sample->bytes;
+    group_bytes = 1 + ebml_size_length(block_bytes) + block_bytes +
+                  2 + ebml_size_length(n) + n;
+    mkv_buffer_write_master(io, 0xA0, group_bytes, 0); /* BlockGroup */
+    mkv_buffer_write_master(io, 0xA1, block_bytes, 0); /* Block */
+    mkv_write_block_payload(sample, io, 0);
+    mkv_buffer_write_master(io, 0x75A2, n, 0); /* DiscardPadding */
+    mkv_buffer_write(io, signed_bytes, n);
+    return mkv_buffer_error(io);
 }

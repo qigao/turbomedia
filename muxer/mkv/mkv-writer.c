@@ -239,8 +239,20 @@ void mkv_writer_destroy(struct mkv_writer_t* writer)
             track->duration = track->last_ts - track->first_ts;
             if (track->sample_count > 1)
                 track->duration += track->duration / (track->sample_count - 1); // duration += avg-duration
-            if ((double)track->duration > mkv->duration)
-                mkv->duration = (double)track->duration; // maximum track duration
+            /* CodecDelay consumes initial samples and terminal
+             * DiscardPadding consumes padded output. Both affect the
+             * actual playing duration of an Opus track. */
+            {
+                double played_ms = (double)track->duration;
+                if (track->codecid == MKV_CODEC_AUDIO_OPUS) {
+                    double trimmed_ms = ((double)track->codec_delay_ns +
+                                         (double)track->tail_discard_ns) / 1000000.0;
+                    played_ms = played_ms > trimmed_ms ?
+                                played_ms - trimmed_ms : 0.0;
+                }
+                if (played_ms > mkv->duration)
+                    mkv->duration = played_ms;
+            }
         }
 
         // Segment Information -> Duration
@@ -259,7 +271,9 @@ void mkv_writer_destroy(struct mkv_writer_t* writer)
     free(writer);
 }
 
-int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, size_t bytes, int64_t pts, int64_t dts, int flags)
+int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
+    int tid, const void* data, size_t bytes, int64_t pts, int64_t dts,
+    int flags, uint64_t discard_padding_ns)
 {
     int r;
     int64_t ts, diff;
@@ -272,13 +286,19 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
     struct mkv_sample_t sample;
     struct mkv_cluster_t* cluster;
 
-    assert(bytes < UINT32_MAX && bytes < UINT32_MAX - 16);
+    if (!writer || !data || !bytes || bytes >= UINT32_MAX - 32)
+        return -EINVAL;
     if (tid < 1 || tid > (int)writer->mkv.track_count) // base from 1
         return -ENOENT;
     
     mkv = &writer->mkv;
     track = &mkv->tracks[tid -1];
     cluster = &writer->cluster;
+    if (track->tail_discard_ns ||
+        (discard_padding_ns &&
+         (track->codecid != MKV_CODEC_AUDIO_OPUS ||
+          discard_padding_ns >= UINT64_C(20000000))))
+        return -EINVAL;
 
     ts = writer->use_dts ? dts : pts;
     ts += writer->segment_ts;
@@ -333,9 +353,13 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
     sample.pts = diff;
     sample.dts = diff;
 
-    r = mkv_cluster_simple_block_write(mkv, &sample, &writer->io);
+    r = discard_padding_ns ?
+        mkv_cluster_block_group_write(&sample, &writer->io, discard_padding_ns) :
+        mkv_cluster_simple_block_write(mkv, &sample, &writer->io);
     if (r < 0)
         return r;
+    if (discard_padding_ns)
+        track->tail_discard_ns = discard_padding_ns;
 
     if (key_frame)
     {
@@ -353,6 +377,13 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
         writer->has_video = 1;
 
     return mkv_buffer_error(&writer->io);
+}
+
+int mkv_writer_write(struct mkv_writer_t* writer, int tid,
+    const void* data, size_t bytes, int64_t pts, int64_t dts, int flags)
+{
+    return mkv_writer_write_with_discard_padding(
+        writer, tid, data, bytes, pts, dts, flags, 0);
 }
 
 int mkv_writer_add_audio(struct mkv_writer_t* writer, enum mkv_codec_t codec, int channel_count, int bits_per_sample, int sample_rate, const void* extra_data, size_t extra_data_size)

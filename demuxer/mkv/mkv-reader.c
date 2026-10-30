@@ -31,6 +31,7 @@ struct mkv_reader_t
 	uint64_t seek_id;
 
 	uint64_t offset; // sample offset
+    uint64_t resume_after_group; // cursor past full BlockGroup after packet read
 	int segments; // only 1
 
 	//struct mkv_segment_seek_t* seeks;
@@ -361,19 +362,52 @@ static int mkv_segment_cluster_parse(struct mkv_reader_t* reader, struct mkv_ele
 	return node->size > 0 ? 0 : 1; // eof
 }
 
-static int mkv_segment_cluster_block_group_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int mkv_segment_cluster_block_group_parse(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
 {
-	struct mkv_cluster_t* cluster;
-	struct mkv_block_group_t* group;
-	//cluster = (struct mkv_cluster_t*)node->parent->ptr;
-	cluster = reader->mkv.cluster; // seek to block, no parent
-
-	if (0 != mkv_realloc((void**)&cluster->groups, cluster->count, &cluster->capacity, sizeof(struct mkv_block_group_t), 4))
-		return -ENOMEM;
-
-	group = &cluster->groups[cluster->count++];
-	node->ptr = group;
-	return 0;
+    uint64_t pos, end;
+    int found = 0;
+    if (node->size <= 0 || !reader->mkv.cluster) {
+        reader->io.error = -1;
+        return 0;
+    }
+    pos = mkv_buffer_tell(&reader->io);
+    if ((uint64_t)node->size > UINT64_MAX - pos) {
+        reader->io.error = -1;
+        return 0;
+    }
+    end = pos + (uint64_t)node->size;
+    /* Consume the ENTIRE group before returning a packet: read2() rebuilds
+     * the parse stack on every call and cannot resume at a level-3 element. */
+    while (pos < end && reader->io.error == 0) {
+        uint32_t id = mkv_buffer_read_id(&reader->io);
+        int64_t bytes = mkv_buffer_read_size(&reader->io);
+        uint64_t value_at = mkv_buffer_tell(&reader->io);
+        if (!id || bytes < 0 || value_at > end ||
+            (uint64_t)bytes > end - value_at) {
+            reader->io.error = -1;
+            break;
+        }
+        if (id == 0xA1) { /* Block shares SimpleBlock payload layout */
+            if (found || bytes < 4 || (uint64_t)bytes >= UINT32_MAX - 4 ||
+                mkv_cluster_simple_block_read(&reader->mkv, reader->mkv.cluster,
+                                               &reader->io, bytes) != 0) {
+                reader->io.error = -1;
+                break;
+            }
+            found = 1;
+        } else if (id == 0x75A2 && (bytes < 1 || bytes > 8)) {
+            reader->io.error = -1;
+            break;
+        }
+        mkv_buffer_seek(&reader->io, value_at + (uint64_t)bytes);
+        pos = mkv_buffer_tell(&reader->io);
+    }
+    if (!found || pos != end)
+        reader->io.error = -1;
+    if (reader->io.error == 0)
+        reader->resume_after_group = end;
+    return reader->io.error == 0 ? 1 : 0;
 }
 
 static int mkv_segment_cluster_block_group_addition_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -1016,6 +1050,13 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
 		return reader->io.error;
 
 	reader->offset++;
+    if (reader->offset >= reader->mkv.count && reader->resume_after_group) {
+        /* Reading packet data seeks back into the BlockGroup. Restore the
+         * parse cursor only after its final sample has been returned. */
+        mkv_buffer_seek(&reader->io, reader->resume_after_group);
+        reader->resume_after_group = 0;
+        if (reader->io.error) return reader->io.error;
+    }
 	return 1;
 }
 
@@ -1090,6 +1131,7 @@ int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 	*timestamp = cue->timestamp * reader->mkv.timescale / 1000000;
 	mkv_buffer_seek(&reader->io, cue->cluster);
 	reader->offset = reader->mkv.count; // clear
+    reader->resume_after_group = 0;
 	return 0;
 #else
 	size_t mid, prev, next;

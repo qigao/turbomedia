@@ -34,6 +34,11 @@ int mkv_writer_add_subtitle(mkv_writer_t* mkv, enum mkv_codec_t codec, const voi
 /// @param[in] flags MKV_FLAGS_XXX, such as: MKV_FLAGS_KEYFREAME, see more @mkv-format.h
 /// @return 0-ok, other-error
 int mkv_writer_write(mkv_writer_t* mkv, int track, const void* data, size_t bytes, int64_t pts, int64_t dts, int flags);
+/* ABI-preserving Opus terminal packet, positive nanoseconds of end trim.
+ * Zero padding behaves identically to mkv_writer_write. */
+int mkv_writer_write_with_discard_padding(
+    mkv_writer_t* mkv, int track, const void* data, size_t bytes,
+    int64_t pts, int64_t dts, int flags, uint64_t discard_padding_ns);
 
 #ifdef __cplusplus
 }

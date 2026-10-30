@@ -118,9 +118,10 @@ typedef struct tm_encoder_video_v1 {
 /* V2 audio input is borrowed interleaved floating PCM. This first native
  * A/V profile accepts only 48 kHz, mono/stereo and exact 20ms-aligned audio
  * with a duration exactly matching the frame sequence; unsupported rates or
- * fractional final Opus frames FAIL before codec setup, without silently
- * resampling or dropping samples. A later version must add source-rate
- * conversion and end-trim while preserving this strict V1 contract. */
+ * incomplete input 20ms frames FAIL before codec setup, without silently
+ * resampling or dropping samples. The encoder drains its real Opus pre-skip
+ * with zero-padded terminal input and positive Matroska DiscardPadding.
+ * Other source rates / partial input frames remain unsupported. */
 #define TM_ENCODER_AUDIO_V1 1u
 typedef struct tm_encoder_audio_v1 {
     uint32_t size, version, sample_rate, channels;

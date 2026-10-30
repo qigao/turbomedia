@@ -421,6 +421,69 @@ suite("container adapters") {
             check_equal(preroll, UINT64_C(80000000));
             turbo_muxer_destroy(muxer);
         }
+        it("round trips a terminal Opus BlockGroup and positive DiscardPadding") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            const uint8_t encoded_packet[4] = {0xf8u, 0xffu, 0xfeu, 0u};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t info = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_demuxer_config_t dconfig = {0};
+            turbo_demuxer_packet_t decoded = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *container = NULL;
+            size_t bytes = 0;
+            uint64_t padding = 0;
+            int track = -1, received = 0;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            info.type = TURBO_CODEC_TYPE_AUDIO;
+            info.codec_name = "opus";
+            info.extradata = opus_head;
+            info.extradata_size = sizeof(opus_head);
+            info.sample_rate = 48000;
+            info.channels = 1;
+            check_equal(turbo_muxer_add_stream(muxer, &info, &track), 0);
+            if (track < 0) goto opus_trim_cleanup;
+            packet.stream_id = track;
+            packet.data = encoded_packet;
+            packet.size = sizeof(encoded_packet);
+            packet.duration = 20000;
+            packet.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            packet.pts = packet.dts = 20000;
+            check_equal(turbo_muxer_write_packet_with_discard_padding(
+                muxer, &packet, UINT64_C(13500000)), 0);
+            check_true(turbo_muxer_write_packet(muxer, &packet) != 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &container, &bytes), 0);
+            check_true(matroska_find_uint(container, bytes, 0x75A2, &padding));
+            check_equal(padding, UINT64_C(13500000));
+            dconfig.data = container;
+            dconfig.data_size = bytes;
+            demuxer = turbo_demuxer_create_by_name("webm", &dconfig);
+            check_not_null(demuxer);
+            if (demuxer) {
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                while (turbo_demuxer_read_packet(demuxer, &decoded) == 1) {
+                    check_equal(decoded.size, sizeof(encoded_packet));
+                    check_equal(decoded.data, encoded_packet, sizeof(encoded_packet));
+                    ++received;
+                    turbo_demuxer_free_packet(&decoded);
+                    if (received > 2) break;
+                }
+                check_equal(received, 2);
+            }
+        opus_trim_cleanup:
+            turbo_demuxer_free_packet(&decoded);
+            turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
         it("refuses an Opus track without a matching OpusHead and sample rate") {
             static const uint8_t opus_head[19] = {
                 'O','p','u','s','H','e','a','d',

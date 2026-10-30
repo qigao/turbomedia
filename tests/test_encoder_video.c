@@ -68,6 +68,31 @@ static void prepare_frames(uint8_t pixels[][16 * 16 * 3],
     }
 }
 
+/* Test the actual positive signed EBML element payload in the output.
+ * All three queried IDs are two bytes and have a one-byte size here. */
+static int find_webm_positive_element(const uint8_t *data, size_t size,
+                                      uint16_t id, uint64_t *out) {
+    size_t i, j;
+    if (!data || !out || size < 4) return 0;
+    for (i = 0; i + 3 < size; ++i) {
+        size_t n;
+        uint64_t value = 0;
+        if (data[i] != (uint8_t)(id >> 8) ||
+            data[i + 1] != (uint8_t)id ||
+            (data[i + 2] & 0xf8u) != 0x80u)
+            continue;
+        n = data[i + 2] & 0x7fu;
+        if (!n || n > 8 || n > size - i - 3u ||
+            (data[i + 3] & 0x80u) != 0)
+            continue;
+        for (j = 0; j < n; ++j)
+            value = (value << 8) | data[i + 3 + j];
+        *out = value;
+        return 1;
+    }
+    return 0;
+}
+
 suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
     group("C11 48kHz float PCM Opus/WebM v2") {
         it("encodes real non-silent Opus and VP8 packets in two WebM tracks") {
@@ -83,7 +108,9 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             turbo_demuxer_t *demuxer = NULL;
             turbo_audio_codec_config_t decoder_config = {0};
             turbo_codec_t *decoder = NULL;
-            size_t written = 0, i;
+            size_t written = 0, i, decoded_samples = 0;
+            uint64_t padding_ns = 0, delay_ns = 0, preroll_ns = 0;
+            uint16_t pre_skip = 0;
             int videos = 0, audios = 0, nonzero = 0;
             int64_t previous_pts = -1;
             prepare_frames(pixels, frames, 3);
@@ -114,6 +141,21 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                 check_equal(turbo_demuxer_get_stream_info(demuxer, 1, &info), 0);
                 check_equal(info.codec_name, "opus");
                 check_equal(info.channels, 1);
+                check_true(info.extradata != NULL);
+                check_true(info.extradata_size >= 19u);
+                if (info.extradata && info.extradata_size >= 19u)
+                    pre_skip = (uint16_t)((unsigned)info.extradata[10] |
+                                          ((unsigned)info.extradata[11] << 8));
+                check_true(pre_skip > 0u);
+                check_true(find_webm_positive_element(
+                    sink.bytes, sink.size, 0x56AA, &delay_ns));
+                check_true(find_webm_positive_element(
+                    sink.bytes, sink.size, 0x56BB, &preroll_ns));
+                check_true(find_webm_positive_element(
+                    sink.bytes, sink.size, 0x75A2, &padding_ns));
+                check_equal(delay_ns,
+                    (uint64_t)pre_skip * UINT64_C(1000000000) / UINT64_C(48000));
+                check_equal(preroll_ns, UINT64_C(80000000));
                 decoder_config.sample_rate = 48000;
                 decoder_config.channels = 1;
                 decoder_config.bitrate = 64000;
@@ -134,6 +176,7 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                                 decoder, packet.data, packet.size,
                                 (uint8_t *)decoded, &decoded_size) == TURBO_CODEC_OK) {
                             size_t n;
+                            decoded_samples += decoded_size / sizeof(decoded[0]);
                             for (n = 0; n < decoded_size / sizeof(decoded[0]); ++n)
                                 if (decoded[n] != 0) ++nonzero;
                         }
@@ -143,8 +186,24 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                 }
                 turbo_demuxer_free_packet(&packet);
                 check_equal(videos, 3);
-                check_equal(audios, 15);
+                check_equal(audios,
+                    (int)((audio.sample_count + pre_skip + 959u) / 960u));
                 check_true(nonzero > 0);
+                {
+                    uint64_t tail_samples =
+                        (padding_ns * UINT64_C(48000) +
+                         UINT64_C(500000000)) / UINT64_C(1000000000);
+                    check_true(decoded_samples >= (size_t)pre_skip + tail_samples);
+                    if (decoded_samples >= (size_t)pre_skip + tail_samples)
+                        check_equal(decoded_samples - (size_t)pre_skip -
+                                    (size_t)tail_samples, audio.sample_count);
+                }
+                {
+                    turbo_container_metadata_t metadata = {0};
+                    check_equal(turbo_demuxer_get_metadata(
+                        demuxer, &metadata), 0);
+                    check_equal(metadata.duration_ms, 300);
+                }
                 turbo_codec_destroy(decoder);
                 turbo_demuxer_destroy(demuxer);
             }
