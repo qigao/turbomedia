@@ -107,6 +107,28 @@ cleanup:
     turbo_muxer_destroy(muxer);
 }
 
+static int matroska_find_uint(const uint8_t *bytes, size_t count,
+                              uint16_t element_id, uint64_t *value) {
+    size_t i;
+    for (i = 0; i + 4u <= count; ++i) {
+        unsigned n, j;
+        uint64_t parsed = 0;
+        if (bytes[i] != (uint8_t)(element_id >> 8) ||
+            bytes[i + 1] != (uint8_t)element_id)
+            continue;
+        if ((bytes[i + 2] & 0xf8u) != 0x80u)
+            continue;
+        n = bytes[i + 2] & 0x7fu;
+        if (n == 0 || n > 8 || n > count - i - 3u)
+            continue;
+        for (j = 0; j < n; ++j)
+            parsed = (parsed << 8) | bytes[i + 3u + j];
+        *value = parsed;
+        return 1;
+    }
+    return 0;
+}
+
 suite("container adapters") {
     before_each() {
         turbo_muxer_registry_init();
@@ -352,6 +374,75 @@ suite("container adapters") {
         mkv_cleanup:
             turbo_demuxer_free_packet(&output_packet);
             turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
+    group("Opus Matroska timing") {
+        it("publishes actual OpusHead pre-skip as CodecDelay alongside SeekPreRoll") {
+            /* An OpusHead with 312 samples pre-skip at 48kHz (6.5ms).
+             * InputSampleRate is an informational 48kHz value in OpusHead;
+             * CodecDelay must use the fixed 48k Opus decode timebase. */
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            const uint8_t encoded_packet[4] = {0xf8u, 0xffu, 0xfeu, 0u};
+            turbo_muxer_config_t config = {0};
+            turbo_muxer_t *muxer;
+            turbo_stream_info_t audio = {0};
+            turbo_muxer_packet_t packet = {0};
+            uint8_t *output = NULL;
+            size_t size = 0;
+            uint64_t delay = 0, preroll = 0;
+            int stream_id = -1;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            audio.type = TURBO_CODEC_TYPE_AUDIO;
+            audio.codec_name = "opus";
+            audio.extradata = opus_head;
+            audio.extradata_size = sizeof(opus_head);
+            audio.sample_rate = 48000;
+            audio.channels = 1;
+            check_equal(turbo_muxer_add_stream(muxer, &audio, &stream_id), 0);
+            packet.stream_id = stream_id;
+            packet.data = encoded_packet;
+            packet.size = sizeof(encoded_packet);
+            packet.duration = 20000;
+            packet.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &output, &size), 0);
+            check_true(matroska_find_uint(output, size, 0x56AA, &delay));
+            check_true(matroska_find_uint(output, size, 0x56BB, &preroll));
+            check_equal(delay, UINT64_C(6500000));
+            check_equal(preroll, UINT64_C(80000000));
+            turbo_muxer_destroy(muxer);
+        }
+        it("refuses an Opus track without a matching OpusHead and sample rate") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            turbo_muxer_config_t config = {0};
+            turbo_muxer_t *muxer;
+            turbo_stream_info_t audio = {0};
+            int stream_id = -1;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            audio.type = TURBO_CODEC_TYPE_AUDIO;
+            audio.codec_name = "opus";
+            audio.sample_rate = 48000;
+            audio.channels = 1;
+            check_true(turbo_muxer_add_stream(muxer, &audio, &stream_id) != 0);
+            audio.extradata = opus_head;
+            audio.extradata_size = sizeof(opus_head);
+            audio.sample_rate = 44100;
+            check_true(turbo_muxer_add_stream(muxer, &audio, &stream_id) != 0);
             turbo_muxer_destroy(muxer);
         }
     }

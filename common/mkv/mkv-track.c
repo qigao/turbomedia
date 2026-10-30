@@ -1,4 +1,5 @@
 #include "mkv-internal.h"
+#include "opus-head.h"
 
 struct mkv_track_t* mkv_add_track(struct mkv_t* mkv)
 {
@@ -54,6 +55,21 @@ int mkv_add_audio(struct mkv_track_t* track, enum mkv_codec_t codec, int channel
     track->u.audio.channels = (unsigned int)channel_count;
     track->u.audio.bits = (unsigned int)bits_per_sample;
     track->u.audio.sampling = sample_rate;
+    if (codec == MKV_CODEC_AUDIO_OPUS) {
+        struct opus_head_t head;
+        if (!extra_data || extra_data_size < 19u ||
+            opus_head_load((const uint8_t *)extra_data,
+                           extra_data_size, &head) != 19 ||
+            head.version != 1u || head.channels != channel_count ||
+            !head.pre_skip || head.channel_mapping_family != 0u ||
+            head.input_sample_rate != (uint32_t)sample_rate)
+            return -EINVAL;
+        /* Opus pre-skip is ALWAYS denominated in 48k decoded samples,
+         * irrespective of its original PCM input sample rate. */
+        track->codec_delay_ns = (uint64_t)head.pre_skip *
+                                UINT64_C(1000000000) / UINT64_C(48000);
+        track->seek_preroll_ns = UINT64_C(80000000);
+    }
 
     if (extra_data_size > 0)
     {
@@ -152,8 +168,10 @@ int mkv_write_track(struct mkv_ioutil_t* io, struct mkv_track_t* track)
     }
     else if (MKV_TRACK_AUDIO == track->media)
     {
-        if (MKV_CODEC_AUDIO_OPUS == track->codecid)
-            mkv_buffer_write_uint_element(io, 0x56BB, 80000000); // SeekPreRoll
+        if (MKV_CODEC_AUDIO_OPUS == track->codecid) {
+            mkv_buffer_write_uint_element(io, 0x56AA, track->codec_delay_ns); // CodecDelay
+            mkv_buffer_write_uint_element(io, 0x56BB, track->seek_preroll_ns); // SeekPreRoll
+        }
 
         // Segment/Tracks/TrackEntry/Audio
         mkv_buffer_write_master(io, 0xE1, 3 /*channels*/ + 4 /*bits*/ + 10 /*sampling*/, 0);

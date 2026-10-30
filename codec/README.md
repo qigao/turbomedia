@@ -53,8 +53,20 @@ codec errors, cancellation between frames, and complete-container output
 before invoking the caller's sink. The in-repo native test uses the real
 `TurboMedia::Demuxer` to inspect encoded VP8 packets.
 
+**Opus pre-skip prerequisite:** `TurboMedia::Codec` now exposes an
+owner-safe `turbo_codec_opus_lookahead_samples()` query on the actual encoder,
+instead of assuming a fixed delay. The shared Matroska/WebM track writer
+validates the supplied `OpusHead`, computes CodecDelay using its 48kHz
+pre-skip timebase and writes both CodecDelay and 80ms SeekPreRoll. Existing
+`turbo_stream_info_t` and muxer public struct layouts are unchanged.
+The in-repo native CTests inspect both emitted Matroska fields and reject
+missing/mismatched OpusHead metadata.
+
 **Strict remaining limitations:** an audio request fails
-`TM_ENCODER_EUNSUPPORTED`. The WebM in-memory writer now enforces the
+`TM_ENCODER_EUNSUPPORTED` in the current one-shot VP8/WebM Encoder.
+Float PCM resampling, Opus packet interleaving, and partial-last-frame trim
+are still open in Issue #274; the track timing prerequisite alone is not
+an audible-video implementation. The WebM in-memory writer now enforces the
 per-task output limit during write and seek; this still does not bound
 libvpx/swscale working-set allocations or network reader copies.
 Animated WebP, AVI, WebP XMP, audio+video interleaving, bounded muxer internal

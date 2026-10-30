@@ -220,6 +220,23 @@ int turbo_codec_decode(turbo_codec_t *codec,
                               output, output_len);
 }
 
+#ifdef TURBO_MEDIA_HAS_OPUS
+int turbo_opus_encoder_lookahead(void *ctx, uint32_t *lookahead);
+#endif
+
+int turbo_codec_opus_lookahead_samples(
+    const turbo_codec_t *codec, uint32_t *lookahead) {
+    if (!codec || !lookahead || !codec->is_encoder ||
+        !codec->ops || !codec->ops->name ||
+        strcmp(codec->ops->name, "opus") != 0 || !codec->encoder_ctx)
+        return TURBO_CODEC_ERR_INVALID;
+#ifdef TURBO_MEDIA_HAS_OPUS
+    return turbo_opus_encoder_lookahead(codec->encoder_ctx, lookahead);
+#else
+    return TURBO_CODEC_ERR_INVALID;
+#endif
+}
+
 void turbo_codec_request_keyframe(turbo_codec_t *codec) {
     if (!codec || !codec->is_encoder || !codec->ops->request_keyframe) {
         return;

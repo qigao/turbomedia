@@ -423,6 +423,41 @@ suite("turbo_media_codec") {
         }
     }
 
+    group("Owned Opus pre-skip") {
+        it("queries the real Opus encoder delay without a hard-coded constant") {
+#ifdef TURBO_MEDIA_HAS_OPUS
+            turbo_audio_codec_config_t cfg = {0};
+            turbo_codec_t *encoder;
+            turbo_codec_t *decoder;
+            uint32_t delay = 0;
+            cfg.sample_rate = 48000;
+            cfg.channels = 1;
+            cfg.bitrate = 64000;
+            cfg.frame_size_ms = 20;
+            cfg.complexity = 5;
+            turbo_codec_registry_init();
+            encoder = turbo_codec_create_encoder("opus", &cfg);
+            decoder = turbo_codec_create_decoder("opus", &cfg);
+            check_not_null(encoder);
+            check_not_null(decoder);
+            if (encoder) {
+                check_equal(turbo_codec_opus_lookahead_samples(encoder, &delay),
+                            TURBO_CODEC_OK);
+                check_true(delay > 0 && delay < 48000u);
+                check_equal(turbo_codec_opus_lookahead_samples(encoder, NULL),
+                            TURBO_CODEC_ERR_INVALID);
+            }
+            if (decoder)
+                check_equal(turbo_codec_opus_lookahead_samples(decoder, &delay),
+                            TURBO_CODEC_ERR_INVALID);
+            turbo_codec_destroy(encoder);
+            turbo_codec_destroy(decoder);
+#endif
+            check_equal(turbo_codec_opus_lookahead_samples(NULL, NULL),
+                        TURBO_CODEC_ERR_INVALID);
+        }
+    }
+
     group("Advanced Features") {
         it("supports bitrate control") {
             test_codec_bitrate_control();

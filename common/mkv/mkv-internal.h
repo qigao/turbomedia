@@ -188,6 +188,9 @@ struct mkv_track_t
 	// Number of nanoseconds (not scaled via TimestampScale) per frame 
 	// (frame in the Matroska sense -- one Element put into a (Simple)Block).
 	uint64_t duration;
+    /* Matroska TrackEntry values in nanoseconds. Opus requires both. */
+    uint64_t codec_delay_ns;
+    uint64_t seek_preroll_ns;
 	int64_t offset;
 
 	enum mkv_codec_t codecid;
