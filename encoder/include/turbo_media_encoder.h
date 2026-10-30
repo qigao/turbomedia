@@ -18,7 +18,8 @@ typedef enum tm_encoder_status {
     TM_ENCODER_ENOMEM = -4,
     TM_ENCODER_ECAPACITY = -5,
     TM_ENCODER_ECODEC = -6,
-    TM_ENCODER_ESINK = -7
+    TM_ENCODER_ESINK = -7,
+    TM_ENCODER_ECANCELLED = -8
 } tm_encoder_status;
 
 typedef enum tm_encoder_image_format {
@@ -74,6 +75,54 @@ TURBO_MEDIA_API tm_encoder_status tm_encoder_image_encode(
     const tm_encoder_image_v1 *options,
     tm_encoder_write_fn write,
     void *user,
+    size_t *written);
+
+
+/* C11 one-shot video frame contract. All pixel arrays are borrowed only
+ * while tm_encoder_webm_encode() executes; they are never retained.
+ * V1 supports even-sized packed Gray8/RGB24/RGBA32 -> I420 -> VP8 in
+ * TurboMedia::Codec, then in-memory TurboMedia::Muxer WebM.
+ * Audio is intentionally NOT accepted in V1; a requested soundtrack
+ * must fail loudly rather than being dropped from the exported media.
+ */
+#define TM_ENCODER_VIDEO_V1 1u
+typedef struct tm_encoder_video_frame_v1 {
+    uint32_t size, version;
+    uint32_t pixel_format, stride_bytes;
+    const uint8_t *pixels;
+    size_t pixels_capacity;
+} tm_encoder_video_frame_v1;
+#define TM_ENCODER_VIDEO_FRAME_V1_INIT { \
+    sizeof(tm_encoder_video_frame_v1), TM_ENCODER_VIDEO_V1, \
+    TM_ENCODER_PIXEL_RGB24, 0u, NULL, 0u }
+
+typedef struct tm_encoder_video_v1 {
+    uint32_t size, version;
+    uint32_t width, height, fps, bitrate;
+    const tm_encoder_video_frame_v1 *frames;
+    size_t frame_count;
+    const uint8_t *audio_pcm; /* non-NULL or audio_bytes > 0 => EUNSUPPORTED */
+    size_t audio_bytes;
+    size_t max_output_bytes;
+    uint32_t reserved;
+} tm_encoder_video_v1;
+#define TM_ENCODER_VIDEO_V1_INIT { \
+    sizeof(tm_encoder_video_v1), TM_ENCODER_VIDEO_V1, \
+    0u, 0u, 24u, 0u, NULL, 0u, NULL, 0u, 0u, 0u }
+
+typedef int (*tm_encoder_should_cancel_fn)(void *user);
+
+/* Encodes one complete raw-video sequence into a single WebM container.
+ * Sink is invoked only after success; error/cancel yields no partial file.
+ * The outer container capacity is checked before publication; the current
+ * TurboMedia Muxer internal buffer is NOT yet a bounded RSS allocation.
+ * Callback may request cancellation between encoded frames, not while a
+ * single libvpx encode() call is in progress. No alternate codec/muxer.
+ */
+TURBO_MEDIA_API tm_encoder_status tm_encoder_webm_encode(
+    const tm_encoder_video_v1 *options,
+    tm_encoder_write_fn write, void *write_user,
+    tm_encoder_should_cancel_fn cancelled, void *cancel_user,
     size_t *written);
 
 #ifdef __cplusplus

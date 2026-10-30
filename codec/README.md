@@ -36,8 +36,21 @@ PNG preserves native `parameters` tEXt and JPEG the sd-style `parameters`
 COM marker. These additions are bounded and tested by decoding the resulting
 image. **Not migration-ready for sd yet:** WebP XMP metadata embedding
 is not implemented; nonempty WebP metadata explicitly fails
-`TM_ENCODER_EUNSUPPORTED` before writing bytes. AVI, animated WebP, and
-end-to-end audio+video frame-to-WebM encode also remain open. The existing
+`TM_ENCODER_EUNSUPPORTED` before writing bytes.
+
+The same versioned C11 Encoder now includes a first **silent VP8/WebM**
+one-shot media path: borrowed raw frame arrays are converted to I420, encoded
+by the existing `TurboMedia::Codec` VP8 and packaged by the existing
+`TurboMedia::Muxer` WebM. The owner checks packet failures, frame order,
+codec errors, cancellation between frames, and complete-container output
+before invoking the caller's sink. The in-repo native test uses the real
+`TurboMedia::Demuxer` to inspect encoded VP8 packets.
+
+**Strict remaining limitations:** an audio request fails
+`TM_ENCODER_EUNSUPPORTED`, and the existing WebM muxer memory writer has
+no internal allocation limit (only the final publication is capped).
+Animated WebP, AVI, WebP XMP, audio+video interleaving, bounded muxer internal
+storage and verified Windows SDK still remain open. No silent fallback. The existing
 sd local output must not be misidentified as TurboMedia-backed until these
 contracts, exact package identity and platform-native CI pass.
 See [Issue #272](https://github.com/qigao/turbomedia/issues/272).
