@@ -106,9 +106,13 @@ static void mkv_write_seek_head(struct mkv_ioutil_t *io, const struct mkv_segmen
 static void mkv_write_info(struct mkv_ioutil_t* io, struct mkv_writer_t* writer)
 {
     uint64_t offset;
-    uint8_t uid[16]; // 128-bits
     int live = (MKV_OPTION_LIVE & writer->options) ? 1 : 0;
-    int size = 7 /*timescale*/ + 2 * (3 + strlen(MKV_APP)) + 19 /*SegmentUID*/ + (live ? 0 : 11 /*duration*/);
+    /* SegmentUUID (0x73A4) is optional for unlinked WebM.
+     * The former writer serialized an UNINITIALIZED 16-byte stack buffer,
+     * leaking memory and emitting an invalid, unowned identifier.
+     * Omit the element until a real segment identity is supplied. */
+    int size = 7 /*timescale*/ + 2 * (3 + strlen(MKV_APP)) +
+               (live ? 0 : 11 /*duration*/);
 
     // Segment/Info
     mkv_buffer_write_master(io, EBML_ID_INFO, size, 0);
@@ -117,8 +121,7 @@ static void mkv_write_info(struct mkv_ioutil_t* io, struct mkv_writer_t* writer)
     mkv_buffer_write_uint_element(io, 0x2AD7B1, writer->mkv.timescale); // TimestampScale
     mkv_buffer_write_string_element(io, 0x4D80, MKV_APP, strlen(MKV_APP)); // MuxingApp
     mkv_buffer_write_string_element(io, 0x5741, MKV_APP, strlen(MKV_APP)); // WritingApp
-    mkv_buffer_write_binary_element(io, 0x73A4, uid, sizeof(uid)); // SegmentUID
-    
+
     if (!live)
     {
         writer->info_duration_offset = mkv_buffer_tell(io);

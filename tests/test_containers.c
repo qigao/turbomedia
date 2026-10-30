@@ -152,6 +152,33 @@ static int matroska_find_single_id_uint(
     return 0;
 }
 
+/* The unlinked WebM writer has no owned SegmentUUID.
+ * Read only the Info master payload, not arbitrary compressed packet bytes,
+ * so this test cannot be fooled by a codec payload containing 0x73A4.
+ * Result: -1 invalid/missing Info, 0 no UUID, 1 UUID serialized. */
+static int matroska_info_segment_uuid_presence(
+    const uint8_t *bytes, size_t size)
+{
+    static const uint8_t info_id[] = {0x15, 0x49, 0xa9, 0x66};
+    size_t i, j, end;
+    if (!bytes || size < 6u) return -1;
+    for (i = 0; i + 5u <= size; ++i) {
+        size_t payload;
+        if (memcmp(bytes + i, info_id, sizeof(info_id)) != 0)
+            continue;
+        /* This current writer uses a one-byte EBML data length for Info. */
+        if (!(bytes[i + 4u] & 0x80u)) return -1;
+        payload = (size_t)(bytes[i + 4u] & 0x7fu);
+        if (payload > size - i - 5u) return -1;
+        end = i + 5u + payload;
+        for (j = i + 5u; j + 1u < end; ++j)
+            if (bytes[j] == 0x73u && bytes[j + 1u] == 0xa4u)
+                return 1; /* old uninitialized 16-byte SegmentUUID */
+        return 0;
+    }
+    return -1;
+}
+
 suite("container adapters") {
     before_each() {
         turbo_muxer_registry_init();
@@ -442,6 +469,9 @@ suite("container adapters") {
             check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
             check_equal(turbo_muxer_write_trailer(muxer), 0);
             check_equal(turbo_muxer_get_data(muxer, &output, &size), 0);
+            /* An unlinked WebM must NOT publish uninitialized SegmentUUID
+             * bytes as a fake random identity. The master stays well formed. */
+            check_equal(matroska_info_segment_uuid_presence(output, size), 0);
             check_true(matroska_find_uint(output, size, 0x56AA, &delay));
             check_true(matroska_find_uint(output, size, 0x56BB, &preroll));
             check_equal(delay, UINT64_C(6500000));

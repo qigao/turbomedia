@@ -6,6 +6,13 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
+
+#include <libavformat/avformat.h>
+#include <libavutil/error.h>
+#include <libavutil/mem.h>
+#include <libavutil/mathematics.h>
 
 typedef struct video_result {
     uint8_t *bytes;
@@ -91,6 +98,108 @@ static int find_webm_positive_element(const uint8_t *data, size_t size,
         return 1;
     }
     return 0;
+}
+
+/* Independent FORMAT acceptance, not another production demuxer.
+ * The FFmpeg SDK already required by TurboMedia must be able to parse and
+ * seek the output of the single TurboMedia-owned Codec/Muxer path. */
+typedef struct tm_ffmpeg_webm_memory {
+    const uint8_t *bytes;
+    size_t length;
+    size_t position;
+} tm_ffmpeg_webm_memory;
+
+static int tm_ffmpeg_webm_read(void *opaque, uint8_t *dst, int want) {
+    tm_ffmpeg_webm_memory *r = (tm_ffmpeg_webm_memory *)opaque;
+    size_t available, amount;
+    if (!r || !dst || want <= 0) return AVERROR(EINVAL);
+    if (r->position >= r->length) return AVERROR_EOF;
+    available = r->length - r->position;
+    amount = (size_t)want < available ? (size_t)want : available;
+    memcpy(dst, r->bytes + r->position, amount);
+    r->position += amount;
+    return (int)amount;
+}
+
+static int64_t tm_ffmpeg_webm_seek(void *opaque, int64_t offset, int whence) {
+    tm_ffmpeg_webm_memory *r = (tm_ffmpeg_webm_memory *)opaque;
+    int64_t base, next;
+    if (!r || r->length > INT64_MAX) return AVERROR(EINVAL);
+    whence &= ~AVSEEK_FORCE;
+    if (whence == AVSEEK_SIZE) return (int64_t)r->length;
+    if (whence == SEEK_SET) base = 0;
+    else if (whence == SEEK_CUR) base = (int64_t)r->position;
+    else if (whence == SEEK_END) base = (int64_t)r->length;
+    else return AVERROR(EINVAL);
+    if ((offset > 0 && base > INT64_MAX - offset) ||
+        (offset < 0 && base < INT64_MIN - offset))
+        return AVERROR(EINVAL);
+    next = base + offset;
+    if (next < 0 || (uint64_t)next > r->length)
+        return AVERROR(EINVAL);
+    r->position = (size_t)next;
+    return next;
+}
+
+static int tm_ffmpeg_webm_read_seek_verify(
+    const uint8_t *bytes, size_t size, int64_t target_ms) {
+    tm_ffmpeg_webm_memory memory = {0};
+    AVIOContext *io = NULL;
+    AVFormatContext *format = NULL;
+    AVPacket *packet = NULL;
+    uint8_t *io_buffer = NULL;
+    int video = -1, audio = -1, seen_video = 0, seen_audio = 0;
+    int status = -1, i;
+    if (!bytes || !size || size > INT64_MAX || target_ms < 0)
+        return -1;
+    memory.bytes = bytes;
+    memory.length = size;
+    io_buffer = (uint8_t *)av_malloc(4096);
+    if (!io_buffer) goto done;
+    io = avio_alloc_context(io_buffer, 4096, 0, &memory,
+                            tm_ffmpeg_webm_read, NULL, tm_ffmpeg_webm_seek);
+    if (!io) goto done;
+    io_buffer = NULL; /* AVIOContext owns the buffer */
+    format = avformat_alloc_context();
+    if (!format) goto done;
+    format->pb = io;
+    format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    if (avformat_open_input(&format, NULL, NULL, NULL) < 0 ||
+        avformat_find_stream_info(format, NULL) < 0)
+        goto done;
+    for (i = 0; i < (int)format->nb_streams; ++i) {
+        const AVCodecParameters *c = format->streams[i]->codecpar;
+        if (c->codec_type == AVMEDIA_TYPE_VIDEO &&
+            c->codec_id == AV_CODEC_ID_VP8) video = i;
+        if (c->codec_type == AVMEDIA_TYPE_AUDIO &&
+            c->codec_id == AV_CODEC_ID_OPUS &&
+            c->sample_rate == 48000 &&
+            c->ch_layout.nb_channels == 1) audio = i;
+    }
+    if (format->nb_streams != 2u || video < 0 || audio < 0)
+        goto done;
+    packet = av_packet_alloc();
+    if (!packet) goto done;
+    /* An independent Matroska reader must resolve the Cues itself.
+     * An indexed backward seek exercises the segment-relative offsets. */
+    if (av_seek_frame(format, video,
+        av_rescale_q(target_ms, (AVRational){1, 1000},
+                     format->streams[video]->time_base),
+        AVSEEK_FLAG_BACKWARD) < 0)
+        goto done;
+    for (i = 0; i < 80 && av_read_frame(format, packet) >= 0; ++i) {
+        if (packet->stream_index == video) ++seen_video;
+        if (packet->stream_index == audio) ++seen_audio;
+        av_packet_unref(packet);
+        if (seen_video && seen_audio) break;
+    }
+    if (seen_video && seen_audio) status = 0;
+done:
+    av_packet_free(&packet);
+    avformat_close_input(&format);
+    if (io) avio_context_free(&io);
+    av_free(io_buffer);
+    return status;
 }
 
 /* Real in-repo A/V profile probe. Not a new codec or consumer:
@@ -325,6 +434,10 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_equal(written, sink.size);
             check_equal(sink.writes, 1u);
             if (result != TM_ENCODER_OK || !written) goto cleanup;
+            /* External FFmpeg Matroska parser / native seek oracle:
+             * it is NOT part of TurboMedia's production media runtime. */
+            check_equal(tm_ffmpeg_webm_read_seek_verify(
+                sink.bytes, sink.size, INT64_C(5940)), 0);
 
             turbo_demuxer_registry_init();
             demux_config.data = sink.bytes;

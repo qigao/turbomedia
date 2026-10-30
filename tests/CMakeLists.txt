@@ -63,7 +63,10 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
                                TurboMediaFFmpeg::avcodec
                                TurboMediaFFmpeg::avutil)
     if(TEST_NAME STREQUAL "test_encoder_video")
-      list(APPEND TEST_LINK_LIBS TurboMedia::Demuxer)
+      # Independent FFmpeg Matroska parser/seek oracle in the existing native
+      # test only. Production WebM remains owned solely by TurboMedia::Muxer.
+      list(APPEND TEST_LINK_LIBS TurboMedia::Demuxer
+                                 TurboMediaFFmpeg::avformat)
     endif()
   elseif(TEST_NAME STREQUAL "test_containers")
     list(APPEND TEST_LINK_LIBS TurboMedia::Muxer TurboMedia::Demuxer)
