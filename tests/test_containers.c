@@ -720,6 +720,138 @@ suite("container adapters") {
             turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
         }
+        it("applies signed BlockGroup padding to the correct laced frame") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            const uint8_t encoded_packet[5] = {
+                0xf8u, 0xffu, 0xfeu, 0u, 0u
+            };
+            /* Group has an encoded 9-byte Block, then a 4-byte signed
+             * DiscardPadding. Imported lacing is constructed without
+             * resizing the Block or adding a second Muxer. */
+            const uint8_t group_prefix[8] = {
+                0xa0u, 0x92u, 0xa1u, 0x89u,
+                0x81u, 0u, 20u, 0u
+            };
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t input = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_demuxer_config_t dconfig = {0};
+            turbo_demuxer_packet_t packet = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
+            uint8_t *container = NULL, *mutated = NULL;
+            size_t size = 0, at, group_at = SIZE_MAX;
+            size_t track_flag_at = SIZE_MAX;
+            int track = -1, variant;
+
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "opus";
+            stream.channels = 1;
+            stream.sample_rate = 48000;
+            stream.extradata = opus_head;
+            stream.extradata_size = sizeof(opus_head);
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &track), 0);
+            if (track < 0) goto laced_padding_cleanup;
+            input.stream_id = track;
+            input.data = encoded_packet;
+            input.size = sizeof(encoded_packet);
+            input.duration = 20000;
+            input.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+            input.pts = input.dts = 20000;
+            check_equal(turbo_muxer_write_packet_with_discard_padding(
+                muxer, &input, UINT64_C(13500000)), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &container, &size), 0);
+            for (at = 0; at + sizeof(group_prefix) <= size; ++at) {
+                if (memcmp(container + at, group_prefix,
+                           sizeof(group_prefix)) == 0) {
+                    group_at = at;
+                    break;
+                }
+            }
+            for (at = 0; at + 3u <= size; ++at) {
+                if (container[at] == 0x9cu &&
+                    container[at + 1u] == 0x81u &&
+                    container[at + 2u] == 0u) {
+                    track_flag_at = at + 2u;
+                    break;
+                }
+            }
+            check_true(group_at != SIZE_MAX);
+            check_true(track_flag_at != SIZE_MAX);
+            if (group_at == SIZE_MAX || track_flag_at == SIZE_MAX ||
+                group_at + 20u > size)
+                goto laced_padding_cleanup;
+            mutated = (uint8_t *)malloc(size);
+            check_not_null(mutated);
+            if (!mutated) goto laced_padding_cleanup;
+            for (variant = 0; variant < 2; ++variant) {
+                int read_result;
+                memcpy(mutated, container, size);
+                /* Fixed-size lacing: two 2-byte frames in 4 data bytes. */
+                mutated[track_flag_at] = 1u;
+                mutated[group_at + 7u] = 0x04u; /* fixed-size lace */
+                mutated[group_at + 8u] = 1u;    /* two frames */
+                check_equal(mutated[group_at + 13u], 0x75u);
+                check_equal(mutated[group_at + 14u], 0xA2u);
+                check_equal(mutated[group_at + 15u], 0x84u);
+                if (mutated[group_at + 13u] != 0x75u ||
+                    mutated[group_at + 14u] != 0xA2u ||
+                    mutated[group_at + 15u] != 0x84u)
+                    break;
+                if (variant == 1)
+                    memset(mutated + group_at + 16u, 0xff, 4u);
+                dconfig.data = mutated;
+                dconfig.data_size = size;
+                demuxer = turbo_demuxer_create_by_name("webm", &dconfig);
+                check_not_null(demuxer);
+                if (!demuxer) break;
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                read_result = turbo_demuxer_read_packet_with_timing(
+                    demuxer, &packet, &timing);
+                check_equal(read_result, 1);
+                check_equal(packet.size, sizeof(encoded_packet));
+                check_equal(timing.discard_padding_ns, INT64_C(0));
+                turbo_demuxer_free_packet(&packet);
+                if (read_result != 1) goto laced_padding_cleanup;
+                read_result = turbo_demuxer_read_packet_with_timing(
+                    demuxer, &packet, &timing);
+                check_equal(read_result, 1);
+                check_equal(packet.size, 2u);
+                check_equal(timing.discard_padding_ns,
+                            variant == 1 ? INT64_C(-1) : INT64_C(0));
+                turbo_demuxer_free_packet(&packet);
+                if (read_result != 1) goto laced_padding_cleanup;
+                read_result = turbo_demuxer_read_packet_with_timing(
+                    demuxer, &packet, &timing);
+                check_equal(read_result, 1);
+                check_equal(packet.size, 2u);
+                check_equal(timing.discard_padding_ns,
+                            variant == 0 ? INT64_C(13500000) : INT64_C(0));
+                turbo_demuxer_free_packet(&packet);
+                if (read_result != 1) goto laced_padding_cleanup;
+                check_equal(turbo_demuxer_read_packet_with_timing(
+                    demuxer, &packet, &timing), 0);
+                check_equal(timing.discard_padding_ns, INT64_C(0));
+                turbo_demuxer_destroy(demuxer);
+                demuxer = NULL;
+            }
+        laced_padding_cleanup:
+            turbo_demuxer_free_packet(&packet);
+            turbo_demuxer_destroy(demuxer);
+            free(mutated);
+            turbo_muxer_destroy(muxer);
+        }
         it("fails closed on malformed BlockGroup Block and DiscardPadding") {
             static const uint8_t opus_head[19] = {
                 'O','p','u','s','H','e','a','d',

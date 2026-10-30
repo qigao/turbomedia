@@ -444,9 +444,14 @@ static int mkv_segment_cluster_block_group_parse(
         goto invalid;
 
     {
-        struct mkv_sample_t *sample =
-            reader->mkv.samples + reader->mkv.count - 1;
-        sample->discard_padding_ns = discard_padding_ns;
+        /* DiscardPadding belongs to the entire BlockGroup, not always its
+         * final frame. With lacing, positive padding trims the Block END
+         * (last frame), negative padding trims the Block BEGINNING
+         * (first frame). Zero remains absent on every frame. */
+        int trim_index = discard_padding_ns < 0 ?
+            first_sample : reader->mkv.count - 1;
+        reader->mkv.samples[trim_index].discard_padding_ns =
+            discard_padding_ns;
         if (!reference_seen)
             reader->mkv.samples[first_sample].flags |= MKV_FLAGS_KEYFRAME;
         reader->resume_after_group = end;
