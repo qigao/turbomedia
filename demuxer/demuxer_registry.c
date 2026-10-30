@@ -224,6 +224,11 @@ int turbo_demuxer_open(turbo_demuxer_t *demuxer) {
     return ret;
 }
 
+#ifdef TURBO_MEDIA_HAS_MKV
+int turbo_mkv_demuxer_last_discard_padding_ns(
+    void *ctx, int64_t *padding_ns);
+#endif
+
 int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer, 
                               turbo_demuxer_packet_t *packet) {
     if (!demuxer || !packet || !demuxer->ops->read_packet) {
@@ -231,6 +236,32 @@ int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer,
     }
 
     return demuxer->ops->read_packet(demuxer->ctx, packet);
+}
+
+int turbo_demuxer_read_packet_with_timing(
+    turbo_demuxer_t *demuxer, turbo_demuxer_packet_t *packet,
+    turbo_demuxer_packet_timing_v1 *timing) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    int result;
+    if (!demuxer || !demuxer->ctx || !packet || !timing ||
+        timing->size != sizeof(*timing) ||
+        timing->version != TURBO_DEMUXER_PACKET_TIMING_V1 ||
+        (demuxer->ops != &turbo_mkv_demuxer_ops &&
+         demuxer->ops != &turbo_webm_demuxer_ops))
+        return -1;
+    timing->discard_padding_ns = 0;
+    result = turbo_demuxer_read_packet(demuxer, packet);
+    if (result != 1) return result;
+    if (turbo_mkv_demuxer_last_discard_padding_ns(
+            demuxer->ctx, &timing->discard_padding_ns) != 0) {
+        turbo_demuxer_free_packet(packet);
+        return -1;
+    }
+    return 1;
+#else
+    (void)demuxer; (void)packet; (void)timing;
+    return -1;
+#endif
 }
 
 void turbo_demuxer_free_packet(turbo_demuxer_packet_t *packet) {

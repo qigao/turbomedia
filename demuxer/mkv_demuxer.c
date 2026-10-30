@@ -263,6 +263,17 @@ static int mkv_demuxer_read_packet_impl(void *ctx_ptr,
     return result;
 }
 
+/* The existing read_packet implementation keeps the current Reader,
+ * ownership and packet ABI intact; this is a non-virtual extension for
+ * callers that need exact signed BlockGroup trimming. */
+int turbo_mkv_demuxer_last_discard_padding_ns(
+    void *ctx_ptr, int64_t *padding_ns) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    if (!ctx || !ctx->opened || !ctx->reader || !padding_ns)
+        return SALTS_EINVAL;
+    return mkv_reader_last_discard_padding_ns(ctx->reader, padding_ns);
+}
+
 static int mkv_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     int64_t timestamp = timestamp_ms;

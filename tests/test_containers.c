@@ -432,6 +432,8 @@ suite("container adapters") {
             turbo_muxer_packet_t packet = {0};
             turbo_demuxer_config_t dconfig = {0};
             turbo_demuxer_packet_t decoded = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
             turbo_muxer_t *muxer = NULL;
             turbo_demuxer_t *demuxer = NULL;
             uint8_t *container = NULL;
@@ -469,15 +471,68 @@ suite("container adapters") {
             demuxer = turbo_demuxer_create_by_name("webm", &dconfig);
             check_not_null(demuxer);
             if (demuxer) {
+                int read_status;
                 check_equal(turbo_demuxer_open(demuxer), 0);
-                while (turbo_demuxer_read_packet(demuxer, &decoded) == 1) {
+                {
+                    turbo_demuxer_packet_timing_v1 bad = timing;
+                    bad.version++;
+                    /* Bad version must not consume the first packet. */
+                    check_true(turbo_demuxer_read_packet_with_timing(
+                        demuxer, &decoded, &bad) < 0);
+                }
+                while ((read_status = turbo_demuxer_read_packet_with_timing(
+                            demuxer, &decoded, &timing)) == 1) {
                     check_equal(decoded.size, sizeof(encoded_packet));
                     check_equal(decoded.data, encoded_packet, sizeof(encoded_packet));
+                    check_equal(timing.discard_padding_ns,
+                                received == 0 ? INT64_C(0) :
+                                INT64_C(13500000));
                     ++received;
                     turbo_demuxer_free_packet(&decoded);
                     if (received > 2) break;
                 }
+                check_equal(read_status, 0); /* real EOF, not parser error */
+                check_equal(timing.discard_padding_ns, INT64_C(0));
                 check_equal(received, 2);
+            }
+            turbo_demuxer_destroy(demuxer);
+            demuxer = NULL;
+            {
+                /* Negative DiscardPadding is valid Matroska and trims from
+                 * the BEGINNING; re-use the generated real container by
+                 * changing only the signed integer payload to -1 ns. */
+                size_t at;
+                int changed = 0, read_status = 0;
+                for (at = 0; at + 7u <= bytes; ++at) {
+                    if (container[at] == 0x75u &&
+                        container[at + 1u] == 0xA2u &&
+                        container[at + 2u] == 0x84u) {
+                        memset(container + at + 3u, 0xff, 4u);
+                        changed = 1;
+                        break;
+                    }
+                }
+                check_true(changed);
+                if (changed) {
+                    dconfig.data = container;
+                    demuxer = turbo_demuxer_create_by_name("webm", &dconfig);
+                    check_not_null(demuxer);
+                    if (demuxer) {
+                        check_equal(turbo_demuxer_open(demuxer), 0);
+                        received = 0;
+                        while ((read_status =
+                                turbo_demuxer_read_packet_with_timing(
+                                    demuxer, &decoded, &timing)) == 1) {
+                            check_equal(timing.discard_padding_ns,
+                                received == 0 ? INT64_C(0) : INT64_C(-1));
+                            ++received;
+                            turbo_demuxer_free_packet(&decoded);
+                            if (received > 2) break;
+                        }
+                        check_equal(read_status, 0);
+                        check_equal(received, 2);
+                    }
+                }
             }
         opus_trim_cleanup:
             turbo_demuxer_free_packet(&decoded);

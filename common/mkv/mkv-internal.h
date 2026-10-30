@@ -116,6 +116,9 @@ struct mkv_sample_t
 	int64_t pts;
 	uint32_t bytes;
 	uint64_t offset;
+    /* Signed Matroska BlockGroup/DiscardPadding, in nanoseconds.
+     * This is internal to the Reader; the public packet ABI is unchanged. */
+    int64_t discard_padding_ns;
 	void* data;
 };
 

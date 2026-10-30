@@ -45,6 +45,11 @@ typedef void* (*mkv_reader_onread2)(void* param, uint32_t track, size_t bytes, i
 /// @return 1-read one frame, 0-EOF, <0-error 
 int mkv_reader_read2(mkv_reader_t* mkv, mkv_reader_onread2 onread, void* param);
 
+/* Last successfully returned packet's signed Matroska DiscardPadding.
+ * Reset to zero on EOF/error/seek. Does not modify the existing callback ABI. */
+int mkv_reader_last_discard_padding_ns(
+    const mkv_reader_t *reader, int64_t *padding_ns);
+
 /// @param[in,out] timestamp input seek timestamp, output seek location timestamp
 /// @return 0-ok, other-error
 int mkv_reader_seek(mkv_reader_t* mkv, int64_t* timestamp);

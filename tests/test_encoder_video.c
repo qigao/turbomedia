@@ -101,6 +101,8 @@ typedef struct av_profile_probe {
     int tracks, audio_channels, audio_rate, video_packets, audio_packets;
     int nonzero_left, nonzero_right, pts_monotonic;
     int has_codec_delay, has_preroll, has_padding;
+    int trimmed_audio_packets;
+    int64_t padding_from_demuxer_ns;
     uint32_t opus_input_rate;
     uint16_t pre_skip;
     uint64_t codec_delay_ns, seek_preroll_ns, discard_padding_ns;
@@ -122,6 +124,7 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
     turbo_demuxer_config_t config = {0};
     turbo_stream_info_t info = {0};
     turbo_demuxer_packet_t packet = {0};
+    turbo_demuxer_packet_timing_v1 timing = TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
     turbo_container_metadata_t metadata = {0};
     turbo_audio_codec_config_t decoder_config = {0};
     turbo_demuxer_t *demuxer = NULL;
@@ -195,16 +198,25 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
     decoder = turbo_codec_create_decoder("opus", &decoder_config);
     if (!decoder) goto finished;
     result.pts_monotonic = 1;
-    while ((read_status = turbo_demuxer_read_packet(demuxer, &packet)) == 1) {
+    while ((read_status = turbo_demuxer_read_packet_with_timing(
+                 demuxer, &packet, &timing)) == 1) {
         if (packet.pts < previous_pts)
             result.pts_monotonic = 0;
         previous_pts = packet.pts;
         if (packet.stream_index == 0) {
+            if (timing.discard_padding_ns != 0) {
+                turbo_demuxer_free_packet(&packet);
+                goto finished; /* never attach Opus padding to video */
+            }
             ++result.video_packets;
         } else if (packet.stream_index == 1) {
             int16_t decoded[960u * 2u];
             size_t decoded_bytes = sizeof(decoded);
             ++result.audio_packets;
+            if (timing.discard_padding_ns != 0) {
+                ++result.trimmed_audio_packets;
+                result.padding_from_demuxer_ns = timing.discard_padding_ns;
+            }
             if (turbo_codec_decode(decoder, packet.data, packet.size,
                 (uint8_t *)decoded, &decoded_bytes) != TURBO_CODEC_OK ||
                 decoded_bytes % (sizeof(int16_t) * channels) != 0) {
@@ -228,6 +240,10 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
     }
     if (read_status != 0 || turbo_demuxer_get_metadata(
             demuxer, &metadata) != 0)
+        goto finished;
+    if (result.trimmed_audio_packets != 1 ||
+        result.padding_from_demuxer_ns <= 0 ||
+        (uint64_t)result.padding_from_demuxer_ns != result.discard_padding_ns)
         goto finished;
     result.duration_ms = metadata.duration_ms;
     result.status = TM_ENCODER_OK;
@@ -258,6 +274,9 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_true(got.has_codec_delay);
             check_true(got.has_preroll);
             check_true(got.has_padding);
+            check_equal(got.trimmed_audio_packets, 1);
+            check_equal(got.padding_from_demuxer_ns,
+                        (int64_t)got.discard_padding_ns);
             check_equal(got.codec_delay_ns,
                         (uint64_t)got.pre_skip * UINT64_C(1000000000) /
                         UINT64_C(48000));
@@ -290,6 +309,9 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_true(stereo.audio_packets > 0);
             check_true(stereo.nonzero_left > 0 && stereo.nonzero_right > 0);
             check_true(stereo.pts_monotonic);
+            check_equal(stereo.trimmed_audio_packets, 1);
+            check_equal(stereo.padding_from_demuxer_ns,
+                        (int64_t)stereo.discard_padding_ns);
             check_equal(stereo.decoded_samples_per_channel -
                         stereo.pre_skip - (size_t)stereo_tail, 6000u);
             check_equal(stereo.duration_ms, 125);
@@ -300,6 +322,9 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_equal(mono.video_packets, 3);
             check_true(mono.nonzero_left > 0);
             check_true(mono.pts_monotonic);
+            check_equal(mono.trimmed_audio_packets, 1);
+            check_equal(mono.padding_from_demuxer_ns,
+                        (int64_t)mono.discard_padding_ns);
             check_equal(mono.decoded_samples_per_channel -
                         mono.pre_skip - (size_t)mono_tail, 6000u);
             check_equal(mono.duration_ms, 125);
@@ -309,6 +334,9 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_true(low_rate.audio_packets > 0);
             check_true(low_rate.nonzero_left > 0);
             check_true(low_rate.pts_monotonic);
+            check_equal(low_rate.trimmed_audio_packets, 1);
+            check_equal(low_rate.padding_from_demuxer_ns,
+                        (int64_t)low_rate.discard_padding_ns);
             check_equal(low_rate.decoded_samples_per_channel -
                         low_rate.pre_skip -
                         (size_t)((low_rate.discard_padding_ns * UINT64_C(48000) +
@@ -325,6 +353,8 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             turbo_demuxer_config_t demux_cfg = {0};
             turbo_stream_info_t info = {0};
             turbo_demuxer_packet_t packet = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
             turbo_demuxer_t *demuxer = NULL;
             turbo_audio_codec_config_t decoder_config = {0};
             turbo_codec_t *decoder = NULL;
@@ -383,7 +413,13 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                 decoder_config.complexity = 5;
                 decoder = turbo_codec_create_decoder("opus", &decoder_config);
                 check_not_null(decoder);
-                while (turbo_demuxer_read_packet(demuxer, &packet) == 1) {
+                while (turbo_demuxer_read_packet_with_timing(
+                           demuxer, &packet, &timing) == 1) {
+                    if (timing.discard_padding_ns) {
+                        check_equal(packet.stream_index, 1);
+                        check_equal(timing.discard_padding_ns,
+                                    (int64_t)padding_ns);
+                    }
                     check_true(packet.pts >= previous_pts);
                     previous_pts = packet.pts;
                     if (packet.stream_index == 0) {

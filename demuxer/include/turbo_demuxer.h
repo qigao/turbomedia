@@ -175,6 +175,27 @@ TURBO_MEDIA_API int turbo_demuxer_open(turbo_demuxer_t *demuxer);
 TURBO_MEDIA_API int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer,
                                         turbo_demuxer_packet_t *packet);
 
+/* ABI-preserving extension for the built-in Matroska/WebM demuxers.
+ * Returns 1 for a packet, 0 for EOF, <0 on error just like read_packet.
+ * The caller sets size/version; the remaining timing field is output.
+ * A positive DiscardPadding trims the END of this packet; a negative
+ * value trims its BEGINNING. Values are signed nanoseconds, never PCM
+ * sample counts. Zero means no per-packet trim.
+ * Other demuxer implementations fail explicitly rather than dropping
+ * trim metadata. The packet remains caller-owned and is released using
+ * turbo_demuxer_free_packet, including on success. */
+#define TURBO_DEMUXER_PACKET_TIMING_V1 1u
+typedef struct turbo_demuxer_packet_timing_v1 {
+    uint32_t size, version;
+    int64_t discard_padding_ns;
+} turbo_demuxer_packet_timing_v1;
+#define TURBO_DEMUXER_PACKET_TIMING_V1_INIT { \
+    sizeof(turbo_demuxer_packet_timing_v1), \
+    TURBO_DEMUXER_PACKET_TIMING_V1, 0 }
+TURBO_MEDIA_API int turbo_demuxer_read_packet_with_timing(
+    turbo_demuxer_t *demuxer, turbo_demuxer_packet_t *packet,
+    turbo_demuxer_packet_timing_v1 *timing);
+
 /**
  * 释放数据包
  */

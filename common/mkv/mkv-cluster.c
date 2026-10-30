@@ -12,8 +12,11 @@ enum
 static int mkv_alloc_samples(struct mkv_t* mkv, int n)
 {
 	void* p;
-	if (n + mkv->count <= mkv->capacity)
+	if (n + mkv->count <= mkv->capacity) {
+        memset(mkv->samples + mkv->count, 0,
+               (size_t)n * sizeof(struct mkv_sample_t));
 		return 0;
+    }
 
 	p = realloc(mkv->samples, sizeof(struct mkv_sample_t) * (mkv->count + n+1));
 	if(!p)
@@ -21,6 +24,10 @@ static int mkv_alloc_samples(struct mkv_t* mkv, int n)
 
 	mkv->samples = (struct mkv_sample_t*)p;
 	mkv->capacity = mkv->count + n + 1;
+    /* realloc does not initialize a new sample; in particular, a regular
+     * SimpleBlock must never inherit a previous BlockGroup's trim value. */
+    memset(mkv->samples + mkv->count, 0,
+           (size_t)n * sizeof(struct mkv_sample_t));
 	return 0;
 }
 

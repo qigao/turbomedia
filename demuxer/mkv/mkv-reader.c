@@ -32,6 +32,7 @@ struct mkv_reader_t
 
 	uint64_t offset; // sample offset
     uint64_t resume_after_group; // cursor past full BlockGroup after packet read
+    int64_t last_discard_padding_ns; /* last successfully delivered packet */
 	int segments; // only 1
 
 	//struct mkv_segment_seek_t* seeks;
@@ -366,7 +367,9 @@ static int mkv_segment_cluster_block_group_parse(
     struct mkv_reader_t* reader, struct mkv_element_node_t* node)
 {
     uint64_t pos, end;
-    int found = 0;
+    int found = 0, padding_seen = 0, reference_seen = 0;
+    int64_t discard_padding_ns = 0;
+    int first_sample = reader->mkv.count;
     if (node->size <= 0 || !reader->mkv.cluster) {
         reader->io.error = -1;
         return 0;
@@ -377,8 +380,9 @@ static int mkv_segment_cluster_block_group_parse(
         return 0;
     }
     end = pos + (uint64_t)node->size;
-    /* Consume the ENTIRE group before returning a packet: read2() rebuilds
-     * the parse stack on every call and cannot resume at a level-3 element. */
+    /* This streaming read2 parser is re-entered with a fresh parse stack
+     * for every packet. Read all BlockGroup children, including the signed
+     * DiscardPadding, before returning any of its packet bytes. */
     while (pos < end && reader->io.error == 0) {
         uint32_t id = mkv_buffer_read_id(&reader->io);
         int64_t bytes = mkv_buffer_read_size(&reader->io);
@@ -388,25 +392,55 @@ static int mkv_segment_cluster_block_group_parse(
             reader->io.error = -1;
             break;
         }
-        if (id == 0xA1) { /* Block shares SimpleBlock payload layout */
+        if (id == 0xA1) {
+            /* A Block shares the SimpleBlock payload layout. */
             if (found || bytes < 4 || (uint64_t)bytes >= UINT32_MAX - 4 ||
-                mkv_cluster_simple_block_read(&reader->mkv, reader->mkv.cluster,
-                                               &reader->io, bytes) != 0) {
+                mkv_cluster_simple_block_read(
+                    &reader->mkv, reader->mkv.cluster,
+                    &reader->io, bytes) != 0) {
                 reader->io.error = -1;
                 break;
             }
             found = 1;
-        } else if (id == 0x75A2 && (bytes < 1 || bytes > 8)) {
-            reader->io.error = -1;
-            break;
+        } else if (id == 0x75A2) {
+            /* Matroska signed big-endian integer. Positive trims the end,
+             * negative trims the start. Do not use mkv_buffer_read_int:
+             * its sign-extension helper shifts by 64 for eight bytes. */
+            uint64_t raw, sign;
+            if (padding_seen || bytes < 1 || bytes > 8) {
+                reader->io.error = -1;
+                break;
+            }
+            raw = mkv_buffer_read_uint(&reader->io, (int)bytes);
+            if (reader->io.error != 0) break;
+            sign = UINT64_C(1) << ((unsigned)bytes * 8 - 1);
+            if (raw & sign) {
+                discard_padding_ns = bytes == 8 ?
+                    -1 - (int64_t)(~raw) :
+                    (int64_t)raw -
+                    (int64_t)(UINT64_C(1) << ((unsigned)bytes * 8));
+            } else {
+                discard_padding_ns = (int64_t)raw;
+            }
+            padding_seen = 1;
+        } else if (id == 0xFB) {
+            reference_seen = 1; /* BlockGroup keyframe semantics */
         }
         mkv_buffer_seek(&reader->io, value_at + (uint64_t)bytes);
         pos = mkv_buffer_tell(&reader->io);
     }
-    if (!found || pos != end)
+    if (!found || pos != end || reader->mkv.count <= first_sample)
         reader->io.error = -1;
-    if (reader->io.error == 0)
+    if (reader->io.error == 0) {
+        struct mkv_sample_t *sample =
+            reader->mkv.samples + reader->mkv.count - 1;
+        sample->discard_padding_ns = discard_padding_ns;
+        /* For BlockGroup, ReferenceBlock (not flag 0x80) determines
+         * inter-frame dependency. This matters when parsing video. */
+        if (!reference_seen)
+            reader->mkv.samples[first_sample].flags |= MKV_FLAGS_KEYFRAME;
         reader->resume_after_group = end;
+    }
     return reader->io.error == 0 ? 1 : 0;
 }
 
@@ -1017,11 +1051,21 @@ uint64_t mkv_reader_getduration(mkv_reader_t* reader)
 	return reader ? reader->mkv.duration : 0;
 }
 
+int mkv_reader_last_discard_padding_ns(
+    const mkv_reader_t *reader, int64_t *padding_ns)
+{
+    if (!reader || !padding_ns) return -1;
+    *padding_ns = reader->last_discard_padding_ns;
+    return 0;
+}
+
 int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* param)
 {
 	int r;
 	void* ptr;
 	struct mkv_sample_t* sample;
+    if (!reader || !onread) return -1;
+    reader->last_discard_padding_ns = 0;
 
 #if !defined(MKV_LIVE_STREAMING)
 	if (reader->offset >= reader->mkv.count)
@@ -1038,6 +1082,9 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
 
 	if (reader->offset >= reader->mkv.count)
 		return 0; // eof
+    /* A malformed BlockGroup may have allocated an incomplete sample;
+     * never publish it if its containing group was rejected. */
+    if (reader->io.error != 0) return reader->io.error;
 
 	sample = &reader->mkv.samples[reader->offset];
 	ptr = onread(param, sample->track, sample->bytes, sample->pts * reader->mkv.timescale / 1000000, sample->dts * reader->mkv.timescale / 1000000, sample->flags);
@@ -1057,6 +1104,7 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
         reader->resume_after_group = 0;
         if (reader->io.error) return reader->io.error;
     }
+    reader->last_discard_padding_ns = sample->discard_padding_ns;
 	return 1;
 }
 
@@ -1132,6 +1180,7 @@ int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 	mkv_buffer_seek(&reader->io, cue->cluster);
 	reader->offset = reader->mkv.count; // clear
     reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
 	return 0;
 #else
 	size_t mid, prev, next;
