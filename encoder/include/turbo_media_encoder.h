@@ -133,6 +133,8 @@ typedef struct tm_encoder_audio_v1 {
     sizeof(tm_encoder_audio_v1), TM_ENCODER_AUDIO_V1, \
     48000u, 1u, NULL, 0u, 0u, 0u }
 
+typedef int (*tm_encoder_should_cancel_fn)(void *user);
+
 /* VP8 + Opus WebM; 48k PCM16 conversion and actual Opus lookahead remain
  * private to TurboMedia::Encoder. Both audio and video are required;
  * no soundless-success or alternate encoder. Encoder owns the muxer and
@@ -143,8 +145,6 @@ TURBO_MEDIA_API tm_encoder_status tm_encoder_webm_encode_av_v2(
     tm_encoder_write_fn write, void *write_user,
     tm_encoder_should_cancel_fn cancelled, void *cancel_user,
     size_t *written);
-
-typedef int (*tm_encoder_should_cancel_fn)(void *user);
 
 /* Encodes one complete raw-video sequence into a single WebM container.
  * Sink is invoked only after success; error/cancel yields no partial file.
