@@ -70,8 +70,9 @@ TURBO_MEDIA_API int tm_encoder_image_available(uint32_t output_format);
  * otherwise return EUNSUPPORTED, never switch to another provider.
  * No call borrows metadata after returning.
  *
- * LIMITATION: animated WebP/AVI and WebM video with an audio track remain
- * unsupported. WebP XMP is supported for strictly validated still images;
+ * LIMITATION: animated WebP/AVI remain unsupported. The separate WebM V2
+ * API supports VP8 + Opus audio under its strict sample-rate contract.
+ * WebP XMP is supported for strictly validated still images;
  * unsupported RIFF structure is explicitly rejected before output.
  * Output byte cap is enforced before sink delivery, NOT before internal
  * FFmpeg packet/codec allocation; it is not a process RSS/GPU budget.
@@ -115,13 +116,17 @@ typedef struct tm_encoder_video_v1 {
     sizeof(tm_encoder_video_v1), TM_ENCODER_VIDEO_V1, \
     0u, 0u, 24u, 0u, NULL, 0u, NULL, 0u, 0u, 0u }
 
-/* V2 audio input is borrowed interleaved floating PCM. This first native
- * A/V profile accepts only 48 kHz, mono/stereo and exact 20ms-aligned audio
- * with a duration exactly matching the frame sequence; unsupported rates or
- * incomplete input 20ms frames FAIL before codec setup, without silently
- * resampling or dropping samples. The encoder drains its real Opus pre-skip
- * with zero-padded terminal input and positive Matroska DiscardPadding.
- * Other source rates / partial input frames remain unsupported. */
+/* V2 audio input is borrowed interleaved float PCM with an explicit
+ * source rate: 8/12/16/24/44.1/48 kHz, mono or stereo. The source sample
+ * count and the 48 kHz output duration must BOTH equal frame_count/fps
+ * as exact rational values; non-integral or mismatched durations fail
+ * EUNSUPPORTED, never silent resampling/truncation.
+ * The single installed FFmpeg swresample owner converts other source rates
+ * into 48kHz packed PCM16 in bounded <=256-frame input chunks. 48 kHz
+ * uses direct conversion. A partial final 20 ms Opus input frame is
+ * zero-padded; actual Opus lookahead and positive last-block Matroska
+ * DiscardPadding restore the exact 48kHz presentation sample count.
+ * Nonfinite PCM returns EINVAL before any output publication. */
 #define TM_ENCODER_AUDIO_V1 1u
 typedef struct tm_encoder_audio_v1 {
     uint32_t size, version, sample_rate, channels;
@@ -136,8 +141,8 @@ typedef struct tm_encoder_audio_v1 {
 
 typedef int (*tm_encoder_should_cancel_fn)(void *user);
 
-/* VP8 + Opus WebM; 48k PCM16 conversion and actual Opus lookahead remain
- * private to TurboMedia::Encoder. Both audio and video are required;
+/* VP8 + Opus WebM; 48k PCM16 conversion/resampling and actual Opus
+ * lookahead remain private to TurboMedia::Encoder. Both tracks are required;
  * no soundless-success or alternate encoder. Encoder owns the muxer and
  * discards its entire uncommitted output on error/cancellation. */
 TURBO_MEDIA_API tm_encoder_status tm_encoder_webm_encode_av_v2(

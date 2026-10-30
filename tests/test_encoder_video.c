@@ -93,8 +93,225 @@ static int find_webm_positive_element(const uint8_t *data, size_t size,
     return 0;
 }
 
+/* Real in-repo A/V profile probe. Not a new codec or consumer:
+ * all packets are written by TurboMedia::Encoder, demuxed by
+ * TurboMedia::Demuxer, and decoded by TurboMedia::Codec. */
+typedef struct av_profile_probe {
+    tm_encoder_status status;
+    int tracks, audio_channels, audio_rate, video_packets, audio_packets;
+    int nonzero_left, nonzero_right, pts_monotonic;
+    int has_codec_delay, has_preroll, has_padding;
+    uint32_t opus_input_rate;
+    uint16_t pre_skip;
+    uint64_t codec_delay_ns, seek_preroll_ns, discard_padding_ns;
+    size_t decoded_samples_per_channel;
+    int64_t duration_ms;
+    unsigned writes;
+} av_profile_probe;
+
+static av_profile_probe run_av_profile(uint32_t sample_rate,
+                                       uint32_t channels,
+                                       uint32_t fps, size_t source_samples) {
+    av_profile_probe result = {0};
+    uint8_t pixels[3][16 * 16 * 3];
+    tm_encoder_video_frame_v1 frames[3];
+    tm_encoder_video_v1 video;
+    tm_encoder_audio_v1 audio = TM_ENCODER_AUDIO_V1_INIT;
+    float *pcm = NULL;
+    video_result sink = {0};
+    turbo_demuxer_config_t config = {0};
+    turbo_stream_info_t info = {0};
+    turbo_demuxer_packet_t packet = {0};
+    turbo_container_metadata_t metadata = {0};
+    turbo_audio_codec_config_t decoder_config = {0};
+    turbo_demuxer_t *demuxer = NULL;
+    turbo_codec_t *decoder = NULL;
+    size_t i, written = 0;
+    int64_t previous_pts = -1;
+    int read_status = 0;
+    result.status = TM_ENCODER_ENOMEM;
+    if (!channels || channels > 2 || source_samples > SIZE_MAX / channels ||
+        source_samples * channels > SIZE_MAX / sizeof(float))
+        return result;
+    pcm = (float *)malloc(source_samples * channels * sizeof(float));
+    if (!pcm) return result;
+    prepare_frames(pixels, frames, 3);
+    video = init_video(frames, 3);
+    video.fps = fps;
+    for (i = 0; i < source_samples; ++i) {
+        pcm[i * channels] = i / 200u % 2u ? 0.65f : -0.65f;
+        if (channels == 2u)
+            pcm[i * channels + 1u] = i / 300u % 2u ? -0.45f : 0.45f;
+    }
+    audio.samples = pcm;
+    audio.sample_count = source_samples;
+    audio.sample_rate = sample_rate;
+    audio.channels = channels;
+    audio.sample_capacity_bytes = source_samples * channels * sizeof(float);
+    sink.capacity = video.max_output_bytes;
+    sink.bytes = (uint8_t *)malloc(sink.capacity);
+    if (!sink.bytes) goto finished;
+
+    result.status = tm_encoder_webm_encode_av_v2(
+        &video, &audio, collect_video, &sink, NULL, NULL, &written);
+    result.writes = sink.writes;
+    if (result.status != TM_ENCODER_OK) goto finished;
+    if (sink.writes != 1u || written != sink.size || !written) {
+        result.status = TM_ENCODER_ECODEC;
+        goto finished;
+    }
+    turbo_demuxer_registry_init();
+    config.data = sink.bytes;
+    config.data_size = sink.size;
+    result.status = TM_ENCODER_ECODEC;
+    demuxer = turbo_demuxer_create_by_name("webm", &config);
+    if (!demuxer || turbo_demuxer_open(demuxer) != 0) goto finished;
+    result.tracks = turbo_demuxer_get_stream_count(demuxer);
+    if (result.tracks != 2 ||
+        turbo_demuxer_get_stream_info(demuxer, 1, &info) != 0 ||
+        !info.codec_name || strcmp(info.codec_name, "opus") != 0 ||
+        !info.extradata || info.extradata_size < 19u)
+        goto finished;
+    result.audio_rate = info.sample_rate;
+    result.audio_channels = info.channels;
+    result.pre_skip = (uint16_t)((unsigned)info.extradata[10] |
+                                 (unsigned)info.extradata[11] << 8);
+    result.opus_input_rate =
+        (uint32_t)info.extradata[12] |
+        (uint32_t)info.extradata[13] << 8 |
+        (uint32_t)info.extradata[14] << 16 |
+        (uint32_t)info.extradata[15] << 24;
+    result.has_codec_delay = find_webm_positive_element(
+        sink.bytes, sink.size, 0x56AA, &result.codec_delay_ns);
+    result.has_preroll = find_webm_positive_element(
+        sink.bytes, sink.size, 0x56BB, &result.seek_preroll_ns);
+    result.has_padding = find_webm_positive_element(
+        sink.bytes, sink.size, 0x75A2, &result.discard_padding_ns);
+    decoder_config.sample_rate = 48000;
+    decoder_config.channels = (int)channels;
+    decoder_config.bitrate = 64000;
+    decoder_config.frame_size_ms = 20;
+    decoder_config.complexity = 5;
+    decoder = turbo_codec_create_decoder("opus", &decoder_config);
+    if (!decoder) goto finished;
+    result.pts_monotonic = 1;
+    while ((read_status = turbo_demuxer_read_packet(demuxer, &packet)) == 1) {
+        if (packet.pts < previous_pts)
+            result.pts_monotonic = 0;
+        previous_pts = packet.pts;
+        if (packet.stream_index == 0) {
+            ++result.video_packets;
+        } else if (packet.stream_index == 1) {
+            int16_t decoded[960u * 2u];
+            size_t decoded_bytes = sizeof(decoded);
+            ++result.audio_packets;
+            if (turbo_codec_decode(decoder, packet.data, packet.size,
+                (uint8_t *)decoded, &decoded_bytes) != TURBO_CODEC_OK ||
+                decoded_bytes % (sizeof(int16_t) * channels) != 0) {
+                turbo_demuxer_free_packet(&packet);
+                goto finished;
+            }
+            result.decoded_samples_per_channel +=
+                decoded_bytes / (sizeof(int16_t) * channels);
+            for (i = 0; i < decoded_bytes / (sizeof(int16_t) * channels); ++i) {
+                if (decoded[i * channels] != 0) ++result.nonzero_left;
+                if (channels == 2u && decoded[i * channels + 1u] != 0)
+                    ++result.nonzero_right;
+            }
+        } else {
+            turbo_demuxer_free_packet(&packet);
+            goto finished;
+        }
+        turbo_demuxer_free_packet(&packet);
+        if (result.audio_packets + result.video_packets > 64)
+            goto finished;
+    }
+    if (read_status != 0 || turbo_demuxer_get_metadata(
+            demuxer, &metadata) != 0)
+        goto finished;
+    result.duration_ms = metadata.duration_ms;
+    result.status = TM_ENCODER_OK;
+finished:
+    turbo_demuxer_free_packet(&packet);
+    turbo_codec_destroy(decoder);
+    turbo_demuxer_destroy(demuxer);
+    free(sink.bytes);
+    free(pcm);
+    return result;
+}
+
 suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
-    group("C11 48kHz float PCM Opus/WebM v2") {
+    group("C11 float PCM / exact-duration Opus WebM v2") {
+        it("resamples 44.1kHz stereo with original rate in OpusHead") {
+            av_profile_probe got = run_av_profile(44100u, 2u, 10u, 13230u);
+            uint64_t tail = (got.discard_padding_ns * 48000u +
+                             UINT64_C(500000000)) / UINT64_C(1000000000);
+            check_equal(got.status, TM_ENCODER_OK);
+            check_equal(got.tracks, 2);
+            check_equal(got.audio_channels, 2);
+            check_equal(got.audio_rate, 48000);
+            check_equal(got.opus_input_rate, 44100u);
+            check_true(got.pre_skip > 0u);
+            check_true(got.has_codec_delay);
+            check_true(got.has_preroll);
+            check_true(got.has_padding);
+            check_equal(got.codec_delay_ns,
+                        (uint64_t)got.pre_skip * UINT64_C(1000000000) /
+                        UINT64_C(48000));
+            check_equal(got.seek_preroll_ns, UINT64_C(80000000));
+            check_equal(got.video_packets, 3);
+            check_equal(got.audio_packets, (int)((14400u + got.pre_skip + 959u) / 960u));
+            check_true(got.pts_monotonic);
+            check_true(got.nonzero_left > 0);
+            check_true(got.nonzero_right > 0);
+            check_equal(got.decoded_samples_per_channel -
+                        (size_t)got.pre_skip - (size_t)tail, 14400u);
+            check_equal(got.duration_ms, 300);
+            check_equal(got.writes, 1u);
+        }
+        it("supports partial final Opus frames at 48kHz stereo and 24kHz mono") {
+            av_profile_probe stereo = run_av_profile(48000u, 2u, 24u, 6000u);
+            av_profile_probe mono = run_av_profile(24000u, 1u, 24u, 3000u);
+            av_profile_probe low_rate = run_av_profile(8000u, 1u, 10u, 2400u);
+            uint64_t stereo_tail =
+                (stereo.discard_padding_ns * 48000u +
+                 UINT64_C(500000000)) / UINT64_C(1000000000);
+            uint64_t mono_tail =
+                (mono.discard_padding_ns * 48000u +
+                 UINT64_C(500000000)) / UINT64_C(1000000000);
+            check_equal(stereo.status, TM_ENCODER_OK);
+            check_equal(stereo.tracks, 2);
+            check_equal(stereo.audio_channels, 2);
+            check_equal(stereo.opus_input_rate, 48000u);
+            check_equal(stereo.video_packets, 3);
+            check_true(stereo.audio_packets > 0);
+            check_true(stereo.nonzero_left > 0 && stereo.nonzero_right > 0);
+            check_true(stereo.pts_monotonic);
+            check_equal(stereo.decoded_samples_per_channel -
+                        stereo.pre_skip - (size_t)stereo_tail, 6000u);
+            check_equal(stereo.duration_ms, 125);
+            check_equal(mono.status, TM_ENCODER_OK);
+            check_equal(mono.tracks, 2);
+            check_equal(mono.audio_channels, 1);
+            check_equal(mono.opus_input_rate, 24000u);
+            check_equal(mono.video_packets, 3);
+            check_true(mono.nonzero_left > 0);
+            check_true(mono.pts_monotonic);
+            check_equal(mono.decoded_samples_per_channel -
+                        mono.pre_skip - (size_t)mono_tail, 6000u);
+            check_equal(mono.duration_ms, 125);
+            check_equal(low_rate.status, TM_ENCODER_OK);
+            check_equal(low_rate.opus_input_rate, 8000u);
+            check_equal(low_rate.video_packets, 3);
+            check_true(low_rate.audio_packets > 0);
+            check_true(low_rate.nonzero_left > 0);
+            check_true(low_rate.pts_monotonic);
+            check_equal(low_rate.decoded_samples_per_channel -
+                        low_rate.pre_skip -
+                        (size_t)((low_rate.discard_padding_ns * UINT64_C(48000) +
+                          UINT64_C(500000000)) / UINT64_C(1000000000)), 14400u);
+            check_equal(low_rate.duration_ms, 300);
+        }
         it("encodes real non-silent Opus and VP8 packets in two WebM tracks") {
             uint8_t pixels[3][16 * 16 * 3];
             tm_encoder_video_frame_v1 frames[3];
@@ -222,11 +439,15 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             audio.samples = pcm;
             audio.sample_count = 14400u;
             audio.sample_capacity_bytes = sizeof(pcm);
-            audio.sample_rate = 44100;
+            audio.sample_rate = 96000; /* no unknown-rate fallback */
             check_equal(tm_encoder_webm_encode_av_v2(
                 &video, &audio, collect_video, &sink, NULL, NULL,
                 &written), TM_ENCODER_EUNSUPPORTED);
             check_equal(written, 0u);
+            audio.sample_rate = 44100; /* supported rate, wrong duration */
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EUNSUPPORTED);
             audio.sample_rate = 48000;
             audio.sample_count = 14401u;
             check_equal(tm_encoder_webm_encode_av_v2(
@@ -243,6 +464,14 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                 &video, &audio, collect_video, &sink, NULL, NULL,
                 &written), TM_ENCODER_EINVAL);
             pcm[0] = 0;
+            pcm[14399] = INFINITY;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                &video, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EINVAL);
+            pcm[14399] = 0;
+            check_equal(tm_encoder_webm_encode_av_v2(
+                NULL, &audio, collect_video, &sink, NULL, NULL,
+                &written), TM_ENCODER_EINVAL);
             check_equal(tm_encoder_webm_encode_av_v2(
                 &video, &audio, collect_video, &sink, cancel_now,
                 NULL, &written), TM_ENCODER_ECANCELLED);

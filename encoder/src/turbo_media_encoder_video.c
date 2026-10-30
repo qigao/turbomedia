@@ -5,6 +5,9 @@
 
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 
 #include <limits.h>
 #include <math.h>
@@ -38,6 +41,9 @@ static enum AVPixelFormat tm_video_input_format(uint32_t kind, unsigned *channel
     }
 }
 
+enum { TM_AUDIO_RESAMPLE_SOURCE_BATCH = 256,
+       TM_AUDIO_RESAMPLE_PENDING_FRAMES = 4096 };
+
 typedef struct tm_audio_owner {
     const tm_encoder_audio_v1 *input;
     turbo_codec_t *codec;
@@ -45,35 +51,133 @@ typedef struct tm_audio_owner {
     int track;
     size_t current;
     size_t packets;
+    size_t output_samples;     /* exact target samples per channel at 48 kHz */
+    size_t source_cursor;      /* source samples per channel consumed by swr */
+    struct SwrContext *resample; /* owned; only for non-48 kHz input */
+    int16_t pending_pcm[TM_AUDIO_RESAMPLE_PENDING_FRAMES * 2u];
+    size_t pending_count;       /* frames per channel */
+    size_t pending_offset;
     uint64_t tail_discard_ns;
 } tm_audio_owner;
 
+/* All timing calculations use the exact rational frame_count/fps.
+ * Non-integral sample counts are rejected instead of inventing/dropping
+ * time. Supported rates are explicitly pinned; no provider auto-detection. */
 static tm_encoder_status tm_audio_preflight(const tm_encoder_video_v1 *video,
                                            const tm_encoder_audio_v1 *audio) {
-    size_t total, samples;
+    uint64_t source_total, output_total;
+    size_t elements, i;
+    if (!video) return TM_ENCODER_EINVAL;
     if (!audio || audio->size != sizeof(*audio) ||
         audio->version != TM_ENCODER_AUDIO_V1)
         return TM_ENCODER_EVERSION;
     if (!audio->samples || !audio->sample_count || audio->reserved ||
         audio->channels < 1u || audio->channels > 2u)
         return TM_ENCODER_EINVAL;
-    /* No silent SRC or trim: exact 48kHz / full 20ms frames, with source
-     * duration matching the requested video frame timeline. */
-    if (audio->sample_rate != 48000u)
+    switch (audio->sample_rate) {
+    case 8000u: case 12000u: case 16000u:
+    case 24000u: case 44100u: case 48000u:
+        break;
+    default:
         return TM_ENCODER_EUNSUPPORTED;
-    if (!video->fps || video->frame_count > SIZE_MAX / 48000u)
+    }
+    if (!video->fps || !video->frame_count ||
+        video->frame_count > UINT64_MAX / 48000u)
         return TM_ENCODER_EINVAL;
-    total = video->frame_count * 48000u;
-    if (total % video->fps != 0u)
+    source_total = (uint64_t)video->frame_count * audio->sample_rate;
+    output_total = (uint64_t)video->frame_count * UINT64_C(48000);
+    if (source_total % video->fps || output_total % video->fps ||
+        source_total / video->fps != audio->sample_count)
         return TM_ENCODER_EUNSUPPORTED;
-    samples = total / video->fps;
-    if (samples != audio->sample_count || samples % 960u != 0u)
-        return TM_ENCODER_EUNSUPPORTED;
-    if (samples > SIZE_MAX / audio->channels ||
-        samples * audio->channels > SIZE_MAX / sizeof(float) ||
+    if (audio->sample_count > SIZE_MAX / audio->channels ||
+        audio->sample_count * audio->channels > SIZE_MAX / sizeof(float) ||
         audio->sample_capacity_bytes <
-            samples * audio->channels * sizeof(float))
+            audio->sample_count * audio->channels * sizeof(float))
         return TM_ENCODER_EINVAL;
+    /* libswresample may otherwise convert NaN/Inf to plausible PCM16;
+     * reject the full borrowed buffer before creating codecs or muxers. */
+    elements = audio->sample_count * audio->channels;
+    for (i = 0; i < elements; ++i)
+        if (!isfinite(audio->samples[i]))
+            return TM_ENCODER_EINVAL;
+    return TM_ENCODER_OK;
+}
+
+/* Converts exactly the requested output samples into one bounded Opus
+ * frame. Feed FFmpeg at most 256 source frames; drain into a bounded
+ * 4096-frame staging buffer before taking another chunk. Unlike repeatedly
+ * feeding with only 960 output slots, this cannot accumulate an unbounded
+ * internal FIFO when upsampling 8/12/16/24 kHz inputs. The output owner
+ * consumes staged samples before requesting more. No full-clip buffer.
+ * Pad only the unused final Opus frame capacity with zeros. */
+static tm_encoder_status tm_audio_prepare_pcm(tm_audio_owner *owner,
+                                               int16_t pcm[960u * 2u]) {
+    const tm_encoder_audio_v1 *audio = owner->input;
+    size_t output_index = owner->current * 960u;
+    size_t valid = output_index < owner->output_samples ?
+                   owner->output_samples - output_index : 0u;
+    size_t channels = audio->channels, i;
+    if (valid > 960u) valid = 960u;
+    if (owner->resample) {
+        size_t completed = 0;
+        while (completed < valid) {
+            if (owner->pending_offset < owner->pending_count) {
+                size_t available = owner->pending_count - owner->pending_offset;
+                size_t take = valid - completed;
+                if (take > available) take = available;
+                memcpy(pcm + completed * channels,
+                       owner->pending_pcm + owner->pending_offset * channels,
+                       take * channels * sizeof(int16_t));
+                owner->pending_offset += take;
+                completed += take;
+                continue;
+            }
+            {
+                int incoming = 0, required, produced;
+                const uint8_t *source[1] = {NULL};
+                uint8_t *dest[1] = {(uint8_t *)owner->pending_pcm};
+                owner->pending_offset = owner->pending_count = 0u;
+                if (owner->source_cursor < audio->sample_count) {
+                    size_t n = audio->sample_count - owner->source_cursor;
+                    if (n > TM_AUDIO_RESAMPLE_SOURCE_BATCH)
+                        n = TM_AUDIO_RESAMPLE_SOURCE_BATCH;
+                    incoming = (int)n;
+                    source[0] = (const uint8_t *)(audio->samples +
+                        owner->source_cursor * channels);
+                }
+                required = swr_get_out_samples(owner->resample, incoming);
+                if (required < 0 || required > TM_AUDIO_RESAMPLE_PENDING_FRAMES)
+                    return TM_ENCODER_ECAPACITY;
+                produced = swr_convert(owner->resample, dest,
+                                       TM_AUDIO_RESAMPLE_PENDING_FRAMES,
+                                       incoming ? source : NULL, incoming);
+                if (produced < 0 ||
+                    produced > TM_AUDIO_RESAMPLE_PENDING_FRAMES)
+                    return TM_ENCODER_ECODEC;
+                owner->source_cursor += (size_t)incoming;
+                owner->pending_count = (size_t)produced;
+                if (!produced && !incoming)
+                    return TM_ENCODER_ECODEC;
+            }
+        }
+        /* A/V success must never hide unconsumed original source samples.
+         * The final Opus frame may also contain padded zeros past valid. */
+        if (owner->current + 1u == owner->packets &&
+            owner->source_cursor != audio->sample_count)
+            return TM_ENCODER_ECODEC;
+    } else {
+        /* Exact 48kHz path remains a direct bounded float->S16 conversion. */
+        for (i = 0; i < valid * channels; ++i) {
+            float v = audio->samples[output_index * channels + i];
+            if (v > 1.0f) v = 1.0f;
+            if (v < -1.0f) v = -1.0f;
+            pcm[i] = (int16_t)(v * 32767.0f +
+                               (v < 0.0f ? -0.5f : 0.5f));
+        }
+    }
+    if (valid < 960u)
+        memset(pcm + valid * channels, 0,
+               (960u - valid) * channels * sizeof(int16_t));
     return TM_ENCODER_OK;
 }
 
@@ -84,29 +188,15 @@ static tm_encoder_status tm_audio_emit_next(
     uint8_t compressed[4096u];
     size_t n = sizeof(compressed);
     size_t count = 960u * owner->input->channels;
-    size_t start, i;
     turbo_encoded_frame_t info = {0};
     turbo_muxer_packet_t packet = {0};
+    tm_encoder_status pcm_status;
     if (owner->current >= owner->packets)
         return TM_ENCODER_EINVAL;
     if (cancelled && cancelled(cancel_user))
         return TM_ENCODER_ECANCELLED;
-    start = owner->current * count;
-    for (i = 0; i < count; ++i) {
-        size_t frame_sample = owner->current * 960u +
-                              i / owner->input->channels;
-        float v;
-        if (frame_sample >= owner->input->sample_count) {
-            pcm[i] = 0; /* zero drain: do not read past the borrowed PCM */
-            continue;
-        }
-        v = owner->input->samples[start + i];
-        if (!isfinite(v))
-            return TM_ENCODER_EINVAL;
-        if (v > 1.0f) v = 1.0f;
-        if (v < -1.0f) v = -1.0f;
-        pcm[i] = (int16_t)(v * 32767.0f + (v < 0.0f ? -0.5f : 0.5f));
-    }
+    pcm_status = tm_audio_prepare_pcm(owner, pcm);
+    if (pcm_status != TM_ENCODER_OK) return pcm_status;
     if (turbo_codec_encode(owner->codec, (const uint8_t *)pcm,
                            count * sizeof(int16_t), compressed,
                            &n, &info) != TURBO_CODEC_OK || n == 0u)
@@ -162,11 +252,6 @@ static tm_encoder_status tm_encoder_webm_owner(
         return TM_ENCODER_EVERSION;
     if (options->audio_bytes || options->audio_pcm)
         return TM_ENCODER_EUNSUPPORTED; /* V1 flags must never be ignored */
-    if (audio) {
-        status = tm_audio_preflight(options, audio);
-        if (status != TM_ENCODER_OK)
-            return status;
-    }
     if (!options->frames || options->reserved ||
         options->width < 2u || options->height < 2u ||
         options->width > TURBO_VIDEO_MAX_WIDTH ||
@@ -177,6 +262,11 @@ static tm_encoder_status tm_encoder_webm_owner(
         options->frame_count == 0 || options->frame_count > 600u ||
         options->max_output_bytes == 0u)
         return TM_ENCODER_EINVAL;
+    if (audio) {
+        status = tm_audio_preflight(options, audio);
+        if (status != TM_ENCODER_OK)
+            return status;
+    }
 
     width = (int)options->width;
     height = (int)options->height;
@@ -251,7 +341,7 @@ static tm_encoder_status tm_encoder_webm_owner(
         head.version = 1;
         head.channels = (uint8_t)audio->channels;
         head.pre_skip = (uint16_t)pre_skip;
-        head.input_sample_rate = 48000;
+        head.input_sample_rate = audio->sample_rate; /* informational source rate */
         if (opus_head_save(&head, opus_head_bytes, sizeof(opus_head_bytes)) != 19) {
             status = TM_ENCODER_ECODEC;
             goto cleanup;
@@ -271,10 +361,29 @@ static tm_encoder_status tm_encoder_webm_owner(
         audio_owner.codec = opus;
         audio_owner.muxer = muxer;
         audio_owner.track = audio_track;
-        /* Encoded samples - actual Opus pre-skip - tail trim = source.
-         * Pad with bounded zeros only after the last borrowed sample. */
+        audio_owner.output_samples =
+            (size_t)((uint64_t)options->frame_count * UINT64_C(48000) /
+                     options->fps);
+        /* At non-48kHz input rates, use the one installed FFmpeg
+         * swresample provider with bounded streaming input. */
+        if (audio->sample_rate != 48000u) {
+            AVChannelLayout layout = {0};
+            int setup_result;
+            av_channel_layout_default(&layout, (int)audio->channels);
+            setup_result = swr_alloc_set_opts2(
+                &audio_owner.resample, &layout, AV_SAMPLE_FMT_S16, 48000,
+                &layout, AV_SAMPLE_FMT_FLT, (int)audio->sample_rate, 0, NULL);
+            av_channel_layout_uninit(&layout);
+            if (setup_result < 0 || !audio_owner.resample ||
+                swr_init(audio_owner.resample) < 0) {
+                status = TM_ENCODER_ECODEC;
+                goto cleanup;
+            }
+        }
+        /* Encoded 48k samples - actual pre-skip - terminal padding
+         * = exact resampled output duration. */
         {
-            uint64_t needed = (uint64_t)audio->sample_count + pre_skip;
+            uint64_t needed = (uint64_t)audio_owner.output_samples + pre_skip;
             uint64_t count = (needed + 959u) / 960u;
             uint64_t excess = count * 960u - needed;
             if (!count || count > SIZE_MAX || excess >= 960u) {
@@ -415,6 +524,7 @@ cleanup:
     /* Finalize before destroy only on the successful path; the muxer's
      * destroy function retires its own intermediate output state. */
     sws_freeContext(scale);
+    swr_free(&audio_owner.resample);
     free(compressed);
     free(yuv);
     turbo_muxer_destroy(muxer);

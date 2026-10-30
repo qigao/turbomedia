@@ -13,6 +13,7 @@ target_include_directories(turbo_media_encoder
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(turbo_media_encoder PRIVATE
   TurboMedia::Codec TurboMedia::Muxer
-  TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil TurboMediaFFmpeg::swscale)
+  TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil
+  TurboMediaFFmpeg::swscale TurboMediaFFmpeg::swresample)
 set_target_properties(turbo_media_encoder PROPERTIES
   C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
