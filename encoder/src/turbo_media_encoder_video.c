@@ -16,8 +16,8 @@
  * TurboMedia::Muxer WebM -> bounded publication callback.
  *
  * No media encoding fallback and no independent libvpx or WebM implementation
- * in sd. The existing muxer currently stages its full output in memory; cap
- * is enforced before publication but muxer internals are not yet bounded.
+ * in sd. TurboMedia's memory-backed WebM writer is byte-bounded; native
+ * libvpx/swscale working sets are not a full process-memory quota.
  */
 
 static enum AVPixelFormat tm_video_input_format(uint32_t kind, unsigned *channels) {
@@ -112,6 +112,11 @@ tm_encoder_status tm_encoder_webm_encode(
     muxer = turbo_muxer_create(&muxer_settings);
     if (!muxer) {
         status = TM_ENCODER_ECODEC;
+        goto cleanup;
+    }
+    // Enforce the cap inside the existing TurboMedia WebM memory writer.
+    if (turbo_muxer_set_memory_limit(muxer, options->max_output_bytes) != 0) {
+        status = TM_ENCODER_ECAPACITY;
         goto cleanup;
     }
     stream.type = TURBO_CODEC_TYPE_VIDEO;

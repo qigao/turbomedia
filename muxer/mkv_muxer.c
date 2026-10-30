@@ -345,6 +345,16 @@ static int mkv_muxer_get_data_impl(void *ctx_ptr, uint8_t **data, size_t *size) 
 }
 
 static const char *s_mkv_extensions[] = {".mkv", ".mka", NULL};
+/* Bounded memory writer contract for the existing WebM/MKV owner.
+ * Must be called before muxing packets; cannot silently shrink existing data.
+ * The public config layout stays ABI-identical. */
+int turbo_mkv_muxer_set_memory_limit(void *opaque, size_t limit) {
+    mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)opaque;
+    if (!ctx || ctx->format != TURBO_MUXER_WEBM || ctx->finalized)
+        return SALTS_EINVAL;
+    return turbo_container_io_set_memory_limit(&ctx->io, limit);
+}
+
 static const char *s_webm_extensions[] = {".webm", ".weba", NULL};
 
 const turbo_muxer_ops_t turbo_mkv_muxer_ops = {

@@ -178,6 +178,13 @@ TURBO_MEDIA_API int turbo_muxer_add_stream(turbo_muxer_t *muxer,
 /**
  * 写入头部
  */
+/* Strictly bound the in-memory WebM writer before publishing packets.
+ * Does not modify any public config struct or change file-backed writers.
+ * Existing bytes larger than limit reject immediately. The limit also applies
+ * to subsequent seek expansion, not only to append writes. */
+TURBO_MEDIA_API int turbo_muxer_set_memory_limit(turbo_muxer_t *muxer,
+                                                size_t max_output_bytes);
+
 TURBO_MEDIA_API int turbo_muxer_write_header(turbo_muxer_t *muxer);
 
 /**

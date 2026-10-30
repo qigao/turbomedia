@@ -120,6 +120,23 @@ const turbo_muxer_ops_t *turbo_muxer_find_by_extension(const char *ext) {
     return NULL;
 }
 
+#ifdef TURBO_MEDIA_HAS_MKV
+int turbo_mkv_muxer_set_memory_limit(void *ctx, size_t limit);
+#endif
+
+int turbo_muxer_set_memory_limit(turbo_muxer_t *muxer, size_t limit) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    if (!muxer || !muxer->ctx || muxer->config.output_path ||
+        !muxer->ops || muxer->ops->format != TURBO_MUXER_WEBM)
+        return -1;
+    return turbo_mkv_muxer_set_memory_limit(muxer->ctx, limit);
+#else
+    (void)muxer;
+    (void)limit;
+    return -1;
+#endif
+}
+
 /* =============================================================================
  * Muxer Instance Functions
  * ============================================================================= */

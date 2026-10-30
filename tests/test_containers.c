@@ -356,6 +356,42 @@ suite("container adapters") {
         }
     }
 
+    group("bounded WebM writer") {
+        it("rejects an oversized VP8 packet before extending memory past its limit") {
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_muxer_t *muxer;
+            uint8_t frame[32 * 1024];
+            uint8_t *result = NULL;
+            size_t size = 0;
+            int stream_id = -1;
+            memset(frame, 0x5a, sizeof(frame));
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer)
+                return;
+            check_true(turbo_muxer_set_memory_limit(muxer, 0) != 0);
+            check_equal(turbo_muxer_set_memory_limit(muxer, 4096), 0);
+            stream.type = TURBO_CODEC_TYPE_VIDEO;
+            stream.codec_name = "vp8";
+            stream.width = 16;
+            stream.height = 16;
+            stream.framerate = 10;
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &stream_id), 0);
+            packet.stream_id = stream_id;
+            packet.data = frame;
+            packet.size = sizeof(frame);
+            packet.is_keyframe = 1;
+            packet.duration = 100000;
+            check_true(turbo_muxer_write_packet(muxer, &packet) != 0);
+            if (turbo_muxer_get_data(muxer, &result, &size) == 0)
+                check_true(size <= 4096u);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
     group("MPEG") {
         it("round trips MPEG-2 video through MPEG-TS") {
             run_mpeg2_round_trip(TURBO_MUXER_MPEG_TS, "mpegts");

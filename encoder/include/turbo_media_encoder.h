@@ -114,8 +114,9 @@ typedef int (*tm_encoder_should_cancel_fn)(void *user);
 
 /* Encodes one complete raw-video sequence into a single WebM container.
  * Sink is invoked only after success; error/cancel yields no partial file.
- * The outer container capacity is checked before publication; the current
- * TurboMedia Muxer internal buffer is NOT yet a bounded RSS allocation.
+ * TurboMedia WebM memory-writer bytes are capped during muxing, and the
+ * final container is checked again before publication. libvpx/swscale
+ * internal allocations are NOT a full process-RSS bound.
  * Callback may request cancellation between encoded frames, not while a
  * single libvpx encode() call is in progress. No alternate codec/muxer.
  */
