@@ -301,6 +301,23 @@ static int mkv_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
     return SALTS_OK;
 }
 
+/* Query parsed TrackEntry elements by the real EBML TrackNumber. This
+ * maps public stream indexes without deriving delay from the OpusHead. */
+int turbo_mkv_demuxer_get_track_timing(
+    void *ctx_ptr, int stream_index,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    const mkv_demuxer_stream_t *stream;
+    if (!ctx || !ctx->opened || !ctx->reader || stream_index < 0 ||
+        !codec_delay_ns || !seek_preroll_ns)
+        return SALTS_EINVAL;
+    stream = (const mkv_demuxer_stream_t *)vec_at_const(
+        &ctx->streams, (size_t)stream_index);
+    if (!stream) return SALTS_EINVAL;
+    return mkv_reader_get_track_timing_ns(
+        ctx->reader, stream->track, codec_delay_ns, seek_preroll_ns);
+}
+
 static int mkv_demuxer_get_metadata_impl(void *ctx_ptr,
                                          turbo_container_metadata_t *metadata) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;

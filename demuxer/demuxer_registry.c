@@ -227,6 +227,9 @@ int turbo_demuxer_open(turbo_demuxer_t *demuxer) {
 #ifdef TURBO_MEDIA_HAS_MKV
 int turbo_mkv_demuxer_last_discard_padding_ns(
     void *ctx, int64_t *padding_ns);
+int turbo_mkv_demuxer_get_track_timing(
+    void *ctx, int stream_index,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns);
 #endif
 
 int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer, 
@@ -299,6 +302,32 @@ int turbo_demuxer_get_stream_info(turbo_demuxer_t *demuxer,
     }
 
     return demuxer->ops->get_stream_info(demuxer->ctx, stream_index, info);
+}
+
+int turbo_demuxer_get_track_timing(
+    turbo_demuxer_t *demuxer, int stream_index,
+    turbo_demuxer_track_timing_v1 *timing) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    uint64_t delay, preroll;
+    int result;
+    if (!demuxer || !demuxer->ctx || !timing ||
+        timing->size != sizeof(*timing) ||
+        timing->version != TURBO_DEMUXER_TRACK_TIMING_V1 ||
+        stream_index < 0 || stream_index >= demuxer->stream_count ||
+        (demuxer->ops != &turbo_mkv_demuxer_ops &&
+         demuxer->ops != &turbo_webm_demuxer_ops))
+        return -1;
+    result = turbo_mkv_demuxer_get_track_timing(
+        demuxer->ctx, stream_index, &delay, &preroll);
+    if (result != 0) return result;
+    /* Publish the complete pair only after a successful read. */
+    timing->codec_delay_ns = delay;
+    timing->seek_preroll_ns = preroll;
+    return 0;
+#else
+    (void)demuxer; (void)stream_index; (void)timing;
+    return -1;
+#endif
 }
 
 int turbo_demuxer_get_metadata(turbo_demuxer_t *demuxer,

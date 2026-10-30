@@ -218,6 +218,28 @@ TURBO_MEDIA_API int turbo_demuxer_get_stream_info(turbo_demuxer_t *demuxer,
                                             int stream_index,
                                             turbo_stream_info_t *info);
 
+/* ABI-preserving Matroska/WebM TrackEntry timing.
+ * The values are the parsed unsigned nanoseconds from the media file,
+ * not inferred from CodecPrivate; absent elements default to zero.
+ * Demuxer packet timestamps remain unadjusted. To obtain presentation
+ * timestamps, subtract CodecDelay from the track's block timestamp.
+ * After seeking/discontinuity, decode at least SeekPreRoll before the
+ * requested presentation time; this accessor does NOT perform seeking.
+ * Caller initializes size/version; only the trailing values are outputs.
+ * Other Demuxer providers fail explicitly, never guess or discard timing. */
+#define TURBO_DEMUXER_TRACK_TIMING_V1 1u
+typedef struct turbo_demuxer_track_timing_v1 {
+    uint32_t size, version;
+    uint64_t codec_delay_ns;
+    uint64_t seek_preroll_ns;
+} turbo_demuxer_track_timing_v1;
+#define TURBO_DEMUXER_TRACK_TIMING_V1_INIT { \
+    sizeof(turbo_demuxer_track_timing_v1), \
+    TURBO_DEMUXER_TRACK_TIMING_V1, 0u, 0u }
+TURBO_MEDIA_API int turbo_demuxer_get_track_timing(
+    turbo_demuxer_t *demuxer, int stream_index,
+    turbo_demuxer_track_timing_v1 *timing);
+
 /**
  * 获取元数据
  */

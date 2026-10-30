@@ -106,6 +106,7 @@ typedef struct av_profile_probe {
     uint32_t opus_input_rate;
     uint16_t pre_skip;
     uint64_t codec_delay_ns, seek_preroll_ns, discard_padding_ns;
+    uint64_t parsed_codec_delay_ns, parsed_seek_preroll_ns;
     size_t decoded_samples_per_channel;
     int64_t duration_ms;
     unsigned writes;
@@ -126,6 +127,8 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
     turbo_demuxer_packet_t packet = {0};
     turbo_demuxer_packet_timing_v1 timing = TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
     turbo_container_metadata_t metadata = {0};
+    turbo_demuxer_track_timing_v1 track_timing =
+        TURBO_DEMUXER_TRACK_TIMING_V1_INIT;
     turbo_audio_codec_config_t decoder_config = {0};
     turbo_demuxer_t *demuxer = NULL;
     turbo_codec_t *decoder = NULL;
@@ -190,6 +193,18 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
         sink.bytes, sink.size, 0x56BB, &result.seek_preroll_ns);
     result.has_padding = find_webm_positive_element(
         sink.bytes, sink.size, 0x75A2, &result.discard_padding_ns);
+    if (turbo_demuxer_get_track_timing(demuxer, 1, &track_timing) != 0)
+        goto finished;
+    result.parsed_codec_delay_ns = track_timing.codec_delay_ns;
+    result.parsed_seek_preroll_ns = track_timing.seek_preroll_ns;
+    /* These are the real TrackEntry values, not inferred by consumers
+     * from OpusHead; a video track has no Opus pre-skip/pre-roll. */
+    if (result.parsed_codec_delay_ns != result.codec_delay_ns ||
+        result.parsed_seek_preroll_ns != result.seek_preroll_ns ||
+        turbo_demuxer_get_track_timing(demuxer, 0, &track_timing) != 0 ||
+        track_timing.codec_delay_ns != 0 ||
+        track_timing.seek_preroll_ns != 0)
+        goto finished;
     decoder_config.sample_rate = 48000;
     decoder_config.channels = (int)channels;
     decoder_config.bitrate = 64000;
@@ -281,6 +296,8 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
                         (uint64_t)got.pre_skip * UINT64_C(1000000000) /
                         UINT64_C(48000));
             check_equal(got.seek_preroll_ns, UINT64_C(80000000));
+            check_equal(got.parsed_codec_delay_ns, got.codec_delay_ns);
+            check_equal(got.parsed_seek_preroll_ns, got.seek_preroll_ns);
             check_equal(got.video_packets, 3);
             check_equal(got.audio_packets, (int)((14400u + got.pre_skip + 959u) / 960u));
             check_true(got.pts_monotonic);
@@ -309,6 +326,10 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_true(stereo.audio_packets > 0);
             check_true(stereo.nonzero_left > 0 && stereo.nonzero_right > 0);
             check_true(stereo.pts_monotonic);
+            check_equal(stereo.parsed_codec_delay_ns,
+                        stereo.codec_delay_ns);
+            check_equal(stereo.parsed_seek_preroll_ns,
+                        stereo.seek_preroll_ns);
             check_equal(stereo.trimmed_audio_packets, 1);
             check_equal(stereo.padding_from_demuxer_ns,
                         (int64_t)stereo.discard_padding_ns);
@@ -322,6 +343,8 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_equal(mono.video_packets, 3);
             check_true(mono.nonzero_left > 0);
             check_true(mono.pts_monotonic);
+            check_equal(mono.parsed_codec_delay_ns, mono.codec_delay_ns);
+            check_equal(mono.parsed_seek_preroll_ns, mono.seek_preroll_ns);
             check_equal(mono.trimmed_audio_packets, 1);
             check_equal(mono.padding_from_demuxer_ns,
                         (int64_t)mono.discard_padding_ns);
@@ -334,6 +357,10 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
             check_true(low_rate.audio_packets > 0);
             check_true(low_rate.nonzero_left > 0);
             check_true(low_rate.pts_monotonic);
+            check_equal(low_rate.parsed_codec_delay_ns,
+                        low_rate.codec_delay_ns);
+            check_equal(low_rate.parsed_seek_preroll_ns,
+                        low_rate.seek_preroll_ns);
             check_equal(low_rate.trimmed_audio_packets, 1);
             check_equal(low_rate.padding_from_demuxer_ns,
                         (int64_t)low_rate.discard_padding_ns);

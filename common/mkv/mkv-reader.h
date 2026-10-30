@@ -28,6 +28,13 @@ int mkv_reader_getinfo(mkv_reader_t* mkv, struct mkv_reader_trackinfo_t* ontrack
 
 uint64_t mkv_reader_getduration(mkv_reader_t* mkv);
 
+/* Parsed TrackEntry/CodecDelay and SeekPreRoll in Matroska nanoseconds.
+ * Track number is the EBML TrackNumber, not a zero-based stream index.
+ * Returns 0 for success and <0 for invalid/unknown track. */
+int mkv_reader_get_track_timing_ns(
+    const mkv_reader_t *reader, uint32_t track_number,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns);
+
 /// audio: AAC raw data, don't include ADTS/AudioSpecificConfig
 /// video: 4-byte data length(don't include self length) + H.264 NALU(don't include 0x00000001)
 /// @param[in] flags MKV_FLAGS_xxx, such as: MKV_FLAGS_KEYFRAME

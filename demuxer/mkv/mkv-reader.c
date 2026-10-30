@@ -591,8 +591,8 @@ static struct mkv_element_t s_elements[] = {
     ELEMENT(0x26B240,	EBML_TYPE_STRING,	3,	"CodecDownloadURL", NULL, 0), // Segment/Tracks/TrackEntry/CodecDownloadURL [mult]
     ELEMENT(0xAA,		EBML_TYPE_UINT,		3,	"CodecDecodeAll", NULL, 0), // Segment/Tracks/TrackEntry/CodecDecodeAll
     ELEMENT(0x6FAB,		EBML_TYPE_UINT,		3,	"TrackOverlay", NULL, 0), // Segment/Tracks/TrackEntry/TrackOverlay [mult]
-    ELEMENT(0x56AA,		EBML_TYPE_UINT,		3,	"CodecDelay", NULL, 0), // Segment/Tracks/TrackEntry/CodecDelay
-    ELEMENT(0x56BB,		EBML_TYPE_UINT,		3,	"SeekPreRoll", NULL, 0), // Segment/Tracks/TrackEntry/SeekPreRoll
+    ELEMENT(0x56AA,		EBML_TYPE_UINT,		3,	"CodecDelay", ebml_value_parse_uint64, offsetof(struct mkv_track_t, codec_delay_ns)), // Segment/Tracks/TrackEntry/CodecDelay
+    ELEMENT(0x56BB,		EBML_TYPE_UINT,		3,	"SeekPreRoll", ebml_value_parse_uint64, offsetof(struct mkv_track_t, seek_preroll_ns)), // Segment/Tracks/TrackEntry/SeekPreRoll
     ELEMENT(0x6624,		EBML_TYPE_MASTER,	3,	"TrackTranslate", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate [mult]
     ELEMENT(0x66FC,		EBML_TYPE_UINT,		4,	"TrackTranslateEditionUID", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate/TrackTranslateEditionUID [mult]
     ELEMENT(0x66BF,		EBML_TYPE_UINT,		4,	"TrackTranslateCodec", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate/TrackTranslateCodec
@@ -1049,6 +1049,24 @@ int mkv_reader_getinfo(mkv_reader_t* reader, struct mkv_reader_trackinfo_t* ontr
 uint64_t mkv_reader_getduration(mkv_reader_t* reader)
 {
 	return reader ? reader->mkv.duration : 0;
+}
+
+int mkv_reader_get_track_timing_ns(
+    const mkv_reader_t *reader, uint32_t track_number,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns)
+{
+    int i;
+    if (!reader || !track_number || !codec_delay_ns || !seek_preroll_ns)
+        return -EINVAL;
+    for (i = 0; i < reader->mkv.track_count; ++i) {
+        const struct mkv_track_t *track = &reader->mkv.tracks[i];
+        if (track->id == track_number) {
+            *codec_delay_ns = track->codec_delay_ns;
+            *seek_preroll_ns = track->seek_preroll_ns;
+            return 0;
+        }
+    }
+    return -ENOENT;
 }
 
 int mkv_reader_last_discard_padding_ns(

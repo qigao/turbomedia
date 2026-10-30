@@ -390,6 +390,10 @@ suite("container adapters") {
             const uint8_t encoded_packet[4] = {0xf8u, 0xffu, 0xfeu, 0u};
             turbo_muxer_config_t config = {0};
             turbo_muxer_t *muxer;
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_demuxer_config_t demux_config = {0};
+            turbo_demuxer_track_timing_v1 timing =
+                TURBO_DEMUXER_TRACK_TIMING_V1_INIT;
             turbo_stream_info_t audio = {0};
             turbo_muxer_packet_t packet = {0};
             uint8_t *output = NULL;
@@ -419,6 +423,36 @@ suite("container adapters") {
             check_true(matroska_find_uint(output, size, 0x56BB, &preroll));
             check_equal(delay, UINT64_C(6500000));
             check_equal(preroll, UINT64_C(80000000));
+
+            /* Round trip the real TrackEntry through the public Demuxer.
+             * This must fail if the reader silently discards 0x56AA/0x56BB. */
+            demux_config.data = output;
+            demux_config.data_size = size;
+            demuxer = turbo_demuxer_create_by_name("webm", &demux_config);
+            check_not_null(demuxer);
+            if (demuxer) {
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
+                check_equal(turbo_demuxer_get_track_timing(
+                    demuxer, 0, &timing), 0);
+                check_equal(timing.codec_delay_ns, delay);
+                check_equal(timing.seek_preroll_ns, preroll);
+                {
+                    turbo_demuxer_track_timing_v1 bad = timing;
+                    bad.version++;
+                    check_true(turbo_demuxer_get_track_timing(
+                        demuxer, 0, &bad) != 0);
+                    bad = timing;
+                    bad.size--;
+                    check_true(turbo_demuxer_get_track_timing(
+                        demuxer, 0, &bad) != 0);
+                }
+                check_true(turbo_demuxer_get_track_timing(
+                    demuxer, -1, &timing) != 0);
+                check_true(turbo_demuxer_get_track_timing(
+                    demuxer, 1, &timing) != 0);
+            }
+            turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
         }
         it("round trips a terminal Opus BlockGroup and positive DiscardPadding") {
