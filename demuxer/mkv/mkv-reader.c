@@ -495,8 +495,10 @@ static int mkv_segment_cluster_simple_block_parse(struct mkv_reader_t* reader, s
 	uint64_t pos;
 #endif
 	struct mkv_cluster_t* cluster;
-	if (node->size < 0)
-		return 0; // eof
+    /* A SimpleBlock is never allowed to carry an unknown-length or
+     * undersized payload; fail instead of treating it as ordinary EOF. */
+    if (node->size < 4 || node->size > UINT32_MAX)
+        return -EINVAL;
 
 	//cluster = (struct mkv_cluster_t*)node->parent->ptr;
 	cluster = reader->mkv.cluster; // seek to block, no parent
@@ -509,7 +511,7 @@ static int mkv_segment_cluster_simple_block_parse(struct mkv_reader_t* reader, s
 	mkv_buffer_skip(&reader->io, node->off + node->head + node->size - pos);
 	return r; 
 #else
-	return 0 == r ? 1 : 0; // per block
+    return r < 0 ? r : 1; /* fail fast, never turn malformed block into EOF */
 #endif
 }
 
@@ -900,8 +902,12 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 			assert(level > 0);
 			if (e->parse)
 			{
-				r = e->parse(reader, node);
-				assert(r >= 0);
+                r = e->parse(reader, node);
+                /* Parse callbacks can report invalid EBML; propagating
+                 * errors to read2 is mandatory. Asserting or hiding a
+                 * negative result would incorrectly report normal EOF. */
+                if (r < 0)
+                    return r;
 			}
 			else if(-1 != node->size)
 			{

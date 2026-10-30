@@ -59,6 +59,14 @@ int mkv_cluster_simple_block_read(struct mkv_t* mkv, struct mkv_cluster_t* clust
 	int16_t timestamp;
 	struct mkv_track_t* track;
 
+    /* EBML Block has a minimum four-byte header (track VINT, signed
+     * timestamp, flags). Refuse corrupt advertised sizes BEFORE subtracting
+     * 4 or narrowing to mkv_sample_t.bytes (uint32_t). A truncated block
+     * must never become a huge packet allocation. */
+    if (!mkv || !cluster || !io || !mkv->timescale ||
+        bytes < 4 || bytes > (int64_t)UINT32_MAX)
+        return -EINVAL;
+
 	//if (0 != mkv_realloc(&cluster->blocks, cluster->count, &cluster->capacity, sizeof(struct mkv_block_t), 64))
 	//	return -ENOMEM;
 	//block = &cluster->blocks[cluster->count++];
@@ -68,6 +76,9 @@ int mkv_cluster_simple_block_read(struct mkv_t* mkv, struct mkv_cluster_t* clust
 	tid = (int)mkv_buffer_read_size(io);
 	timestamp = (int16_t)mkv_buffer_read_int(io, 2);
 	flags = (uint8_t)mkv_buffer_read_uint(io, 1);
+    if (mkv_buffer_error(io) != 0 ||
+        (mkv_buffer_tell(io) - pos) > (uint64_t)bytes)
+        return -EINVAL;
 	total = 0; // Block Header
 
 	track = mkv_track_find(mkv, tid);

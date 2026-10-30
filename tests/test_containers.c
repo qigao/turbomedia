@@ -3,6 +3,7 @@
 #include <turbo_muxer.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -522,6 +523,83 @@ suite("container adapters") {
                     demuxer, 1, &timing) != 0);
             }
             turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
+        it("rejects a truncated SimpleBlock header instead of returning EOF") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            static const uint8_t encoded_packet[4] = {
+                0xf8u, 0xffu, 0xfeu, 0u
+            };
+            /* This single-track WebM emits a SimpleBlock with an 8-byte
+             * payload: 4-byte block header plus four Opus bytes. */
+            static const uint8_t simple_block[] = {
+                0xa3u, 0x88u, 0x81u, 0, 0, 0x80u,
+                0xf8u, 0xffu, 0xfeu, 0
+            };
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t info = {0};
+            turbo_muxer_packet_t input = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_demuxer_packet_t packet = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *output = NULL, *corrupt = NULL;
+            size_t size = 0, i;
+            int track = -1, found = 0, status;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            info.type = TURBO_CODEC_TYPE_AUDIO;
+            info.codec_name = "opus";
+            info.channels = 1;
+            info.sample_rate = 48000;
+            info.extradata = opus_head;
+            info.extradata_size = sizeof(opus_head);
+            check_equal(turbo_muxer_add_stream(muxer, &info, &track), 0);
+            if (track < 0) goto corrupt_cleanup;
+            input.stream_id = track;
+            input.data = encoded_packet;
+            input.size = sizeof(encoded_packet);
+            input.duration = 20000;
+            input.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &output, &size), 0);
+            corrupt = (uint8_t *)malloc(size);
+            check_not_null(corrupt);
+            if (!corrupt) goto corrupt_cleanup;
+            memcpy(corrupt, output, size);
+            for (i = 0; i + sizeof(simple_block) <= size; ++i) {
+                if (memcmp(corrupt + i, simple_block,
+                           sizeof(simple_block)) == 0) {
+                    corrupt[i + 1u] = 0x83u; /* claimed payload = 3 (<4) */
+                    found = 1;
+                    break;
+                }
+            }
+            check_true(found);
+            if (!found) goto corrupt_cleanup;
+            dc.data = corrupt;
+            dc.data_size = size;
+            demuxer = turbo_demuxer_create_by_name("webm", &dc);
+            check_not_null(demuxer);
+            if (!demuxer) goto corrupt_cleanup;
+            check_equal(turbo_demuxer_open(demuxer), 0);
+            status = turbo_demuxer_read_packet_with_timing(
+                demuxer, &packet, &timing);
+            check_true(status < 0); /* corrupted block is NOT EOF */
+            check_true(packet.data == NULL);
+            check_equal(timing.discard_padding_ns, INT64_C(0));
+        corrupt_cleanup:
+            turbo_demuxer_free_packet(&packet);
+            turbo_demuxer_destroy(demuxer);
+            free(corrupt);
             turbo_muxer_destroy(muxer);
         }
         it("round trips a terminal Opus BlockGroup and positive DiscardPadding") {
