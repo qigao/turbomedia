@@ -363,7 +363,23 @@ int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
 
     if (key_frame)
     {
-        r = mkv_cue_add(mkv, tid, ts, cluster->position, sample.offset-cluster->position);
+        uint64_t segment_data_start, cluster_data_start;
+        /* RFC 9559 Segment Position: CueClusterPosition is measured
+         * from Segment payload, not from the beginning of the file.
+         * CueRelativePosition is measured from Cluster payload, not
+         * from its EBML ID. Both headers have a fixed 8-byte length
+         * field in this owned writer. */
+        if (writer->segment_offset > UINT64_MAX - 8u ||
+            cluster->position > UINT64_MAX - 8u)
+            return -ERANGE;
+        segment_data_start = writer->segment_offset + 8u;
+        cluster_data_start = cluster->position + 8u;
+        if (cluster->position < segment_data_start ||
+            sample.offset < cluster_data_start)
+            return -EINVAL;
+        r = mkv_cue_add(mkv, tid, ts,
+                        cluster->position - segment_data_start,
+                        sample.offset - cluster_data_start);
         if (0 != r)
             return r;
     }

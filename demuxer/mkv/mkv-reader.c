@@ -29,6 +29,7 @@ struct mkv_reader_t
 	struct ebml_header_t ebml;
 	int64_t cue_time;
 	uint64_t seek_id;
+    uint64_t segment_data_start; /* Segment payload, RFC 9559 position base */
 
 	uint64_t offset; // sample offset
     uint64_t resume_after_group; // cursor past full BlockGroup after packet read
@@ -199,6 +200,17 @@ static int ebml_default_master_parse(struct mkv_reader_t* reader, struct mkv_ele
 	node->ptr = node->parent ? node->parent->ptr : NULL; // inherit
 	(void)reader;
 	return 0; // nothing to do
+}
+
+static int mkv_segment_root_parse(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
+{
+    /* CueClusterPosition is segment-relative. Capture the exact start
+     * of Segment Element Data, after its EBML ID and encoded size.
+     * Retain original master-node ownership semantics. */
+    if (!reader->segment_data_start)
+        reader->segment_data_start = mkv_buffer_tell(&reader->io);
+    return ebml_default_master_parse(reader, node);
 }
 
 static int ebml_header_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -526,7 +538,7 @@ static struct mkv_element_t s_elements[] = {
 	ELEMENT(0x4284,		EBML_TYPE_UINT,		2,	"DocTypeExtensionVersion",  NULL,                   0), // DocTypeExtensionVersion
 
 	// Segment
-	ELEMENT(0x18538067,	EBML_TYPE_MASTER,   0,	"Segment",					ebml_default_master_parse,	0), // Segment
+	ELEMENT(0x18538067,	EBML_TYPE_MASTER,   0,	"Segment",					mkv_segment_root_parse,	0), // Segment
 
 	// Cluster
 	ELEMENT(0x1F43B675,	EBML_TYPE_MASTER,	1,	"Cluster",					mkv_segment_cluster_parse,  0), // Segment/Cluster [mult]
@@ -766,7 +778,7 @@ static struct mkv_element_t s_elements[] = {
 
 static struct mkv_element_t s_clusters[] = {
 	// Segment
-    ELEMENT(0x18538067,	EBML_TYPE_MASTER,	0,	"Segment",	ebml_default_master_parse,	0), // Segment
+    ELEMENT(0x18538067,	EBML_TYPE_MASTER,	0,	"Segment",	mkv_segment_root_parse,	0), // Segment
 
 	// Cluster
     ELEMENT(0x1F43B675,	EBML_TYPE_MASTER,	1,	"Cluster", mkv_segment_cluster_block_parse, 0), // Segment/Cluster [mult]
@@ -1165,6 +1177,7 @@ int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms)
     size_t lo, hi, mid;
     const struct mkv_cue_position_t *cue;
     if (!reader || !timestamp_ms || *timestamp_ms < 0 ||
+        !reader->segment_data_start ||
         !reader->mkv.timescale || !reader->mkv.cue.count)
         return -EINVAL;
     if ((uint64_t)*timestamp_ms > UINT64_MAX / UINT64_C(1000000))
@@ -1183,13 +1196,15 @@ int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms)
     }
     if (lo == 0) return -ENOENT; /* never jump to future cue */
     cue = &reader->mkv.cue.positions[lo - 1];
-    if (cue->cluster > INT64_MAX ||
+    if (reader->segment_data_start > INT64_MAX ||
+        cue->cluster > INT64_MAX - reader->segment_data_start ||
         cue->timestamp > UINT64_MAX / reader->mkv.timescale)
         return -ERANGE;
     anchor_ns = cue->timestamp * reader->mkv.timescale;
     if (anchor_ns / UINT64_C(1000000) > INT64_MAX)
         return -ERANGE;
-    mkv_buffer_seek(&reader->io, cue->cluster);
+    mkv_buffer_seek(&reader->io,
+                    reader->segment_data_start + cue->cluster);
     if (reader->io.error != 0) return reader->io.error;
     reader->offset = reader->mkv.count;
     reader->resume_after_group = 0;
@@ -1242,7 +1257,13 @@ int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 		cue = next;
 
 	*timestamp = cue->timestamp * reader->mkv.timescale / 1000000;
-	mkv_buffer_seek(&reader->io, cue->cluster);
+    if (!reader->segment_data_start ||
+        reader->segment_data_start > INT64_MAX ||
+        cue->cluster > INT64_MAX - reader->segment_data_start)
+        return -ERANGE;
+	mkv_buffer_seek(&reader->io,
+                    reader->segment_data_start + cue->cluster);
+    if (reader->io.error != 0) return reader->io.error;
 	reader->offset = reader->mkv.count; // clear
     reader->resume_after_group = 0;
     reader->last_discard_padding_ns = 0;

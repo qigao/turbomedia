@@ -129,6 +129,29 @@ static int matroska_find_uint(const uint8_t *bytes, size_t count,
     return 0;
 }
 
+/* Minimal EBML field inspection for the writer's Cue structural
+ * contract. This is a test assertion, not a second media parser. */
+static int matroska_find_single_id_uint(
+    const uint8_t *data, size_t count, uint8_t id, uint64_t *out)
+{
+    size_t i, j;
+    if (!data || !out) return 0;
+    for (i = 0; i + 3u <= count; ++i) {
+        uint64_t value = 0;
+        size_t n;
+        if (data[i] != id || (data[i + 1u] & 0x80u) == 0u)
+            continue;
+        n = (size_t)(data[i + 1u] & 0x7fu);
+        if (!n || n > 8u || n > count - i - 2u)
+            continue;
+        for (j = 0; j < n; ++j)
+            value = (value << 8) | data[i + 2u + j];
+        *out = value;
+        return 1;
+    }
+    return 0;
+}
+
 suite("container adapters") {
     before_each() {
         turbo_muxer_registry_init();
@@ -668,6 +691,52 @@ suite("container adapters") {
             check_equal(turbo_muxer_write_trailer(muxer), 0);
             check_equal(turbo_muxer_get_data(muxer, &container, &size), 0);
             if (!container || !size) goto cleanup;
+            {
+                /* Verify RFC 9559 byte origins in emitted EBML, not only
+                 * that TurboMedia's Reader happens to find its own Cues. */
+                static const uint8_t segment_id[4] = {
+                    0x18, 0x53, 0x80, 0x67
+                };
+                static const uint8_t cues_id[4] = {
+                    0x1c, 0x53, 0xbb, 0x6b
+                };
+                static const uint8_t cluster_id[4] = {
+                    0x1f, 0x43, 0xb6, 0x75
+                };
+                size_t i, segment_start = SIZE_MAX, cues_at = SIZE_MAX;
+                uint64_t cue_cluster = UINT64_MAX, cue_relative = UINT64_MAX;
+                for (i = 0; i + 12u <= size; ++i) {
+                    if (memcmp(container + i, segment_id, 4u) == 0 &&
+                        container[i + 4u] == 0x01u) {
+                        segment_start = i + 12u; /* ID4 + VINT8 */
+                        break;
+                    }
+                }
+                for (i = 0; i + 4u <= size; ++i)
+                    if (memcmp(container + i, cues_id, 4u) == 0)
+                        cues_at = i; /* last match is the real Cues */
+                check_true(segment_start != SIZE_MAX);
+                check_true(cues_at != SIZE_MAX);
+                if (segment_start != SIZE_MAX && cues_at != SIZE_MAX) {
+                    size_t cluster_at;
+                    check_true(matroska_find_single_id_uint(
+                        container + cues_at, size - cues_at,
+                        0xF1, &cue_cluster));
+                    check_true(matroska_find_single_id_uint(
+                        container + cues_at, size - cues_at,
+                        0xF0, &cue_relative));
+                    check_true(cue_cluster <= size - segment_start - 4u);
+                    if (cue_cluster <= size - segment_start - 4u) {
+                        cluster_at = segment_start + (size_t)cue_cluster;
+                        check_equal(container + cluster_at, cluster_id, 4u);
+                        check_true(cue_relative <=
+                                   size - cluster_at - 8u - 1u);
+                        if (cue_relative <= size - cluster_at - 8u - 1u)
+                            check_equal(container[cluster_at + 8u +
+                                (size_t)cue_relative], 0xA3u);
+                    }
+                }
+            }
             dc.data = container;
             dc.data_size = size;
             demuxer = turbo_demuxer_create_by_name("webm", &dc);
@@ -703,6 +772,15 @@ suite("container adapters") {
             check_equal(turbo_demuxer_seek_opus_preroll(
                 demuxer, audio, 12120, &anchor), 0);
             check_equal(anchor, INT64_C(12000));
+            check_equal(turbo_demuxer_read_packet(
+                demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(12000));
+            turbo_demuxer_free_packet(&output);
+
+            /* The existing nearest-Cue API must remain usable after
+             * switching the stored offsets to RFC segment-relative form. */
+            check_equal(turbo_demuxer_seek(
+                demuxer, INT64_C(12120), 0), 0);
             check_equal(turbo_demuxer_read_packet(
                 demuxer, &output), 1);
             check_equal(output.pts, INT64_C(12000));
