@@ -720,6 +720,120 @@ suite("container adapters") {
             turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
         }
+        it("fails closed on malformed BlockGroup Block and DiscardPadding") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            static const uint8_t encoded_packet[] = {
+                0xf8u, 0xffu, 0xfeu, 0u
+            };
+            /* Group header + Block ID + 8-byte Block payload. Exactly one
+             * match must occur in a valid two-packet single-track WebM. */
+            static const uint8_t group_prefix[] = {
+                0xa0u, 0x91u, 0xa1u, 0x88u, 0x81u, 0, 20, 0
+            };
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_demuxer_config_t dconfig = {0};
+            turbo_demuxer_packet_t decoded = {0};
+            turbo_demuxer_packet_timing_v1 timing =
+                TURBO_DEMUXER_PACKET_TIMING_V1_INIT;
+            uint8_t *container = NULL, *mutated = NULL;
+            size_t length = 0, at, group_at = SIZE_MAX;
+            int track = -1, variant;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "opus";
+            stream.channels = 1;
+            stream.sample_rate = 48000;
+            stream.extradata = opus_head;
+            stream.extradata_size = sizeof(opus_head);
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &track), 0);
+            if (track < 0) goto malformed_cleanup;
+            packet.stream_id = track;
+            packet.data = encoded_packet;
+            packet.size = sizeof(encoded_packet);
+            packet.is_keyframe = 1;
+            packet.duration = 20000;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            packet.pts = packet.dts = 20000;
+            check_equal(turbo_muxer_write_packet_with_discard_padding(
+                muxer, &packet, UINT64_C(13500000)), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &container, &length), 0);
+            for (at = 0; at + sizeof(group_prefix) <= length; ++at)
+                if (memcmp(container + at, group_prefix,
+                           sizeof(group_prefix)) == 0) {
+                    group_at = at;
+                    break;
+                }
+            check_true(group_at != SIZE_MAX);
+            if (group_at == SIZE_MAX) goto malformed_cleanup;
+            mutated = (uint8_t *)malloc(length);
+            check_not_null(mutated);
+            if (!mutated) goto malformed_cleanup;
+            for (variant = 0; variant < 2; ++variant) {
+                int r;
+                memcpy(mutated, container, length);
+                if (variant == 0) {
+                    /* Block payload length < 4 fixed header bytes. */
+                    mutated[group_at + 3u] = 0x83u;
+                } else {
+                    /* The correctly encoded positive DiscardPadding is
+                     * 75 A2 84 xx xx xx xx, now change VINT length to 0. */
+                    const size_t padding_at = group_at + 12u;
+                    check_true(padding_at + 3u <= length);
+                    if (padding_at + 3u > length) continue;
+                    check_equal(mutated[padding_at], 0x75u);
+                    check_equal(mutated[padding_at + 1u], 0xA2u);
+                    check_equal(mutated[padding_at + 2u], 0x84u);
+                    if (mutated[padding_at] != 0x75u ||
+                        mutated[padding_at + 1u] != 0xA2u ||
+                        mutated[padding_at + 2u] != 0x84u)
+                        continue;
+                    mutated[padding_at + 2u] = 0x80u;
+                }
+                dconfig.data = mutated;
+                dconfig.data_size = length;
+                demuxer = turbo_demuxer_create_by_name("webm", &dconfig);
+                check_not_null(demuxer);
+                if (!demuxer) break;
+                check_equal(turbo_demuxer_open(demuxer), 0);
+                r = turbo_demuxer_read_packet_with_timing(
+                    demuxer, &decoded, &timing);
+                check_equal(r, 1);
+                turbo_demuxer_free_packet(&decoded);
+                if (r != 1) {
+                    turbo_demuxer_destroy(demuxer);
+                    demuxer = NULL;
+                    continue;
+                }
+                /* The BlockGroup parser must roll back a sample allocated
+                 * before it learns that a later child is malformed. */
+                r = turbo_demuxer_read_packet_with_timing(
+                    demuxer, &decoded, &timing);
+                check_true(r < 0);
+                check_true(decoded.data == NULL);
+                check_equal(timing.discard_padding_ns, INT64_C(0));
+                check_true(turbo_demuxer_read_packet_with_timing(
+                    demuxer, &decoded, &timing) < 0); /* sticky invalid */
+                turbo_demuxer_free_packet(&decoded);
+                turbo_demuxer_destroy(demuxer);
+                demuxer = NULL;
+            }
+        malformed_cleanup:
+            turbo_demuxer_free_packet(&decoded);
+            turbo_demuxer_destroy(demuxer);
+            free(mutated);
+            turbo_muxer_destroy(muxer);
+        }
         it("refuses an Opus track without a matching OpusHead and sample rate") {
             static const uint8_t opus_head[19] = {
                 'O','p','u','s','H','e','a','d',

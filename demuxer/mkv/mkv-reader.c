@@ -34,6 +34,7 @@ struct mkv_reader_t
 	uint64_t offset; // sample offset
     uint64_t resume_after_group; // cursor past full BlockGroup after packet read
     int64_t last_discard_padding_ns; /* last successfully delivered packet */
+    int parse_failed; /* sticky malformed EBML; cannot be mistaken for EOF */
 	int segments; // only 1
 
 	//struct mkv_segment_seek_t* seeks;
@@ -382,49 +383,45 @@ static int mkv_segment_cluster_block_group_parse(
     int found = 0, padding_seen = 0, reference_seen = 0;
     int64_t discard_padding_ns = 0;
     int first_sample = reader->mkv.count;
-    if (node->size <= 0 || !reader->mkv.cluster) {
-        reader->io.error = -1;
-        return 0;
-    }
+    int first_rap = reader->mkv.rap.count;
+    if (node->size <= 0 || !reader->mkv.cluster)
+        goto invalid;
+
     pos = mkv_buffer_tell(&reader->io);
-    if ((uint64_t)node->size > UINT64_MAX - pos) {
-        reader->io.error = -1;
-        return 0;
-    }
+    if (reader->io.error != 0 ||
+        (uint64_t)node->size > UINT64_MAX - pos)
+        goto invalid;
     end = pos + (uint64_t)node->size;
-    /* This streaming read2 parser is re-entered with a fresh parse stack
-     * for every packet. Read all BlockGroup children, including the signed
-     * DiscardPadding, before returning any of its packet bytes. */
+
+    /* The streaming read2() parser reconstructs its EBML stack each time.
+     * Fully consume and validate every child BEFORE returning the packet.
+     * A malformed group is an error, never an ordinary EOF. */
     while (pos < end && reader->io.error == 0) {
         uint32_t id = mkv_buffer_read_id(&reader->io);
         int64_t bytes = mkv_buffer_read_size(&reader->io);
         uint64_t value_at = mkv_buffer_tell(&reader->io);
-        if (!id || bytes < 0 || value_at > end ||
-            (uint64_t)bytes > end - value_at) {
-            reader->io.error = -1;
-            break;
-        }
+        if (reader->io.error != 0 || !id || bytes < 0 ||
+            value_at > end || (uint64_t)bytes > end - value_at)
+            goto invalid;
+
         if (id == 0xA1) {
-            /* A Block shares the SimpleBlock payload layout. */
-            if (found || bytes < 4 || (uint64_t)bytes >= UINT32_MAX - 4 ||
+            /* Block and SimpleBlock use the same frame header, but the
+             * BlockGroup owns keyframe and DiscardPadding semantics. */
+            if (found || bytes < 4 ||
+                (uint64_t)bytes >= UINT32_MAX - 4 ||
                 mkv_cluster_simple_block_read(
                     &reader->mkv, reader->mkv.cluster,
-                    &reader->io, bytes) != 0) {
-                reader->io.error = -1;
-                break;
-            }
+                    &reader->io, bytes) != 0)
+                goto invalid;
             found = 1;
         } else if (id == 0x75A2) {
-            /* Matroska signed big-endian integer. Positive trims the end,
-             * negative trims the start. Do not use mkv_buffer_read_int:
-             * its sign-extension helper shifts by 64 for eight bytes. */
+            /* Signed EBML integer: positive trims packet END, negative
+             * trims BEGINNING. Never shift a 64-bit integer by 64. */
             uint64_t raw, sign;
-            if (padding_seen || bytes < 1 || bytes > 8) {
-                reader->io.error = -1;
-                break;
-            }
+            if (padding_seen || bytes < 1 || bytes > 8)
+                goto invalid;
             raw = mkv_buffer_read_uint(&reader->io, (int)bytes);
-            if (reader->io.error != 0) break;
+            if (reader->io.error != 0) goto invalid;
             sign = UINT64_C(1) << ((unsigned)bytes * 8 - 1);
             if (raw & sign) {
                 discard_padding_ns = bytes == 8 ?
@@ -436,24 +433,37 @@ static int mkv_segment_cluster_block_group_parse(
             }
             padding_seen = 1;
         } else if (id == 0xFB) {
-            reference_seen = 1; /* BlockGroup keyframe semantics */
+            reference_seen = 1;
         }
+
         mkv_buffer_seek(&reader->io, value_at + (uint64_t)bytes);
+        if (reader->io.error != 0) goto invalid;
         pos = mkv_buffer_tell(&reader->io);
     }
     if (!found || pos != end || reader->mkv.count <= first_sample)
-        reader->io.error = -1;
-    if (reader->io.error == 0) {
+        goto invalid;
+
+    {
         struct mkv_sample_t *sample =
             reader->mkv.samples + reader->mkv.count - 1;
         sample->discard_padding_ns = discard_padding_ns;
-        /* For BlockGroup, ReferenceBlock (not flag 0x80) determines
-         * inter-frame dependency. This matters when parsing video. */
         if (!reference_seen)
             reader->mkv.samples[first_sample].flags |= MKV_FLAGS_KEYFRAME;
         reader->resume_after_group = end;
     }
-    return reader->io.error == 0 ? 1 : 0;
+    return 1;
+
+invalid:
+    /* The Block child may have installed a sample/RAP before a later child
+     * proved malformed. Roll back atomically so no partial packet leaks
+     * through a subsequent read2() invocation. Persist a parse error. */
+    reader->mkv.count = first_sample;
+    reader->mkv.rap.count = first_rap;
+    reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
+    if (reader->io.error == 0)
+        reader->io.error = -EINVAL;
+    return -EINVAL;
 }
 
 static int mkv_segment_cluster_block_group_addition_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -906,8 +916,10 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
                 /* Parse callbacks can report invalid EBML; propagating
                  * errors to read2 is mandatory. Asserting or hiding a
                  * negative result would incorrectly report normal EOF. */
-                if (r < 0)
+                if (r < 0) {
+                    reader->parse_failed = 1;
                     return r;
+                }
 			}
 			else if(-1 != node->size)
 			{
@@ -1102,6 +1114,7 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
 	struct mkv_sample_t* sample;
     if (!reader || !onread) return -1;
     reader->last_discard_padding_ns = 0;
+    if (reader->parse_failed) return -EINVAL;
 
 #if !defined(MKV_LIVE_STREAMING)
 	if (reader->offset >= reader->mkv.count)
