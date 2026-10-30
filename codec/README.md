@@ -26,14 +26,17 @@ Player 提供阻塞和后台线程两种播放流程：
 ## Bounded raw-image Encoder — Draft API
 
 `TurboMedia::Encoder` has a versioned C11 one-shot `tm_encoder_image_encode()`
-for borrowed GRAY8/GA8/RGB24/RGBA32 frames. The component uses only the
-selected FFmpeg image encoder (PNG / MJPEG / WebP when installed) and a
-mandatory bounded output sink. It does not install a second format or
-re-encode through a fallback provider.
+for borrowed GRAY8/GA8/RGB24/RGBA32 frames. PNG/JPEG are implemented
+by the single required stb provider inside `TurboMedia::Encoder`, with a
+quota-bounded memory writer. WebP calls the exact selected FFmpeg backend
+and reports `TM_ENCODER_EUNSUPPORTED` if it is not available. No format
+has an alternate runtime fallback provider.
 
-**Not migration-ready for sd yet:** generation metadata injection into PNG,
-JPEG and WebP is not implemented; nonempty metadata fails
-`TM_ENCODER_EUNSUPPORTED` before sending bytes. AVI, animated WebP, and
+PNG preserves native `parameters` tEXt and JPEG the sd-style `parameters`
+COM marker. These additions are bounded and tested by decoding the resulting
+image. **Not migration-ready for sd yet:** WebP XMP metadata embedding
+is not implemented; nonempty WebP metadata explicitly fails
+`TM_ENCODER_EUNSUPPORTED` before writing bytes. AVI, animated WebP, and
 end-to-end audio+video frame-to-WebM encode also remain open. The existing
 sd local output must not be misidentified as TurboMedia-backed until these
 contracts, exact package identity and platform-native CI pass.

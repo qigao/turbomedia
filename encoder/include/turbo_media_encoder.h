@@ -60,11 +60,13 @@ TURBO_MEDIA_API int tm_encoder_image_available(uint32_t output_format);
 /* Versioned, owner-serialized C11 one-frame image encoding.
  * The API owns all codec contexts and packets; no FFmpeg types are public.
  * Quality is 1..100 for lossy formats, ignored for lossless PNG.
+ * Metadata bytes are the caller-prepared sd-style "parameters" string.
+ * PNG adds the parameters tEXt chunk after IHDR; JPEG adds its exact COM
+ * marker. Neither call borrows metadata after returning.
  *
- * LIMITATION: metadata embedding parity (PNG tEXt, JPEG XMP/EXIF, WebP XMP)
- * has not been implemented yet: nonempty metadata fails EUNSUPPORTED before
- * any sink call. qigao/sd cannot migrate its metadata-preserving route until
- * TurboMedia owns and qualifies this part of the pipeline.
+ * LIMITATION: WebP XMP metadata, AVI/animated WebP and VP8+WebM encoding
+ * remain unsupported. WebP with metadata fails EUNSUPPORTED BEFORE any
+ * sink call; do not migrate sd until all selected formats preserve metadata.
  * Output byte cap is enforced before sink delivery, NOT before internal
  * FFmpeg packet/codec allocation; it is not a process RSS/GPU budget.
  */
