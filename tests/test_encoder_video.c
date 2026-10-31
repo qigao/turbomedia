@@ -224,6 +224,10 @@ typedef struct av_profile_probe {
     uint64_t codec_delay_ns, seek_preroll_ns, discard_padding_ns;
     uint64_t parsed_codec_delay_ns, parsed_seek_preroll_ns;
     size_t decoded_samples_per_channel;
+    /* Correlation of the final 20 ms of audible, pre-skip-adjusted PCM
+     * against the known 100 Hz test waveform; never count padded samples. */
+    size_t tail_samples_checked;
+    int64_t tail_correlation_left, tail_correlation_right;
     int64_t duration_ms;
     unsigned writes;
 } av_profile_probe;
@@ -248,22 +252,31 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
     turbo_audio_codec_config_t decoder_config = {0};
     turbo_demuxer_t *demuxer = NULL;
     turbo_codec_t *decoder = NULL;
-    size_t i, written = 0;
+    size_t i, written = 0, target_samples;
     int64_t previous_pts = -1;
     int read_status = 0;
     result.status = TM_ENCODER_ENOMEM;
-    if (!channels || channels > 2 || source_samples > SIZE_MAX / channels ||
-        source_samples * channels > SIZE_MAX / sizeof(float))
+    if (!sample_rate || !channels || channels > 2 ||
+        source_samples > SIZE_MAX / channels ||
+        source_samples * channels > SIZE_MAX / sizeof(float) ||
+        source_samples > SIZE_MAX / 48000u)
         return result;
+    target_samples = source_samples * 48000u / sample_rate;
     pcm = (float *)malloc(source_samples * channels * sizeof(float));
     if (!pcm) return result;
     prepare_frames(pixels, frames, 3);
     video = init_video(frames, 3);
     video.fps = fps;
+    /* Time-based square wave has the same 100 Hz phase at every source
+     * rate, so post-resample 48k samples can be checked independently of
+     * Opus's nonzero pre-skip and terminal DiscardPadding. Opposite stereo
+     * polarity also detects accidental channel swaps/interleaving. */
     for (i = 0; i < source_samples; ++i) {
-        pcm[i * channels] = i / 200u % 2u ? 0.65f : -0.65f;
+        float left = (((uint64_t)i * 200u / sample_rate) & 1u) ?
+                     0.70f : -0.70f;
+        pcm[i * channels] = left;
         if (channels == 2u)
-            pcm[i * channels + 1u] = i / 300u % 2u ? -0.45f : 0.45f;
+            pcm[i * channels + 1u] = -left * 0.80f;
     }
     audio.samples = pcm;
     audio.sample_count = source_samples;
@@ -354,12 +367,33 @@ static av_profile_probe run_av_profile(uint32_t sample_rate,
                 turbo_demuxer_free_packet(&packet);
                 goto finished;
             }
-            result.decoded_samples_per_channel +=
-                decoded_bytes / (sizeof(int16_t) * channels);
-            for (i = 0; i < decoded_bytes / (sizeof(int16_t) * channels); ++i) {
-                if (decoded[i * channels] != 0) ++result.nonzero_left;
-                if (channels == 2u && decoded[i * channels + 1u] != 0)
-                    ++result.nonzero_right;
+            {
+                size_t before = result.decoded_samples_per_channel;
+                size_t count = decoded_bytes / (sizeof(int16_t) * channels);
+                result.decoded_samples_per_channel += count;
+                for (i = 0; i < count; ++i) {
+                    size_t absolute_index = before + i;
+                    if (decoded[i * channels] != 0) ++result.nonzero_left;
+                    if (channels == 2u && decoded[i * channels + 1u] != 0)
+                        ++result.nonzero_right;
+                    if (absolute_index >= result.pre_skip &&
+                        target_samples >= 960u) {
+                        size_t presented = absolute_index - result.pre_skip;
+                        if (presented >= target_samples - 960u &&
+                            presented < target_samples) {
+                            int expected_sign =
+                                (((uint64_t)presented * 200u / 48000u) & 1u) ?
+                                1 : -1;
+                            result.tail_correlation_left +=
+                                (int64_t)decoded[i * channels] * expected_sign;
+                            if (channels == 2u)
+                                result.tail_correlation_right -=
+                                    (int64_t)decoded[i * channels + 1u] *
+                                    expected_sign;
+                            ++result.tail_samples_checked;
+                        }
+                    }
+                }
             }
         } else {
             turbo_demuxer_free_packet(&packet);
@@ -569,6 +603,54 @@ suite("TurboMedia Encoder VP8 WebM raw-frames contract") {
     }
 
     group("C11 float PCM / exact-duration Opus WebM v2") {
+        it("preserves final audible waveform phase at every supported source rate and channel count") {
+            static const uint32_t source_rates[] = {
+                8000u, 12000u, 16000u, 24000u, 44100u, 48000u
+            };
+            size_t r;
+            uint32_t channels;
+            for (r = 0u; r < sizeof(source_rates) / sizeof(source_rates[0]); ++r) {
+                for (channels = 1u; channels <= 2u; ++channels) {
+                    uint32_t rate = source_rates[r];
+                    av_profile_probe got = run_av_profile(
+                        rate, channels, 10u, (size_t)rate * 3u / 10u);
+                    uint64_t tail_samples =
+                        (got.discard_padding_ns * UINT64_C(48000) +
+                         UINT64_C(500000000)) / UINT64_C(1000000000);
+                    check_equal(got.status, TM_ENCODER_OK);
+                    check_equal(got.tracks, 2);
+                    check_equal(got.audio_rate, 48000);
+                    check_equal(got.audio_channels, (int)channels);
+                    check_equal(got.video_packets, 3);
+                    check_true(got.audio_packets > 0);
+                    check_equal(got.trimmed_audio_packets, 1);
+                    check_true(got.pts_monotonic);
+                    check_equal(got.tail_samples_checked, 960u);
+                    /* Exact count alone can pass while the last encoded
+                     * Opus samples are silence or shifted before trimming.
+                     * A positive signed waveform correlation requires
+                     * real content, correct channel order, and correct
+                     * pre-skip adjustment in the last 20ms. The threshold
+                     * tolerates normal lossy Opus and resampler distortion. */
+                    if (got.tail_samples_checked == 960u) {
+                        check_true(got.tail_correlation_left >
+                            (int64_t)got.tail_samples_checked * 32767 / 5);
+                        if (channels == 2u)
+                            check_true(got.tail_correlation_right >
+                                (int64_t)got.tail_samples_checked * 32767 / 8);
+                    }
+                    check_true(got.decoded_samples_per_channel >=
+                               (size_t)got.pre_skip + (size_t)tail_samples);
+                    if (got.decoded_samples_per_channel >=
+                            (size_t)got.pre_skip + (size_t)tail_samples)
+                        check_equal(got.decoded_samples_per_channel -
+                            (size_t)got.pre_skip -
+                            (size_t)tail_samples, 14400u);
+                    check_equal(got.duration_ms, 300);
+                    check_equal(got.writes, 1u);
+                }
+            }
+        }
         it("resamples 44.1kHz stereo with original rate in OpusHead") {
             av_profile_probe got = run_av_profile(44100u, 2u, 10u, 13230u);
             uint64_t tail = (got.discard_padding_ns * 48000u +
