@@ -25,20 +25,34 @@ struct mkv_writer_t
     uint64_t segment_offset;
 };
 
+/* Void payload bytes have no semantics, but seek-forward alone can
+ * expose uninitialized storage in memory-backed output (or sparse holes in
+ * file-backed output). Serialize deterministic zero bytes in bounded chunks
+ * without allocating another buffer or changing on-disk element sizes. */
 static void mkv_write_void(struct mkv_ioutil_t* io, uint32_t size)
 {
-    assert(size >= 2);
-    if (size < 10)
-    {
-        // 1-byte length
-        mkv_buffer_write_master(io, EMLB_ID_VOID, size - 2, 0);
-        mkv_buffer_skip(io, size - 2);
+    static const uint8_t zeros[32] = {0};
+    uint32_t remaining;
+
+    if (!io) return;
+    if (size < 2u) {
+        io->error = -EINVAL;
+        return;
     }
-    else
-    {
-        // 8-bytes length
-        mkv_buffer_write_master(io, EMLB_ID_VOID, size - 9, 8);
-        mkv_buffer_skip(io, size - 9);
+    if (size < 10u) {
+        /* One-byte size VINT; total encoded element length is 'size'. */
+        remaining = size - 2u;
+        mkv_buffer_write_master(io, EMLB_ID_VOID, remaining, 0);
+    } else {
+        /* Eight-byte size VINT; preserve the existing reserved layout. */
+        remaining = size - 9u;
+        mkv_buffer_write_master(io, EMLB_ID_VOID, remaining, 8);
+    }
+    while (remaining && io->error == 0) {
+        uint32_t count = remaining < sizeof(zeros) ?
+                         remaining : (uint32_t)sizeof(zeros);
+        mkv_buffer_write(io, zeros, count);
+        remaining -= count;
     }
 }
 

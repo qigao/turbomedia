@@ -191,6 +191,52 @@ static int matroska_info_segment_uuid_presence(
     return -1;
 }
 
+/* Inspect only the writer's first SeekHead and immediately following
+ * Void. This is a native output-byte assertion, not a second EBML reader.
+ * The owner writes a one-byte SeekHead size and a one- or eight-byte Void
+ * size VINT within its fixed 80-byte SeekHead reservation. */
+static int matroska_seekhead_void_zeroed(const uint8_t *data, size_t size)
+{
+    static const uint8_t seekhead_id[4] = {
+        0x11u, 0x4du, 0x9bu, 0x74u
+    };
+    static const uint8_t zero_prefix[6] = {0};
+    size_t limit = size < 256u ? size : 256u;
+    size_t i;
+    if (!data) return 0;
+    for (i = 0u; i + 6u <= limit; ++i) {
+        size_t payload, void_at, header, padding, j;
+        if (memcmp(data + i, seekhead_id, sizeof(seekhead_id)) != 0 ||
+            (data[i + 4u] & 0x80u) == 0)
+            continue;
+        payload = (size_t)(data[i + 4u] & 0x7fu);
+        if (payload > limit - i - 5u)
+            continue;
+        void_at = i + 5u + payload;
+        if (void_at + 2u > limit || data[void_at] != 0xecu)
+            continue;
+        if (data[void_at + 1u] & 0x80u) {
+            header = 2u;
+            padding = (size_t)(data[void_at + 1u] & 0x7fu);
+        } else if (data[void_at + 1u] == 0x01u &&
+                   void_at + 9u <= limit &&
+                   memcmp(data + void_at + 2u, zero_prefix,
+                          sizeof(zero_prefix)) == 0) {
+            header = 9u;
+            padding = (size_t)data[void_at + 8u];
+        } else {
+            continue;
+        }
+        if (padding > 80u || padding > limit - void_at - header)
+            return 0;
+        for (j = 0u; j < padding; ++j)
+            if (data[void_at + header + j] != 0u)
+                return 0;
+        return 1;
+    }
+    return 0;
+}
+
 typedef struct mkv_signed_probe {
     const uint8_t *bytes;
     size_t size;
@@ -450,6 +496,10 @@ suite("container adapters") {
             check_equal(result, 0);
             check_greater(container_size, sizeof(input));
             if (result != 0 || !container_data) goto mkv_cleanup;
+            /* The real Matroska Writer must not publish uninitialized
+             * bytes from the reserved SeekHead Void region. */
+            check_true(matroska_seekhead_void_zeroed(
+                container_data, container_size));
 
             demux_config.data = container_data;
             demux_config.data_size = container_size;
