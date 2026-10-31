@@ -510,6 +510,92 @@ suite("container adapters") {
         }
     }
 
+    group("native Matroska EBML numeric admission") {
+        it("rejects corrupted TrackEntry uint/float element widths") {
+            static const uint8_t opus_head[19] = {
+                'O','p','u','s','H','e','a','d',
+                1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
+            };
+            const uint8_t opus_packet[] = {0xf8u, 0xffu, 0xfeu, 0u};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t input = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            turbo_demuxer_config_t dc = {0};
+            uint8_t *data = NULL, *corrupt = NULL;
+            size_t size = 0, at;
+            int track = -1, variant, found;
+            config.format = TURBO_MUXER_WEBM;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "opus";
+            stream.sample_rate = 48000;
+            stream.channels = 1;
+            stream.extradata = opus_head;
+            stream.extradata_size = sizeof(opus_head);
+            check_equal(turbo_muxer_add_stream(muxer, &stream, &track), 0);
+            if (track < 0) goto numeric_cleanup;
+            input.stream_id = track;
+            input.data = opus_packet;
+            input.size = sizeof(opus_packet);
+            input.duration = 20000;
+            input.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &input), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            check_equal(turbo_muxer_get_data(muxer, &data, &size), 0);
+            if (!data || size == 0) goto numeric_cleanup;
+            corrupt = (uint8_t *)malloc(size);
+            check_not_null(corrupt);
+            if (!corrupt) goto numeric_cleanup;
+            for (variant = 0; variant < 3; ++variant) {
+                found = 0;
+                memcpy(corrupt, data, size);
+                for (at = 0; at + 4u <= size; ++at) {
+                    if (variant == 0 &&
+                        corrupt[at] == 0x56u &&
+                        corrupt[at + 1u] == 0xaau &&
+                        (corrupt[at + 2u] & 0x80u) != 0u) {
+                        /* Unsigned CodecDelay VINT advertises 9 bytes
+                         * instead of a spec-legal maximum of 8. */
+                        corrupt[at + 2u] = 0x89u;
+                        found = 1;
+                    } else if (variant == 1 &&
+                               corrupt[at] == 0x9fu &&
+                               corrupt[at + 1u] == 0x81u &&
+                               corrupt[at + 2u] == 1u) {
+                        /* Channels is an unsigned integer. */
+                        corrupt[at + 1u] = 0x89u;
+                        found = 1;
+                    } else if (variant == 2 &&
+                               corrupt[at] == 0xb5u &&
+                               corrupt[at + 1u] == 0x88u) {
+                        /* Float must have a 4- or 8-byte payload. */
+                        corrupt[at + 1u] = 0x85u;
+                        found = 1;
+                    }
+                    if (found) break;
+                }
+                check_true(found);
+                if (!found) continue;
+                dc.data = corrupt;
+                dc.data_size = size;
+                demuxer = turbo_demuxer_create_by_name("webm", &dc);
+                check_not_null(demuxer);
+                if (!demuxer) break;
+                check_true(turbo_demuxer_open(demuxer) != 0);
+                turbo_demuxer_destroy(demuxer);
+                demuxer = NULL;
+            }
+        numeric_cleanup:
+            turbo_demuxer_destroy(demuxer);
+            free(corrupt);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
     group("Opus Matroska timing") {
         it("publishes actual OpusHead pre-skip as CodecDelay alongside SeekPreRoll") {
             /* An OpusHead with 312 samples pre-skip at 48kHz (6.5ms).

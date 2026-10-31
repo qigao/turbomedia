@@ -6,6 +6,7 @@
 #include "mkv-ioutil.h"
 #include "ebml.h"
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,72 +82,116 @@ struct mkv_element_node_t
 	uint64_t head; // head size
 };
 
-static int ebml_value_parse_bool(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+/* Untrusted EBML lengths are runtime input, never debug assertions.
+ * Keep all spec-permitted signed/unsigned widths (including zero where
+ * supported) without narrowing integer fields or strict-aliasing UB. */
+static int ebml_numeric_valid(const struct mkv_reader_t* reader,
+                              const struct mkv_element_node_t* node,
+                              enum ebml_element_type_t type)
 {
-	int* v;
-	assert(node->parent);
-	v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_uint(&reader->io, (int)node->size) ? 1 : 0;
-	return mkv_buffer_error(&reader->io);
+    if (!reader || !node || !node->e || !node->parent ||
+        !node->parent->ptr || node->e->type != type ||
+        node->size < 0 || node->size > 8)
+        return -EINVAL;
+    return 0;
 }
 
-static int ebml_value_parse_int(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_bool(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
 {
-	int* v;
-	assert(node->parent);
-	v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_INT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = (int)mkv_buffer_read_int(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int* v;
+    uint64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw != 0;
+    return 0;
 }
 
-static int ebml_value_parse_uint(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_int(struct mkv_reader_t* reader,
+                                 struct mkv_element_node_t* node)
 {
-	unsigned int* v;
-	assert(node->parent);
-	v = (unsigned int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = (unsigned int)mkv_buffer_read_uint(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int64_t raw;
+    int* v;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_INT) != 0)
+        return -EINVAL;
+    raw = node->size == 0 ? 0 :
+        mkv_buffer_read_int(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (raw < INT_MIN || raw > INT_MAX) return -ERANGE;
+    v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = (int)raw;
+    return 0;
 }
 
-static int ebml_value_parse_int64(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_uint(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
 {
-	int64_t* v;
-	assert(node->parent);
-	v = (int64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_INT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_int(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    uint64_t raw;
+    unsigned int* v;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (raw > UINT_MAX) return -ERANGE;
+    v = (unsigned int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = (unsigned int)raw;
+    return 0;
 }
 
-static int ebml_value_parse_uint64(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_int64(struct mkv_reader_t* reader,
+                                   struct mkv_element_node_t* node)
 {
-	uint64_t* v;
-	assert(node->parent);
-	v = (uint64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_uint(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int64_t* v;
+    int64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_INT) != 0)
+        return -EINVAL;
+    raw = node->size == 0 ? 0 :
+        mkv_buffer_read_int(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (int64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw;
+    return 0;
 }
 
-static int ebml_value_parse_double(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_uint64(struct mkv_reader_t* reader,
+                                    struct mkv_element_node_t* node)
 {
-	double* v;
-	int64_t r;
-	assert(node->parent);
-	v = (double*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_FLOAT == node->e->type);
-	assert(0 == node->size || 4 == node->size || 8 == node->size);
-	r = mkv_buffer_read_uint(&reader->io, (int)node->size);
-	*v = 8 == node->size ? *(double*)&r : *(float*)&r;
-	return mkv_buffer_error(&reader->io);
+    uint64_t* v;
+    uint64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (uint64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw;
+    return 0;
+}
+
+static int ebml_value_parse_double(struct mkv_reader_t* reader,
+                                    struct mkv_element_node_t* node)
+{
+    double* v;
+    double value = 0;
+    uint64_t bits;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_FLOAT) != 0 ||
+        (node->size != 0 && node->size != 4 && node->size != 8))
+        return -EINVAL;
+    bits = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (node->size == 8) {
+        memcpy(&value, &bits, sizeof(value));
+    } else if (node->size == 4) {
+        uint32_t bits32 = (uint32_t)bits;
+        float small;
+        memcpy(&small, &bits32, sizeof(small));
+        value = (double)small;
+    }
+    v = (double*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = value;
+    return 0;
 }
 
 static int ebml_value_parse_binary(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
