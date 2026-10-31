@@ -989,11 +989,11 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 	memset(tree, 0, sizeof(tree));
 	while (0 == reader->io.error && 0 == r)
 	{
-		if (level < 0 || level >= sizeof(tree) / sizeof(tree[0]))
-		{
-			assert(0); // too many tree levels
-			return -1;
-		}
+        if (level < 0 || (size_t)level >= sizeof(tree) / sizeof(tree[0])) {
+            /* File nesting is untrusted; never abort in an assert build. */
+            reader->parse_failed = 1;
+            return -EOVERFLOW;
+        }
 
 		node = &tree[level];
 		node->ptr = NULL;
@@ -1001,9 +1001,13 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 		node->id = mkv_buffer_read_id(&reader->io);
 		node->size = mkv_buffer_read_size(&reader->io);
 		pos = mkv_buffer_tell(&reader->io);
-		node->head = pos - node->off;
-		if (0 == node->id)
-			break;
+        if (reader->io.error != 0 || node->id == 0)
+            break; /* normal EOF remains distinct from parse failure */
+        if (pos < node->off) {
+            reader->parse_failed = 1;
+            return -EIO;
+        }
+        node->head = pos - node->off;
 	
 		// https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#unknown-data-size
 		// * Only a Master Element is allowed to be of unknown size.
@@ -1016,9 +1020,16 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 		// * The end of the Parent Element with a known size has been reached.
 		// * The end of the EBML Document, either when reaching the end of the file or because a new EBML Header started.
 
-		e = mkv_element_find(elements, count, node->id);
-		if (e)
-		{
+        e = mkv_element_find(elements, count, node->id);
+        /* EBML unknown size is valid only for a schema-known Master.
+         * In particular, a future/unknown ID cannot be safely skipped
+         * without its end boundary. Reject rather than assert or EOF. */
+        if (node->size == -1 && (!e || e->type != EBML_TYPE_MASTER)) {
+            reader->parse_failed = 1;
+            return -EINVAL;
+        }
+        if (e)
+        {
 #if defined(MKV_PRINT_ELEMENT) && (defined(DEBUG) || defined(_DEBUG))
 			int i;
 			for (i = e->level >= 0 ? e->level : level; i > 0; i--)
@@ -1026,29 +1037,47 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 			printf("%s (%" PRId64 ") off: %u\n", e->name, node->size, (unsigned int)node->off);
 #endif
 
-			assert(e->level <= level);
-			while (e->level < level && -1 != e->level)
-			{
-				assert(level > 0);
-				level--;
-				if (tree[level].e)
-				{
-					assert(-1 == tree[level].size || tree[level].off + tree[level].head + tree[level].size <= node->off);
-					assert(tree[level].e);
-					tree[level].e = NULL; // pop
-				}
-			}
+            if (e->level > level) {
+                reader->parse_failed = 1;
+                return -EINVAL; /* illegal child before its Master */
+            }
+            while (e->level < level && e->level != -1) {
+                struct mkv_element_node_t *ancestor;
+                if (level <= 0) {
+                    reader->parse_failed = 1;
+                    return -EINVAL;
+                }
+                --level;
+                ancestor = &tree[level];
+                if (ancestor->e) {
+                    if (ancestor->size >= 0) {
+                        /* Avoid wrap in off + head + advertised size. */
+                        if (ancestor->off > node->off ||
+                            ancestor->head > node->off - ancestor->off ||
+                            (uint64_t)ancestor->size >
+                                node->off - ancestor->off - ancestor->head) {
+                            reader->parse_failed = 1;
+                            return -EINVAL;
+                        }
+                    }
+                    ancestor->e = NULL;
+                }
+            }
 
-			node->e = e;
-			node->parent = level > 0 ? &tree[level - 1] : NULL;
-			if (EBML_TYPE_MASTER == e->type)
-			{
-				assert(-1 != e->level);
-				memmove(&tree[level], node, sizeof(*node)); // for level skip
-				node = &tree[level++];
-			}
-
-			assert(level > 0);
+            node->e = e;
+            node->parent = level > 0 ? &tree[level - 1] : NULL;
+            if (EBML_TYPE_MASTER == e->type) {
+                if (e->level == -1) {
+                    reader->parse_failed = 1;
+                    return -EINVAL;
+                }
+                memmove(&tree[level], node, sizeof(*node));
+                node = &tree[level++];
+            }
+            if (level <= 0) {
+                reader->parse_failed = 1;
+                return -EINVAL;
+            }
 			if (e->parse)
 			{
                 r = e->parse(reader, node);
@@ -1064,22 +1093,17 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 			{
 				mkv_buffer_skip(&reader->io, node->size);
 			}
-			else
-			{
-				assert(EBML_TYPE_MASTER == e->type);
-			}
-		}
-		else
-		{
-			printf("unknown id: 0x%x, size: %" PRId64 "\n", node->id, node->size);
-			if (-1 == node->size)
-			{
-				assert(0);
-				return -1;
-			}
-
-			mkv_buffer_skip(&reader->io, node->size);
-		}
+            else if (e->type != EBML_TYPE_MASTER) {
+                reader->parse_failed = 1;
+                return -EINVAL;
+            }
+        }
+        else
+        {
+            /* Forward-compatible unknown *known-size* elements can be
+             * skipped. Do not print untrusted IDs or abort on input. */
+            mkv_buffer_skip(&reader->io, (uint64_t)node->size);
+        }
 	}
 
 	return r;

@@ -745,6 +745,89 @@ suite("container adapters") {
         }
     }
 
+    group("native Matroska unknown-size and schema-level admission") {
+        it("rejects malformed EBML Masters without assert or false success") {
+            static const uint8_t ebml_version[] = {0x42u, 0x86u, 0x81u, 0x01u};
+            static const uint8_t frame[] = {0x7fu, 0xfbu, 0x90u, 0x64u};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *owned = NULL, *corrupt = NULL;
+            size_t bytes = 0, at = SIZE_MAX, i;
+            int track = -1, variant, status;
+
+            config.format = TURBO_MUXER_MKV;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_AUDIO;
+            stream.codec_name = "mp3";
+            stream.sample_rate = 44100;
+            stream.channels = 2;
+            status = turbo_muxer_add_stream(muxer, &stream, &track);
+            check_equal(status, 0);
+            if (status != 0) goto unknown_size_cleanup;
+            packet.stream_id = track;
+            packet.data = frame;
+            packet.size = sizeof(frame);
+            packet.is_keyframe = 1;
+            packet.duration = 26000;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            status = turbo_muxer_get_data(muxer, &owned, &bytes);
+            check_equal(status, 0);
+            if (status != 0 || !owned) goto unknown_size_cleanup;
+            for (i = 0; i + sizeof(ebml_version) <= bytes && i < 128u; ++i) {
+                if (memcmp(owned + i, ebml_version,
+                           sizeof(ebml_version)) == 0) {
+                    at = i;
+                    break;
+                }
+            }
+            check_true(at != SIZE_MAX);
+            if (at == SIZE_MAX) goto unknown_size_cleanup;
+            corrupt = (uint8_t *)malloc(bytes);
+            check_not_null(corrupt);
+            if (!corrupt) goto unknown_size_cleanup;
+
+            for (variant = 0; variant < 4; ++variant) {
+                memcpy(corrupt, owned, bytes);
+                /* 0: unknown ID of KNOWN length can be skipped;
+                 * 1: unknown ID with unknown size MUST fail;
+                 * 2: known scalar EBMLVersion with unknown size fails;
+                 * 3: known level-2 child used at EBML root fails. */
+                if (variant == 0 || variant == 1)
+                    corrupt[at + 1u] = 0x88u;
+                if (variant == 1 || variant == 2)
+                    corrupt[at + 2u] = 0xffu;
+                if (variant == 3)
+                    corrupt[at + 1u] = 0x83u;
+                dc.data = corrupt;
+                dc.data_size = bytes;
+                demuxer = turbo_demuxer_create_by_name("mkv", &dc);
+                check_not_null(demuxer);
+                if (!demuxer) break;
+                status = turbo_demuxer_open(demuxer);
+                if (variant == 0) {
+                    check_equal(status, 0);
+                    if (status == 0)
+                        check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
+                } else {
+                    check_true(status < 0);
+                }
+                turbo_demuxer_destroy(demuxer);
+                demuxer = NULL;
+            }
+        unknown_size_cleanup:
+            turbo_demuxer_destroy(demuxer);
+            free(corrupt);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
     group("native Matroska VINT admission") {
         it("enforces RFC 9559 ID widths and rejects zero VINT markers") {
             static const uint8_t id_one_matroska[] = {0x80u};
