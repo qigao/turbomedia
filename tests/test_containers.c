@@ -1,6 +1,9 @@
 #include <tinytest.h>
 #include <turbo_demuxer.h>
 #include <turbo_muxer.h>
+/* Direct regression of the sole existing native Matroska EBML reader.
+ * This is an in-repo native test, never a second parser/provider. */
+#include "../common/mkv/mkv-ioutil.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -186,6 +189,23 @@ static int matroska_info_segment_uuid_presence(
         return 0;
     }
     return -1;
+}
+
+typedef struct mkv_signed_probe {
+    const uint8_t *bytes;
+    size_t size;
+    size_t position;
+} mkv_signed_probe;
+
+static int mkv_signed_probe_read(void *param, void *dst, uint64_t size)
+{
+    mkv_signed_probe *probe = (mkv_signed_probe *)param;
+    if (!probe || (!dst && size) || probe->position > probe->size ||
+        size > probe->size - probe->position)
+        return -1;
+    if (size) memcpy(dst, probe->bytes + probe->position, (size_t)size);
+    probe->position += (size_t)size;
+    return 0;
 }
 
 suite("container adapters") {
@@ -434,6 +454,59 @@ suite("container adapters") {
             turbo_demuxer_free_packet(&output_packet);
             turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
+        }
+    }
+
+    group("native Matroska signed EBML primitives") {
+        it("sign extends 1- and 8-byte integers without 64-bit shift UB") {
+            static const uint8_t positive_one[] = {0x7fu};
+            static const uint8_t negative_one[] = {0x80u};
+            static const uint8_t signed_max[] = {
+                0x7fu, 0xffu, 0xffu, 0xffu,
+                0xffu, 0xffu, 0xffu, 0xffu
+            };
+            static const uint8_t signed_min[] = {
+                0x80u, 0, 0, 0, 0, 0, 0, 0
+            };
+            static const uint8_t negative_eight[] = {
+                0xffu, 0xffu, 0xffu, 0xffu,
+                0xffu, 0xffu, 0xffu, 0xffu
+            };
+            static const uint8_t short_input[] = {0x7fu, 0, 0};
+            static const struct {
+                const uint8_t *bytes;
+                size_t size;
+                int n;
+                int64_t expected;
+                int reject;
+            } cases[] = {
+                {positive_one, sizeof(positive_one), 1, 127, 0},
+                {negative_one, sizeof(negative_one), 1, -128, 0},
+                {signed_max, sizeof(signed_max), 8, INT64_MAX, 0},
+                {signed_min, sizeof(signed_min), 8, INT64_MIN, 0},
+                {negative_eight, sizeof(negative_eight), 8, -1, 0},
+                {short_input, sizeof(short_input), 8, 0, 1},
+                {signed_max, sizeof(signed_max), 0, 0, 1},
+                {signed_max, sizeof(signed_max), 9, 0, 1},
+            };
+            size_t i;
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                mkv_signed_probe probe = {
+                    cases[i].bytes, cases[i].size, 0
+                };
+                struct mkv_ioutil_t io = {0};
+                int64_t value;
+                io.param = &probe;
+                io.io.read = mkv_signed_probe_read;
+                value = mkv_buffer_read_int(&io, cases[i].n);
+                if (cases[i].reject) {
+                    check_true(io.error != 0);
+                } else {
+                    check_equal(io.error, 0);
+                    check_equal(value, cases[i].expected);
+                    check_equal(probe.position, cases[i].size);
+                }
+            }
         }
     }
 

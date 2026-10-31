@@ -120,11 +120,24 @@ static inline uint64_t mkv_buffer_read_uint(struct mkv_ioutil_t* io, int n)
 
 static inline int64_t mkv_buffer_read_int(struct mkv_ioutil_t* io, int n)
 {
-	int64_t v;
-	v = (int64_t)mkv_buffer_read_uint(io, n);
-
-	// sign_extend
-	return n < 1 ? 0 : ( (v & (1LL<<((n*8)-1))) ? v | (0xFFFFFFFFFFFFFFFFULL << (n*8)) : v);
+    uint64_t raw;
+    if (!io || n < 1 || n > 8) {
+        if (io) io->error = -1;
+        return 0;
+    }
+    raw = mkv_buffer_read_uint(io, n);
+    if (io->error != 0) return 0;
+    if (n < 8) {
+        /* Avoid shifting by 64 or shifting a signed 1 into its sign bit.
+         * Sign extension is carried out entirely as unsigned arithmetic. */
+        const unsigned shift = (unsigned)n * 8u;
+        const uint64_t sign = UINT64_C(1) << (shift - 1u);
+        if (raw & sign) raw |= UINT64_MAX << shift;
+    }
+    /* Converting an out-of-range uint64_t directly to int64_t is
+     * implementation-defined. This form is valid even at INT64_MIN. */
+    return raw <= (uint64_t)INT64_MAX ?
+        (int64_t)raw : -1 - (int64_t)(~raw);
 }
 
 static inline void mkv_buffer_write_master(struct mkv_ioutil_t* io, uint32_t id, uint64_t size, unsigned int bytes)
