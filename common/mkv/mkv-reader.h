@@ -28,6 +28,13 @@ int mkv_reader_getinfo(mkv_reader_t* mkv, struct mkv_reader_trackinfo_t* ontrack
 
 uint64_t mkv_reader_getduration(mkv_reader_t* mkv);
 
+/* Parsed TrackEntry/CodecDelay and SeekPreRoll in Matroska nanoseconds.
+ * Track number is the EBML TrackNumber, not a zero-based stream index.
+ * Returns 0 for success and <0 for invalid/unknown track. */
+int mkv_reader_get_track_timing_ns(
+    const mkv_reader_t *reader, uint32_t track_number,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns);
+
 /// audio: AAC raw data, don't include ADTS/AudioSpecificConfig
 /// video: 4-byte data length(don't include self length) + H.264 NALU(don't include 0x00000001)
 /// @param[in] flags MKV_FLAGS_xxx, such as: MKV_FLAGS_KEYFRAME
@@ -45,9 +52,20 @@ typedef void* (*mkv_reader_onread2)(void* param, uint32_t track, size_t bytes, i
 /// @return 1-read one frame, 0-EOF, <0-error 
 int mkv_reader_read2(mkv_reader_t* mkv, mkv_reader_onread2 onread, void* param);
 
+/* Last successfully returned packet's signed Matroska DiscardPadding.
+ * Reset to zero on EOF/error/seek. Does not modify the existing callback ABI. */
+int mkv_reader_last_discard_padding_ns(
+    const mkv_reader_t *reader, int64_t *padding_ns);
+
 /// @param[in,out] timestamp input seek timestamp, output seek location timestamp
 /// @return 0-ok, other-error
 int mkv_reader_seek(mkv_reader_t* mkv, int64_t* timestamp);
+
+/* Conservative cue seek: select the last cue not later than the supplied
+ * millisecond timestamp. On success update it to the selected cue time.
+ * Unlike mkv_reader_seek(), this cannot jump forward past a preroll
+ * threshold. No decoder instance is reset by the reader. */
+int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms);
 
 #ifdef __cplusplus
 }

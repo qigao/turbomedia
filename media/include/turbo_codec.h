@@ -293,6 +293,12 @@ TURBO_MEDIA_API int turbo_codec_plc(turbo_codec_t *codec, uint8_t *output, size_
  */
 TURBO_MEDIA_API void turbo_codec_set_bitrate(turbo_codec_t *codec, int bitrate_bps);
 
+/* Query the ACTUAL encoder pre-skip in samples at its configured input
+ * sample rate. Valid only for an owned Opus encoder; never assume a fixed
+ * 312-sample constant or inspect libopus internals in media consumers. */
+TURBO_MEDIA_API int turbo_codec_opus_lookahead_samples(
+    const turbo_codec_t *codec, uint32_t *lookahead);
+
 /* =============================================================================
  * Built-in Codec Declarations
  * ============================================================================= */

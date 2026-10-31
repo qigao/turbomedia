@@ -312,8 +312,9 @@ static int mkv_muxer_write_header_impl(void *ctx_ptr) {
     return vec_empty(&ctx->streams) ? SALTS_EINVAL : ctx->io.error;
 }
 
-static int mkv_muxer_write_packet_impl(void *ctx_ptr,
-                                       const turbo_muxer_packet_t *packet) {
+static int mkv_muxer_write_packet_with_trim(void *ctx_ptr,
+                                            const turbo_muxer_packet_t *packet,
+                                            uint64_t discard_padding_ns) {
     mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)ctx_ptr;
     mkv_muxer_stream_t **entry;
     const uint8_t *data;
@@ -328,10 +329,27 @@ static int mkv_muxer_write_packet_impl(void *ctx_ptr,
     if (!entry || !*entry) return SALTS_EINVAL;
     result = mkv_convert_sample(*entry, packet->data, packet->size, &data, &size);
     if (result != SALTS_OK) return result;
+    if (discard_padding_ns && (*entry)->codec != MKV_CODEC_AUDIO_OPUS)
+        return SALTS_EINVAL;
     flags = packet->is_keyframe ? MKV_FLAGS_KEYFRAME : 0;
-    result = mkv_writer_write(ctx->writer, (*entry)->track, data, size,
-                              packet->pts / 1000, packet->dts / 1000, flags);
+    result = mkv_writer_write_with_discard_padding(
+        ctx->writer, (*entry)->track, data, size,
+        packet->pts / 1000, packet->dts / 1000, flags, discard_padding_ns);
     return result == SALTS_OK ? ctx->io.error : result;
+}
+
+static int mkv_muxer_write_packet_impl(
+    void *ctx_ptr, const turbo_muxer_packet_t *packet) {
+    return mkv_muxer_write_packet_with_trim(ctx_ptr, packet, 0);
+}
+
+/* Not a second muxer: dispatches into the same in-memory WebM writer. */
+int turbo_mkv_muxer_write_packet_with_discard_padding(
+    void *ctx_ptr, const turbo_muxer_packet_t *packet, uint64_t padding_ns) {
+    mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)ctx_ptr;
+    if (!ctx || ctx->format != TURBO_MUXER_WEBM || !padding_ns)
+        return SALTS_EINVAL;
+    return mkv_muxer_write_packet_with_trim(ctx, packet, padding_ns);
 }
 
 static int mkv_muxer_write_trailer_impl(void *ctx_ptr) {
@@ -345,6 +363,16 @@ static int mkv_muxer_get_data_impl(void *ctx_ptr, uint8_t **data, size_t *size) 
 }
 
 static const char *s_mkv_extensions[] = {".mkv", ".mka", NULL};
+/* Bounded memory writer contract for the existing WebM/MKV owner.
+ * Must be called before muxing packets; cannot silently shrink existing data.
+ * The public config layout stays ABI-identical. */
+int turbo_mkv_muxer_set_memory_limit(void *opaque, size_t limit) {
+    mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)opaque;
+    if (!ctx || ctx->format != TURBO_MUXER_WEBM || ctx->finalized)
+        return SALTS_EINVAL;
+    return turbo_container_io_set_memory_limit(&ctx->io, limit);
+}
+
 static const char *s_webm_extensions[] = {".webm", ".weba", NULL};
 
 const turbo_muxer_ops_t turbo_mkv_muxer_ops = {

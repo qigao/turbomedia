@@ -6,6 +6,7 @@
 #include "mkv-ioutil.h"
 #include "ebml.h"
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,8 +30,12 @@ struct mkv_reader_t
 	struct ebml_header_t ebml;
 	int64_t cue_time;
 	uint64_t seek_id;
+    uint64_t segment_data_start; /* Segment payload, RFC 9559 position base */
 
 	uint64_t offset; // sample offset
+    uint64_t resume_after_group; // cursor past full BlockGroup after packet read
+    int64_t last_discard_padding_ns; /* last successfully delivered packet */
+    int parse_failed; /* sticky malformed EBML; cannot be mistaken for EOF */
 	int segments; // only 1
 
 	//struct mkv_segment_seek_t* seeks;
@@ -77,103 +82,211 @@ struct mkv_element_node_t
 	uint64_t head; // head size
 };
 
-static int ebml_value_parse_bool(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+/* Untrusted EBML lengths are runtime input, never debug assertions.
+ * Keep all spec-permitted signed/unsigned widths (including zero where
+ * supported) without narrowing integer fields or strict-aliasing UB. */
+static int ebml_numeric_valid(const struct mkv_reader_t* reader,
+                              const struct mkv_element_node_t* node,
+                              enum ebml_element_type_t type)
 {
-	int* v;
-	assert(node->parent);
-	v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_uint(&reader->io, (int)node->size) ? 1 : 0;
-	return mkv_buffer_error(&reader->io);
+    if (!reader || !node || !node->e || !node->parent ||
+        !node->parent->ptr || node->e->type != type ||
+        node->size < 0 || node->size > 8)
+        return -EINVAL;
+    return 0;
 }
 
-static int ebml_value_parse_int(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_bool(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
 {
-	int* v;
-	assert(node->parent);
-	v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_INT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = (int)mkv_buffer_read_int(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int* v;
+    uint64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw != 0;
+    return 0;
 }
 
-static int ebml_value_parse_uint(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_int(struct mkv_reader_t* reader,
+                                 struct mkv_element_node_t* node)
 {
-	unsigned int* v;
-	assert(node->parent);
-	v = (unsigned int*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = (unsigned int)mkv_buffer_read_uint(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int64_t raw;
+    int* v;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_INT) != 0)
+        return -EINVAL;
+    raw = node->size == 0 ? 0 :
+        mkv_buffer_read_int(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (raw < INT_MIN || raw > INT_MAX) return -ERANGE;
+    v = (int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = (int)raw;
+    return 0;
 }
 
-static int ebml_value_parse_int64(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_uint(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
 {
-	int64_t* v;
-	assert(node->parent);
-	v = (int64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_INT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_int(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    uint64_t raw;
+    unsigned int* v;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (raw > UINT_MAX) return -ERANGE;
+    v = (unsigned int*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = (unsigned int)raw;
+    return 0;
 }
 
-static int ebml_value_parse_uint64(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_int64(struct mkv_reader_t* reader,
+                                   struct mkv_element_node_t* node)
 {
-	uint64_t* v;
-	assert(node->parent);
-	v = (uint64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_UINT == node->e->type);
-	assert(0 <= node->size && node->size <= 8);
-	*v = mkv_buffer_read_uint(&reader->io, (int)node->size);
-	return mkv_buffer_error(&reader->io);
+    int64_t* v;
+    int64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_INT) != 0)
+        return -EINVAL;
+    raw = node->size == 0 ? 0 :
+        mkv_buffer_read_int(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (int64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw;
+    return 0;
 }
 
-static int ebml_value_parse_double(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_uint64(struct mkv_reader_t* reader,
+                                    struct mkv_element_node_t* node)
 {
-	double* v;
-	int64_t r;
-	assert(node->parent);
-	v = (double*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_FLOAT == node->e->type);
-	assert(0 == node->size || 4 == node->size || 8 == node->size);
-	r = mkv_buffer_read_uint(&reader->io, (int)node->size);
-	*v = 8 == node->size ? *(double*)&r : *(float*)&r;
-	return mkv_buffer_error(&reader->io);
+    uint64_t* v;
+    uint64_t raw;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_UINT) != 0)
+        return -EINVAL;
+    raw = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    v = (uint64_t*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = raw;
+    return 0;
 }
 
-static int ebml_value_parse_binary(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_double(struct mkv_reader_t* reader,
+                                    struct mkv_element_node_t* node)
 {
-	struct ebml_binary_t* v;
-	assert(node->parent);
-	v = (struct ebml_binary_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_STRING == node->e->type || EBML_TYPE_UTF8 == node->e->type || EBML_TYPE_BINARY == node->e->type);
-
-	v->len = node->size;
-	v->ptr = malloc(node->size + 1);
-	if (!v->ptr)
-		return -ENOMEM;
-	((char*)v->ptr)[v->len] = 0;
-	mkv_buffer_read(&reader->io, v->ptr, v->len);
-	return mkv_buffer_error(&reader->io);
+    double* v;
+    double value = 0;
+    uint64_t bits;
+    if (ebml_numeric_valid(reader, node, EBML_TYPE_FLOAT) != 0 ||
+        (node->size != 0 && node->size != 4 && node->size != 8))
+        return -EINVAL;
+    bits = mkv_buffer_read_uint(&reader->io, (int)node->size);
+    if (reader->io.error != 0) return reader->io.error;
+    if (node->size == 8) {
+        memcpy(&value, &bits, sizeof(value));
+    } else if (node->size == 4) {
+        uint32_t bits32 = (uint32_t)bits;
+        float small;
+        memcpy(&small, &bits32, sizeof(small));
+        value = (double)small;
+    }
+    v = (double*)((uint8_t*)node->parent->ptr + node->e->offset);
+    *v = value;
+    return 0;
 }
 
-static int ebml_value_parse_string(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+/* Non-master EBML strings/binary values MUST have a known, representable
+ * length. Do not malloc the advertised size before the bytes are actually
+ * available: corrupt VINTs could otherwise reserve a huge allocation or
+ * overflow the NUL byte on signed size arithmetic. A 4KB chunked read
+ * preserves full-size legitimate CodecPrivate, names, tags and attachments,
+ * without inventing a fixed size limit or a second parser. */
+static int ebml_read_owned_bytes(
+    struct mkv_reader_t* reader, const struct mkv_element_node_t* node,
+    void** output)
 {
-	void** v;
-	assert(node->parent);
-	v = (void**)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_STRING == node->e->type || EBML_TYPE_UTF8 == node->e->type || EBML_TYPE_BINARY == node->e->type);
+    const size_t chunk_limit = 4096u;
+    uint8_t* buf = NULL;
+    size_t length, offset = 0, capacity = 0;
+    if (!reader || !node || !output || node->size < 0 ||
+        (uint64_t)node->size >= SIZE_MAX)
+        return -EINVAL;
+    length = (size_t)node->size;
+    while (offset < length) {
+        size_t chunk = length - offset;
+        size_t need;
+        if (chunk > chunk_limit) chunk = chunk_limit;
+        need = offset + chunk + 1u; /* length <= SIZE_MAX-1 */
+        if (need > capacity) {
+            size_t next = capacity ? capacity : need;
+            void* grown;
+            while (next < need) {
+                if (next > SIZE_MAX / 2u) {
+                    next = need;
+                    break;
+                }
+                next *= 2u;
+            }
+            grown = realloc(buf, next);
+            if (!grown) {
+                free(buf);
+                return -ENOMEM;
+            }
+            buf = (uint8_t*)grown;
+            capacity = next;
+        }
+        mkv_buffer_read(&reader->io, buf + offset, chunk);
+        if (reader->io.error != 0) {
+            int error = reader->io.error;
+            free(buf);
+            return error;
+        }
+        offset += chunk;
+    }
+    if (!buf) {
+        buf = (uint8_t*)malloc(1u);
+        if (!buf) return -ENOMEM;
+    }
+    buf[length] = 0;
+    *output = buf;
+    return 0;
+}
 
-	*v = malloc(node->size + 1);
-	if (!*v)
-		return -ENOMEM;
-	((char*)*v)[node->size] = 0;
-	mkv_buffer_read(&reader->io, *v, node->size);
-	return mkv_buffer_error(&reader->io);
+static int ebml_value_parse_binary(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+{
+    struct ebml_binary_t* value;
+    void* bytes = NULL;
+    int r;
+    if (!node || !node->e || !node->parent || !node->parent->ptr ||
+        (node->e->type != EBML_TYPE_STRING &&
+         node->e->type != EBML_TYPE_UTF8 &&
+         node->e->type != EBML_TYPE_BINARY))
+        return -EINVAL;
+    r = ebml_read_owned_bytes(reader, node, &bytes);
+    if (r != 0) return r;
+    value = (struct ebml_binary_t*)((uint8_t*)node->parent->ptr +
+                                   node->e->offset);
+    value->ptr = bytes;
+    value->len = (size_t)node->size;
+    return 0;
+}
+
+static int ebml_value_parse_string(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+{
+    void** value;
+    void* bytes = NULL;
+    int r;
+    if (!node || !node->e || !node->parent || !node->parent->ptr ||
+        (node->e->type != EBML_TYPE_STRING &&
+         node->e->type != EBML_TYPE_UTF8 &&
+         node->e->type != EBML_TYPE_BINARY))
+        return -EINVAL;
+    r = ebml_read_owned_bytes(reader, node, &bytes);
+    if (r != 0) return r;
+    value = (void**)((uint8_t*)node->parent->ptr + node->e->offset);
+    *value = bytes;
+    return 0;
 }
 
 static int ebml_value_parse_utf8(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -197,6 +310,17 @@ static int ebml_default_master_parse(struct mkv_reader_t* reader, struct mkv_ele
 	node->ptr = node->parent ? node->parent->ptr : NULL; // inherit
 	(void)reader;
 	return 0; // nothing to do
+}
+
+static int mkv_segment_root_parse(struct mkv_reader_t* reader,
+                                  struct mkv_element_node_t* node)
+{
+    /* CueClusterPosition is segment-relative. Capture the exact start
+     * of Segment Element Data, after its EBML ID and encoded size.
+     * Retain original master-node ownership semantics. */
+    if (!reader->segment_data_start)
+        reader->segment_data_start = mkv_buffer_tell(&reader->io);
+    return ebml_default_master_parse(reader, node);
 }
 
 static int ebml_header_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -361,19 +485,124 @@ static int mkv_segment_cluster_parse(struct mkv_reader_t* reader, struct mkv_ele
 	return node->size > 0 ? 0 : 1; // eof
 }
 
-static int mkv_segment_cluster_block_group_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int mkv_segment_cluster_block_group_parse(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
 {
-	struct mkv_cluster_t* cluster;
-	struct mkv_block_group_t* group;
-	//cluster = (struct mkv_cluster_t*)node->parent->ptr;
-	cluster = reader->mkv.cluster; // seek to block, no parent
+    uint64_t pos, end;
+    int found = 0, padding_seen = 0, reference_seen = 0;
+    int64_t discard_padding_ns = 0;
+    int first_sample = reader->mkv.count;
+    int first_rap = reader->mkv.rap.count;
+    if (node->size <= 0 || !reader->mkv.cluster)
+        goto invalid;
 
-	if (0 != mkv_realloc((void**)&cluster->groups, cluster->count, &cluster->capacity, sizeof(struct mkv_block_group_t), 4))
-		return -ENOMEM;
+    pos = mkv_buffer_tell(&reader->io);
+    if (reader->io.error != 0 ||
+        (uint64_t)node->size > UINT64_MAX - pos)
+        goto invalid;
+    end = pos + (uint64_t)node->size;
 
-	group = &cluster->groups[cluster->count++];
-	node->ptr = group;
-	return 0;
+    /* The streaming read2() parser reconstructs its EBML stack each time.
+     * Fully consume and validate every child BEFORE returning the packet.
+     * A malformed group is an error, never an ordinary EOF. */
+    while (pos < end && reader->io.error == 0) {
+        uint32_t id = mkv_buffer_read_id(&reader->io);
+        int64_t bytes = mkv_buffer_read_size(&reader->io);
+        uint64_t value_at = mkv_buffer_tell(&reader->io);
+        if (reader->io.error != 0 || !id || bytes < 0 ||
+            value_at > end || (uint64_t)bytes > end - value_at)
+            goto invalid;
+
+        if (id == 0xA1) {
+            uint64_t block_at = value_at, header_end;
+            int64_t block_track;
+            uint8_t block_flags;
+            /* RFC 9559 Block flags differ from SimpleBlock: the four
+             * upper bits MUST be zero; bit 0 is UNUSED (not discardable).
+             * Validate the real TrackNumber VINT width before handing
+             * the payload to the sole shared Block parser. */
+            if (found || bytes < 4 ||
+                (uint64_t)bytes >= UINT32_MAX - 4)
+                goto invalid;
+            block_track = mkv_buffer_read_size(&reader->io);
+            (void)mkv_buffer_read_int(&reader->io, 2);
+            block_flags = mkv_buffer_r8(&reader->io);
+            header_end = mkv_buffer_tell(&reader->io);
+            if (reader->io.error != 0 || block_track < 1 ||
+                header_end < block_at ||
+                header_end - block_at > (uint64_t)bytes ||
+                (block_flags & 0xF0u) != 0)
+                goto invalid;
+            mkv_buffer_seek(&reader->io, block_at);
+            if (reader->io.error != 0 ||
+                mkv_cluster_simple_block_read(
+                    &reader->mkv, reader->mkv.cluster,
+                    &reader->io, bytes) != 0)
+                goto invalid;
+            found = 1;
+        } else if (id == 0x75A2) {
+            /* Signed EBML integer: positive trims packet END, negative
+             * trims BEGINNING. Never shift a 64-bit integer by 64. */
+            uint64_t raw, sign;
+            if (padding_seen || bytes < 1 || bytes > 8)
+                goto invalid;
+            raw = mkv_buffer_read_uint(&reader->io, (int)bytes);
+            if (reader->io.error != 0) goto invalid;
+            sign = UINT64_C(1) << ((unsigned)bytes * 8 - 1);
+            if (raw & sign) {
+                discard_padding_ns = bytes == 8 ?
+                    -1 - (int64_t)(~raw) :
+                    (int64_t)raw -
+                    (int64_t)(UINT64_C(1) << ((unsigned)bytes * 8));
+            } else {
+                discard_padding_ns = (int64_t)raw;
+            }
+            padding_seen = 1;
+        } else if (id == 0xFB) {
+            /* ReferenceBlock is an encoded signed integer, not a zero-byte
+             * marker. Multiple References are valid; one means dependent. */
+            if (bytes < 1 || bytes > 8)
+                goto invalid;
+            reference_seen = 1;
+        }
+
+        mkv_buffer_seek(&reader->io, value_at + (uint64_t)bytes);
+        if (reader->io.error != 0) goto invalid;
+        pos = mkv_buffer_tell(&reader->io);
+    }
+    if (!found || pos != end || reader->mkv.count <= first_sample)
+        goto invalid;
+
+    {
+        /* DiscardPadding belongs to the entire BlockGroup, not always its
+         * final frame. With lacing, positive padding trims the Block END
+         * (last frame), negative padding trims the Block BEGINNING
+         * (first frame). Zero remains absent on every frame. */
+        int trim_index = discard_padding_ns < 0 ?
+            first_sample : reader->mkv.count - 1;
+        reader->mkv.samples[trim_index].discard_padding_ns =
+            discard_padding_ns;
+        /* Block's low bit is UNUSED, not SimpleBlock's discardable flag.
+         * The shared decoder parses both with the same header layout. */
+        reader->mkv.samples[first_sample].flags &=
+            ~MKV_FLAGS_DISCARDABLE;
+        if (!reference_seen)
+            reader->mkv.samples[first_sample].flags |= MKV_FLAGS_KEYFRAME;
+        reader->resume_after_group = end;
+    }
+    return 1;
+
+invalid:
+    /* The Block child may have installed a sample/RAP before a later child
+     * proved malformed. Roll back atomically so no partial packet leaks
+     * through a subsequent read2() invocation. Persist a parse error. */
+    reader->mkv.count = first_sample;
+    reader->mkv.rap.count = first_rap;
+    reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
+    if (reader->io.error == 0)
+        reader->io.error = -EINVAL;
+    return -EINVAL;
 }
 
 static int mkv_segment_cluster_block_group_addition_parse(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -415,8 +644,10 @@ static int mkv_segment_cluster_simple_block_parse(struct mkv_reader_t* reader, s
 	uint64_t pos;
 #endif
 	struct mkv_cluster_t* cluster;
-	if (node->size < 0)
-		return 0; // eof
+    /* A SimpleBlock is never allowed to carry an unknown-length or
+     * undersized payload; fail instead of treating it as ordinary EOF. */
+    if (node->size < 4 || node->size > UINT32_MAX)
+        return -EINVAL;
 
 	//cluster = (struct mkv_cluster_t*)node->parent->ptr;
 	cluster = reader->mkv.cluster; // seek to block, no parent
@@ -429,7 +660,7 @@ static int mkv_segment_cluster_simple_block_parse(struct mkv_reader_t* reader, s
 	mkv_buffer_skip(&reader->io, node->off + node->head + node->size - pos);
 	return r; 
 #else
-	return 0 == r ? 1 : 0; // per block
+    return r < 0 ? r : 1; /* fail fast, never turn malformed block into EOF */
 #endif
 }
 
@@ -458,7 +689,7 @@ static struct mkv_element_t s_elements[] = {
 	ELEMENT(0x4284,		EBML_TYPE_UINT,		2,	"DocTypeExtensionVersion",  NULL,                   0), // DocTypeExtensionVersion
 
 	// Segment
-	ELEMENT(0x18538067,	EBML_TYPE_MASTER,   0,	"Segment",					ebml_default_master_parse,	0), // Segment
+	ELEMENT(0x18538067,	EBML_TYPE_MASTER,   0,	"Segment",					mkv_segment_root_parse,	0), // Segment
 
 	// Cluster
 	ELEMENT(0x1F43B675,	EBML_TYPE_MASTER,	1,	"Cluster",					mkv_segment_cluster_parse,  0), // Segment/Cluster [mult]
@@ -523,8 +754,8 @@ static struct mkv_element_t s_elements[] = {
     ELEMENT(0x26B240,	EBML_TYPE_STRING,	3,	"CodecDownloadURL", NULL, 0), // Segment/Tracks/TrackEntry/CodecDownloadURL [mult]
     ELEMENT(0xAA,		EBML_TYPE_UINT,		3,	"CodecDecodeAll", NULL, 0), // Segment/Tracks/TrackEntry/CodecDecodeAll
     ELEMENT(0x6FAB,		EBML_TYPE_UINT,		3,	"TrackOverlay", NULL, 0), // Segment/Tracks/TrackEntry/TrackOverlay [mult]
-    ELEMENT(0x56AA,		EBML_TYPE_UINT,		3,	"CodecDelay", NULL, 0), // Segment/Tracks/TrackEntry/CodecDelay
-    ELEMENT(0x56BB,		EBML_TYPE_UINT,		3,	"SeekPreRoll", NULL, 0), // Segment/Tracks/TrackEntry/SeekPreRoll
+    ELEMENT(0x56AA,		EBML_TYPE_UINT,		3,	"CodecDelay", ebml_value_parse_uint64, offsetof(struct mkv_track_t, codec_delay_ns)), // Segment/Tracks/TrackEntry/CodecDelay
+    ELEMENT(0x56BB,		EBML_TYPE_UINT,		3,	"SeekPreRoll", ebml_value_parse_uint64, offsetof(struct mkv_track_t, seek_preroll_ns)), // Segment/Tracks/TrackEntry/SeekPreRoll
     ELEMENT(0x6624,		EBML_TYPE_MASTER,	3,	"TrackTranslate", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate [mult]
     ELEMENT(0x66FC,		EBML_TYPE_UINT,		4,	"TrackTranslateEditionUID", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate/TrackTranslateEditionUID [mult]
     ELEMENT(0x66BF,		EBML_TYPE_UINT,		4,	"TrackTranslateCodec", NULL, 0), // Segment/Tracks/TrackEntry/TrackTranslate/TrackTranslateCodec
@@ -698,7 +929,7 @@ static struct mkv_element_t s_elements[] = {
 
 static struct mkv_element_t s_clusters[] = {
 	// Segment
-    ELEMENT(0x18538067,	EBML_TYPE_MASTER,	0,	"Segment",	ebml_default_master_parse,	0), // Segment
+    ELEMENT(0x18538067,	EBML_TYPE_MASTER,	0,	"Segment",	mkv_segment_root_parse,	0), // Segment
 
 	// Cluster
     ELEMENT(0x1F43B675,	EBML_TYPE_MASTER,	1,	"Cluster", mkv_segment_cluster_block_parse, 0), // Segment/Cluster [mult]
@@ -758,11 +989,11 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 	memset(tree, 0, sizeof(tree));
 	while (0 == reader->io.error && 0 == r)
 	{
-		if (level < 0 || level >= sizeof(tree) / sizeof(tree[0]))
-		{
-			assert(0); // too many tree levels
-			return -1;
-		}
+        if (level < 0 || (size_t)level >= sizeof(tree) / sizeof(tree[0])) {
+            /* File nesting is untrusted; never abort in an assert build. */
+            reader->parse_failed = 1;
+            return -EOVERFLOW;
+        }
 
 		node = &tree[level];
 		node->ptr = NULL;
@@ -770,9 +1001,13 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 		node->id = mkv_buffer_read_id(&reader->io);
 		node->size = mkv_buffer_read_size(&reader->io);
 		pos = mkv_buffer_tell(&reader->io);
-		node->head = pos - node->off;
-		if (0 == node->id)
-			break;
+        if (reader->io.error != 0 || node->id == 0)
+            break; /* normal EOF remains distinct from parse failure */
+        if (pos < node->off) {
+            reader->parse_failed = 1;
+            return -EIO;
+        }
+        node->head = pos - node->off;
 	
 		// https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#unknown-data-size
 		// * Only a Master Element is allowed to be of unknown size.
@@ -785,9 +1020,16 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 		// * The end of the Parent Element with a known size has been reached.
 		// * The end of the EBML Document, either when reaching the end of the file or because a new EBML Header started.
 
-		e = mkv_element_find(elements, count, node->id);
-		if (e)
-		{
+        e = mkv_element_find(elements, count, node->id);
+        /* EBML unknown size is valid only for a schema-known Master.
+         * In particular, a future/unknown ID cannot be safely skipped
+         * without its end boundary. Reject rather than assert or EOF. */
+        if (node->size == -1 && (!e || e->type != EBML_TYPE_MASTER)) {
+            reader->parse_failed = 1;
+            return -EINVAL;
+        }
+        if (e)
+        {
 #if defined(MKV_PRINT_ELEMENT) && (defined(DEBUG) || defined(_DEBUG))
 			int i;
 			for (i = e->level >= 0 ? e->level : level; i > 0; i--)
@@ -795,54 +1037,73 @@ static int mkv_reader_open(mkv_reader_t* reader, struct mkv_element_t *elements,
 			printf("%s (%" PRId64 ") off: %u\n", e->name, node->size, (unsigned int)node->off);
 #endif
 
-			assert(e->level <= level);
-			while (e->level < level && -1 != e->level)
-			{
-				assert(level > 0);
-				level--;
-				if (tree[level].e)
-				{
-					assert(-1 == tree[level].size || tree[level].off + tree[level].head + tree[level].size <= node->off);
-					assert(tree[level].e);
-					tree[level].e = NULL; // pop
-				}
-			}
+            if (e->level > level) {
+                reader->parse_failed = 1;
+                return -EINVAL; /* illegal child before its Master */
+            }
+            while (e->level < level && e->level != -1) {
+                struct mkv_element_node_t *ancestor;
+                if (level <= 0) {
+                    reader->parse_failed = 1;
+                    return -EINVAL;
+                }
+                --level;
+                ancestor = &tree[level];
+                if (ancestor->e) {
+                    if (ancestor->size >= 0) {
+                        /* Avoid wrap in off + head + advertised size. */
+                        if (ancestor->off > node->off ||
+                            ancestor->head > node->off - ancestor->off ||
+                            (uint64_t)ancestor->size >
+                                node->off - ancestor->off - ancestor->head) {
+                            reader->parse_failed = 1;
+                            return -EINVAL;
+                        }
+                    }
+                    ancestor->e = NULL;
+                }
+            }
 
-			node->e = e;
-			node->parent = level > 0 ? &tree[level - 1] : NULL;
-			if (EBML_TYPE_MASTER == e->type)
-			{
-				assert(-1 != e->level);
-				memmove(&tree[level], node, sizeof(*node)); // for level skip
-				node = &tree[level++];
-			}
-
-			assert(level > 0);
+            node->e = e;
+            node->parent = level > 0 ? &tree[level - 1] : NULL;
+            if (EBML_TYPE_MASTER == e->type) {
+                if (e->level == -1) {
+                    reader->parse_failed = 1;
+                    return -EINVAL;
+                }
+                memmove(&tree[level], node, sizeof(*node));
+                node = &tree[level++];
+            }
+            if (level <= 0) {
+                reader->parse_failed = 1;
+                return -EINVAL;
+            }
 			if (e->parse)
 			{
-				r = e->parse(reader, node);
-				assert(r >= 0);
+                r = e->parse(reader, node);
+                /* Parse callbacks can report invalid EBML; propagating
+                 * errors to read2 is mandatory. Asserting or hiding a
+                 * negative result would incorrectly report normal EOF. */
+                if (r < 0) {
+                    reader->parse_failed = 1;
+                    return r;
+                }
 			}
 			else if(-1 != node->size)
 			{
 				mkv_buffer_skip(&reader->io, node->size);
 			}
-			else
-			{
-				assert(EBML_TYPE_MASTER == e->type);
-			}
-		}
-		else
-		{
-			printf("unknown id: 0x%x, size: %" PRId64 "\n", node->id, node->size);
-			if (-1 == node->size)
-			{
-				assert(0);
-				return -1;
-			}
-
-			mkv_buffer_skip(&reader->io, node->size);
-		}
+            else if (e->type != EBML_TYPE_MASTER) {
+                reader->parse_failed = 1;
+                return -EINVAL;
+            }
+        }
+        else
+        {
+            /* Forward-compatible unknown *known-size* elements can be
+             * skipped. Do not print untrusted IDs or abort on input. */
+            mkv_buffer_skip(&reader->io, (uint64_t)node->size);
+        }
 	}
 
 	return r;
@@ -865,12 +1126,14 @@ static int mkv_reader_build(mkv_reader_t* reader)
 	for (i = 0; i < reader->mkv.track_count; i++)
 	{
 		track = &reader->mkv.tracks[i];
+        /* CodecID is required to identify packet semantics. A missing or
+         * unknown CodecID is a malformed/unsupported TrackEntry, never a
+         * reason to assert or dereference track->name[0] later. */
+        if (!track->name || !track->name[0])
+            return -EINVAL;
 		track->codecid = mkv_codec_find_id(track->name);
-		if (MKV_CODEC_UNKNOWN == track->codecid)
-		{
-			assert(0);
-			return -1;
-		}
+        if (MKV_CODEC_UNKNOWN == track->codecid)
+            return -ENOTSUP;
 
 		// Number of nanoseconds (not scaled via TimestampScale) per frame 
 		// ('frame' in the Matroska sense -- one Element put into a (Simple)Block).
@@ -893,29 +1156,34 @@ static int mkv_reader_build(mkv_reader_t* reader)
 
 mkv_reader_t* mkv_reader_create(const struct mkv_buffer_t* buffer, void* param)
 {
-	struct mkv_reader_t* reader;
-	reader = (struct mkv_reader_t*)calloc(1, sizeof(*reader));
-	if (NULL == reader)
-		return NULL;
+    struct mkv_reader_t* reader;
+    int parse_result;
+    if (!buffer || !buffer->read || !buffer->seek || !buffer->tell)
+        return NULL;
+    reader = (struct mkv_reader_t*)calloc(1, sizeof(*reader));
+    if (!reader) return NULL;
 
-	memcpy(&reader->io.io, buffer, sizeof(reader->io.io));
-	reader->io.param = param;
-	reader->ebml.version = 1;
-	reader->ebml.read_version = 1;
-	reader->ebml.max_id_length = 4;
-	reader->ebml.max_size_length = 8;
-	reader->ebml.doc_type_version = 1;
-	reader->ebml.doc_type_read_version = 1;
+    memcpy(&reader->io.io, buffer, sizeof(reader->io.io));
+    reader->io.param = param;
+    reader->ebml.version = 1;
+    reader->ebml.read_version = 1;
+    reader->ebml.max_id_length = 4;
+    reader->ebml.max_size_length = 8;
+    reader->ebml.doc_type_version = 1;
+    reader->ebml.doc_type_read_version = 1;
 
-	// ignore file read error(for streaming file)
-	mkv_reader_open(reader, s_elements, sizeof(s_elements) / sizeof(s_elements[0]), 0);
-	if (0 != mkv_reader_build(reader))
-	{
-		mkv_reader_destroy(reader);
-		return NULL;
-	}
-
-	return reader;
+    /* Normal end-of-input remains permitted for the streaming reader.
+     * However, a negative EBML PARSE result is never clean EOF. The old
+     * constructor discarded it, then published partially parsed Tracks,
+     * which made invalid 9-byte integers/float widths appear valid. */
+    parse_result = mkv_reader_open(
+        reader, s_elements, sizeof(s_elements) / sizeof(s_elements[0]), 0);
+    if (parse_result < 0 || reader->parse_failed ||
+        mkv_reader_build(reader) != 0) {
+        mkv_reader_destroy(reader);
+        return NULL;
+    }
+    return reader;
 }
 
 void mkv_reader_destroy(mkv_reader_t* reader)
@@ -983,11 +1251,64 @@ uint64_t mkv_reader_getduration(mkv_reader_t* reader)
 	return reader ? reader->mkv.duration : 0;
 }
 
+int mkv_reader_get_track_timing_ns(
+    const mkv_reader_t *reader, uint32_t track_number,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns)
+{
+    int i;
+    if (!reader || !track_number || !codec_delay_ns || !seek_preroll_ns)
+        return -EINVAL;
+    for (i = 0; i < reader->mkv.track_count; ++i) {
+        const struct mkv_track_t *track = &reader->mkv.tracks[i];
+        if (track->id == track_number) {
+            *codec_delay_ns = track->codec_delay_ns;
+            *seek_preroll_ns = track->seek_preroll_ns;
+            return 0;
+        }
+    }
+    return -ENOENT;
+}
+
+int mkv_reader_last_discard_padding_ns(
+    const mkv_reader_t *reader, int64_t *padding_ns)
+{
+    if (!reader || !padding_ns) return -1;
+    *padding_ns = reader->last_discard_padding_ns;
+    return 0;
+}
+
+/* A Matroska Block timestamp is SIGNED. Multiplication by the
+ * unsigned nanosecond TimestampScale previously converted negative ticks
+ * to huge positive timestamps. Preserve negative preroll and reject
+ * arithmetic overflow before calling the packet-allocation callback. */
+static int mkv_ticks_to_milliseconds(
+    int64_t ticks, uint64_t scale_ns, int64_t *out_ms)
+{
+    uint64_t magnitude, converted, limit;
+    if (!out_ms || !scale_ns) return -EINVAL;
+    magnitude = ticks < 0 ?
+        (uint64_t)(-(ticks + 1)) + 1u : (uint64_t)ticks;
+    if (magnitude > UINT64_MAX / scale_ns)
+        return -ERANGE;
+    converted = (magnitude * scale_ns) / UINT64_C(1000000);
+    limit = (uint64_t)INT64_MAX + (ticks < 0 ? 1u : 0u);
+    if (converted > limit) return -ERANGE;
+    if (ticks >= 0) *out_ms = (int64_t)converted;
+    else if (converted == (uint64_t)INT64_MAX + 1u)
+        *out_ms = INT64_MIN;
+    else *out_ms = -(int64_t)converted;
+    return 0;
+}
+
 int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* param)
 {
 	int r;
 	void* ptr;
 	struct mkv_sample_t* sample;
+    int64_t pts_ms, dts_ms;
+    if (!reader || !onread) return -1;
+    reader->last_discard_padding_ns = 0;
+    if (reader->parse_failed) return -EINVAL;
 
 #if !defined(MKV_LIVE_STREAMING)
 	if (reader->offset >= reader->mkv.count)
@@ -1004,9 +1325,18 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
 
 	if (reader->offset >= reader->mkv.count)
 		return 0; // eof
+    /* A malformed BlockGroup may have allocated an incomplete sample;
+     * never publish it if its containing group was rejected. */
+    if (reader->io.error != 0) return reader->io.error;
 
 	sample = &reader->mkv.samples[reader->offset];
-	ptr = onread(param, sample->track, sample->bytes, sample->pts * reader->mkv.timescale / 1000000, sample->dts * reader->mkv.timescale / 1000000, sample->flags);
+    if (mkv_ticks_to_milliseconds(
+            sample->pts, reader->mkv.timescale, &pts_ms) != 0 ||
+        mkv_ticks_to_milliseconds(
+            sample->dts, reader->mkv.timescale, &dts_ms) != 0)
+        return -ERANGE;
+	ptr = onread(param, sample->track, sample->bytes,
+                 pts_ms, dts_ms, sample->flags);
 	if (!ptr)
 		return -ENOMEM;
 
@@ -1016,6 +1346,14 @@ int mkv_reader_read2(mkv_reader_t* reader, mkv_reader_onread2 onread, void* para
 		return reader->io.error;
 
 	reader->offset++;
+    if (reader->offset >= reader->mkv.count && reader->resume_after_group) {
+        /* Reading packet data seeks back into the BlockGroup. Restore the
+         * parse cursor only after its final sample has been returned. */
+        mkv_buffer_seek(&reader->io, reader->resume_after_group);
+        reader->resume_after_group = 0;
+        if (reader->io.error) return reader->io.error;
+    }
+    reader->last_discard_padding_ns = sample->discard_padding_ns;
 	return 1;
 }
 
@@ -1049,49 +1387,119 @@ int mkv_reader_read(mkv_reader_t* reader, void* buffer, size_t bytes, mkv_reader
 	return 1;
 }
 
+/* Real seek admission for Opus preroll: the old nearest-Cue function can
+ * select a future keyframe. This separate floor operation cannot. */
+int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms)
+{
+#if !defined(MKV_LIVE_STREAMING)
+    uint64_t tick, ns, anchor_ns;
+    size_t lo, hi, mid;
+    const struct mkv_cue_position_t *cue;
+    if (!reader || !timestamp_ms || *timestamp_ms < 0 ||
+        !reader->segment_data_start ||
+        !reader->mkv.timescale || !reader->mkv.cue.count)
+        return -EINVAL;
+    if ((uint64_t)*timestamp_ms > UINT64_MAX / UINT64_C(1000000))
+        return -ERANGE;
+    ns = (uint64_t)*timestamp_ms * UINT64_C(1000000);
+    tick = ns / reader->mkv.timescale;
+    lo = 0;
+    hi = reader->mkv.cue.count;
+    /* Upper bound: first Cue strictly after requested decoding time. */
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2;
+        if (reader->mkv.cue.positions[mid].timestamp <= tick)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo == 0) return -ENOENT; /* never jump to future cue */
+    cue = &reader->mkv.cue.positions[lo - 1];
+    if (reader->segment_data_start > INT64_MAX ||
+        cue->cluster > INT64_MAX - reader->segment_data_start ||
+        cue->timestamp > UINT64_MAX / reader->mkv.timescale)
+        return -ERANGE;
+    anchor_ns = cue->timestamp * reader->mkv.timescale;
+    if (anchor_ns / UINT64_C(1000000) > INT64_MAX)
+        return -ERANGE;
+    mkv_buffer_seek(&reader->io,
+                    reader->segment_data_start + cue->cluster);
+    if (reader->io.error != 0) return reader->io.error;
+    reader->offset = reader->mkv.count;
+    reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
+    *timestamp_ms = (int64_t)(anchor_ns / UINT64_C(1000000));
+    return 0;
+#else
+    (void)reader;
+    (void)timestamp_ms;
+    return -ENOTSUP; /* no random-access cue map in live streaming */
+#endif
+}
+
+/* The nearest-Cue API is intentionally different from the floor-Cue
+ * API used by Opus preroll. Both must be bounded and must leave the reader
+ * and caller's timestamp unchanged on invalid/overflowing input. */
 int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 {
-	uint64_t clock;
-	size_t idx, start, end;
-#define DIFF(a, b) ((a) > (b) ? ((a) - (b)) : ((b) - (a)))
-
 #if !defined(MKV_LIVE_STREAMING)
-	struct mkv_cue_position_t* cue, *prev, *next;
+    uint64_t requested_ns, tick, anchor_ns, offset;
+    size_t lo, hi, mid, candidate, count;
+    const struct mkv_cue_position_t *cue;
 
-	if (reader->mkv.cue.count < 1)
-		return -1;
+    if (!reader || !timestamp || *timestamp < 0 ||
+        !reader->mkv.timescale || !reader->segment_data_start ||
+        reader->mkv.cue.count <= 0 || !reader->mkv.cue.positions)
+        return -EINVAL;
+    if ((uint64_t)*timestamp > UINT64_MAX / UINT64_C(1000000))
+        return -ERANGE;
+    requested_ns = (uint64_t)*timestamp * UINT64_C(1000000);
+    tick = requested_ns / reader->mkv.timescale;
+    count = (size_t)reader->mkv.cue.count;
+    lo = 0;
+    hi = count;
 
-	idx = start = 0;
-	end = reader->mkv.cue.count;
-	assert(reader->mkv.cue.count > 0);
-	clock = (uint64_t)(*timestamp) * 1000000 / reader->mkv.timescale;
+    /* Lower bound on ascending Cue timestamps. Prefer the earlier Cue
+     * for an exact midpoint, without unsigned subtraction underflow. */
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2u;
+        if (reader->mkv.cue.positions[mid].timestamp < tick)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    if (lo == 0u) {
+        candidate = 0u;
+    } else if (lo == count) {
+        candidate = count - 1u;
+    } else {
+        const uint64_t before = reader->mkv.cue.positions[lo - 1u].timestamp;
+        const uint64_t after = reader->mkv.cue.positions[lo].timestamp;
+        candidate = tick - before <= after - tick ? lo - 1u : lo;
+    }
+    cue = &reader->mkv.cue.positions[candidate];
+    if (cue->timestamp > UINT64_MAX / reader->mkv.timescale)
+        return -ERANGE;
+    anchor_ns = cue->timestamp * reader->mkv.timescale;
+    if (anchor_ns / UINT64_C(1000000) > (uint64_t)INT64_MAX ||
+        reader->segment_data_start > (uint64_t)INT64_MAX ||
+        cue->cluster > (uint64_t)INT64_MAX - reader->segment_data_start)
+        return -ERANGE;
 
-	while (start < end)
-	{
-		idx = (start + end) / 2;
-		cue = &reader->mkv.cue.positions[idx];
+    offset = reader->segment_data_start + cue->cluster;
+    mkv_buffer_seek(&reader->io, offset);
+    if (reader->io.error != 0)
+        return reader->io.error;
 
-		if (cue->timestamp > clock)
-			end = idx;
-		else if (cue->timestamp < clock)
-			start = idx + 1;
-		else
-			break;
-	}
-
-	cue = &reader->mkv.cue.positions[idx];
-	prev = &reader->mkv.cue.positions[idx > 0 ? idx - 1 : idx];
-	next = &reader->mkv.cue.positions[idx + 1 < reader->mkv.cue.count ? idx + 1 : idx];
-	if (DIFF(prev->timestamp, clock) < DIFF(cue->timestamp, clock))
-		cue = prev;
-	if (DIFF(next->timestamp, clock) < DIFF(cue->timestamp, clock))
-		cue = next;
-
-	*timestamp = cue->timestamp * reader->mkv.timescale / 1000000;
-	mkv_buffer_seek(&reader->io, cue->cluster);
-	reader->offset = reader->mkv.count; // clear
-	return 0;
+    *timestamp = (int64_t)(anchor_ns / UINT64_C(1000000));
+    reader->offset = reader->mkv.count;
+    reader->resume_after_group = 0;
+    reader->last_discard_padding_ns = 0;
+    return 0;
 #else
+    uint64_t clock;
+    size_t idx, start, end;
+#define DIFF(a, b) ((a) > (b) ? ((a) - (b)) : ((b) - (a)))
 	size_t mid, prev, next;
 	struct mkv_sample_t* sample;
 
@@ -1134,7 +1542,6 @@ int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 	*timestamp = reader->mkv.samples[idx].dts * reader->mkv.timescale / 1000000;
 	reader->offset = idx;
 	return 0;
-#endif
-
 #undef DIFF
+#endif
 }

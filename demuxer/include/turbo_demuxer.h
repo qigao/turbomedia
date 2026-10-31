@@ -175,6 +175,27 @@ TURBO_MEDIA_API int turbo_demuxer_open(turbo_demuxer_t *demuxer);
 TURBO_MEDIA_API int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer,
                                         turbo_demuxer_packet_t *packet);
 
+/* ABI-preserving extension for the built-in Matroska/WebM demuxers.
+ * Returns 1 for a packet, 0 for EOF, <0 on error just like read_packet.
+ * The caller sets size/version; the remaining timing field is output.
+ * A positive DiscardPadding trims the END of this packet; a negative
+ * value trims its BEGINNING. Values are signed nanoseconds, never PCM
+ * sample counts. Zero means no per-packet trim.
+ * Other demuxer implementations fail explicitly rather than dropping
+ * trim metadata. The packet remains caller-owned and is released using
+ * turbo_demuxer_free_packet, including on success. */
+#define TURBO_DEMUXER_PACKET_TIMING_V1 1u
+typedef struct turbo_demuxer_packet_timing_v1 {
+    uint32_t size, version;
+    int64_t discard_padding_ns;
+} turbo_demuxer_packet_timing_v1;
+#define TURBO_DEMUXER_PACKET_TIMING_V1_INIT { \
+    sizeof(turbo_demuxer_packet_timing_v1), \
+    TURBO_DEMUXER_PACKET_TIMING_V1, 0 }
+TURBO_MEDIA_API int turbo_demuxer_read_packet_with_timing(
+    turbo_demuxer_t *demuxer, turbo_demuxer_packet_t *packet,
+    turbo_demuxer_packet_timing_v1 *timing);
+
 /**
  * 释放数据包
  */
@@ -184,6 +205,22 @@ TURBO_MEDIA_API void turbo_demuxer_free_packet(turbo_demuxer_packet_t *packet);
  * 定位
  */
 TURBO_MEDIA_API int turbo_demuxer_seek(turbo_demuxer_t *demuxer, int64_t timestamp_ms, int flags);
+
+/* Opus/WebM seek anchor only (ABI-preserving separate function).
+ * Request a presentation timestamp in MILLISECONDS; select the latest
+ * available Cue not later than target - ceil((SeekPreRoll+CodecDelay)/1ms)
+ * and return the chosen Cue timestamp in MILLISECONDS. The actual
+ * first packet may be earlier, since decoding starts at the Cluster
+ * containing that Cue. This is conservative and may decode extra audio.
+ * No future Cue is accepted, and absence of a prior Cue is an ERROR.
+ * The caller MUST reset its Opus decoder, decode preroll, convert packet
+ * timestamps to a common unit, and discard decoded PCM before the target,
+ * as well as any per-block signed DiscardPadding. No implicit trimming,
+ * decoder reset, or alternate provider is performed by this helper.
+ * Only the built-in WebM/MKV Opus track supports this operation. */
+TURBO_MEDIA_API int turbo_demuxer_seek_opus_preroll(
+    turbo_demuxer_t *demuxer, int audio_stream_index,
+    int64_t presentation_target_ms, int64_t *selected_cue_ms);
 
 /**
  * 获取流数量
@@ -196,6 +233,28 @@ TURBO_MEDIA_API int turbo_demuxer_get_stream_count(turbo_demuxer_t *demuxer);
 TURBO_MEDIA_API int turbo_demuxer_get_stream_info(turbo_demuxer_t *demuxer,
                                             int stream_index,
                                             turbo_stream_info_t *info);
+
+/* ABI-preserving Matroska/WebM TrackEntry timing.
+ * The values are the parsed unsigned nanoseconds from the media file,
+ * not inferred from CodecPrivate; absent elements default to zero.
+ * Demuxer packet timestamps remain unadjusted. To obtain presentation
+ * timestamps, subtract CodecDelay from the track's block timestamp.
+ * After seeking/discontinuity, decode at least SeekPreRoll before the
+ * requested presentation time; this accessor does NOT perform seeking.
+ * Caller initializes size/version; only the trailing values are outputs.
+ * Other Demuxer providers fail explicitly, never guess or discard timing. */
+#define TURBO_DEMUXER_TRACK_TIMING_V1 1u
+typedef struct turbo_demuxer_track_timing_v1 {
+    uint32_t size, version;
+    uint64_t codec_delay_ns;
+    uint64_t seek_preroll_ns;
+} turbo_demuxer_track_timing_v1;
+#define TURBO_DEMUXER_TRACK_TIMING_V1_INIT { \
+    sizeof(turbo_demuxer_track_timing_v1), \
+    TURBO_DEMUXER_TRACK_TIMING_V1, 0u, 0u }
+TURBO_MEDIA_API int turbo_demuxer_get_track_timing(
+    turbo_demuxer_t *demuxer, int stream_index,
+    turbo_demuxer_track_timing_v1 *timing);
 
 /**
  * 获取元数据

@@ -56,6 +56,18 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS Salts::Capture)
   elseif(TEST_NAME STREQUAL "test_codec")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec)
+  elseif(TEST_NAME STREQUAL "test_encoder" OR
+         TEST_NAME STREQUAL "test_encoder_video")
+    # Real encoder/muxer tests use existing repo-native CTest graph.
+    list(APPEND TEST_LINK_LIBS TurboMedia::Encoder
+                               TurboMediaFFmpeg::avcodec
+                               TurboMediaFFmpeg::avutil)
+    if(TEST_NAME STREQUAL "test_encoder_video")
+      # Independent FFmpeg Matroska parser/seek oracle in the existing native
+      # test only. Production WebM remains owned solely by TurboMedia::Muxer.
+      list(APPEND TEST_LINK_LIBS TurboMedia::Demuxer
+                                 TurboMediaFFmpeg::avformat)
+    endif()
   elseif(TEST_NAME STREQUAL "test_containers")
     list(APPEND TEST_LINK_LIBS TurboMedia::Muxer TurboMedia::Demuxer)
   elseif(TEST_NAME STREQUAL "test_integration")
@@ -106,6 +118,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
+  if(TEST_NAME STREQUAL "test_encoder")
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${STB_INCLUDE_DIR}
+      ${PROJECT_SOURCE_DIR}/encoder/src)
+  endif()
   
   # M15d: desktop-only real CNet RTSP/RFC2250 MPEG-2 RTP -> bounded
   # FFmpeg delayed Codec conformance. Compile the EXACT existing optional

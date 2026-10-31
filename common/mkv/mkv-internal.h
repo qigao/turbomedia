@@ -116,6 +116,9 @@ struct mkv_sample_t
 	int64_t pts;
 	uint32_t bytes;
 	uint64_t offset;
+    /* Signed Matroska BlockGroup/DiscardPadding, in nanoseconds.
+     * This is internal to the Reader; the public packet ABI is unchanged. */
+    int64_t discard_padding_ns;
 	void* data;
 };
 
@@ -188,6 +191,10 @@ struct mkv_track_t
 	// Number of nanoseconds (not scaled via TimestampScale) per frame 
 	// (frame in the Matroska sense -- one Element put into a (Simple)Block).
 	uint64_t duration;
+    /* Matroska TrackEntry values in nanoseconds. Opus requires both. */
+    uint64_t codec_delay_ns;
+    uint64_t seek_preroll_ns;
+    uint64_t tail_discard_ns; /* terminal Opus BlockGroup padding */
 	int64_t offset;
 
 	enum mkv_codec_t codecid;
@@ -239,6 +246,8 @@ int mkv_add_subtitle(struct mkv_track_t* track, enum mkv_codec_t codec, const vo
 
 int mkv_cluster_simple_block_read(struct mkv_t* mkv, struct mkv_cluster_t* cluster, struct mkv_ioutil_t* io, int64_t bytes);
 int mkv_cluster_simple_block_write(struct mkv_t* mkv, struct mkv_sample_t* sample, struct mkv_ioutil_t* io);
+int mkv_cluster_block_group_write(struct mkv_sample_t* sample,
+    struct mkv_ioutil_t* io, uint64_t tail_padding_ns);
 
 int mkv_cue_add(struct mkv_t* mkv, int track, int64_t timestamp, uint64_t cluster, uint64_t relative);
 void mkv_write_cues(struct mkv_ioutil_t* io, struct mkv_t* mkv);

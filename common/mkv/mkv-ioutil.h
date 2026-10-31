@@ -5,6 +5,8 @@
 #include "ebml.h"
 #include <stdint.h>
 #include <assert.h>
+#include <errno.h>
+#include <string.h>
 
 struct mkv_ioutil_t
 {
@@ -29,18 +31,37 @@ static inline uint64_t mkv_buffer_tell(const struct mkv_ioutil_t* io)
 
 static inline void mkv_buffer_seek(const struct mkv_ioutil_t* io, uint64_t offset)
 {
-	//	if (0 == io->error)
-	((struct mkv_ioutil_t*)io)->error = io->io.seek(io->param, offset);
+    if (!io) return;
+    /* The underlying seek callback takes int64_t. Do not implicitly
+     * reinterpret an out-of-range uint64_t as a negative SEEK_END offset.
+     * A valid explicit seek can still reset EOF for ordinary replay. */
+    if (!io->io.seek || offset > (uint64_t)INT64_MAX) {
+        ((struct mkv_ioutil_t*)io)->error = -ERANGE;
+        return;
+    }
+    ((struct mkv_ioutil_t*)io)->error =
+        io->io.seek(io->param, (int64_t)offset);
 }
 
 static inline void mkv_buffer_skip(struct mkv_ioutil_t* io, uint64_t bytes)
 {
-	uint64_t offset;
-	if (0 == io->error)
-	{
-		offset = io->io.tell(io->param);
-		io->error = io->io.seek(io->param, offset + bytes);
-	}
+    int64_t position;
+    if (!io || io->error) return;
+    if (!io->io.tell || !io->io.seek) {
+        io->error = -EINVAL;
+        return;
+    }
+    position = io->io.tell(io->param);
+    if (position < 0) {
+        io->error = -EIO;
+        return;
+    }
+    if (bytes > (uint64_t)INT64_MAX - (uint64_t)position) {
+        io->error = -ERANGE;
+        return;
+    }
+    io->error = io->io.seek(io->param,
+                             position + (int64_t)bytes);
 }
 
 static inline void mkv_buffer_read(struct mkv_ioutil_t* io, void* data, uint64_t bytes)
@@ -109,30 +130,59 @@ static inline void mkv_buffer_w64(const struct mkv_ioutil_t* io, uint64_t v)
 
 static inline uint64_t mkv_buffer_read_uint(struct mkv_ioutil_t* io, int n)
 {
-	uint64_t v;
-	v = 0;
-	while (n-- > 0)
-	{
-		v = (v << 8) | mkv_buffer_r8(io);
-	}
-	return v;
+    uint64_t value = 0;
+    int i;
+    if (!io) return 0;
+    /* Zero-byte unsigned EBML fields denote the default zero value.
+     * More than eight bytes must not silently truncate high-order data. */
+    if (n < 0 || n > 8) {
+        if (!io->error) io->error = -EINVAL;
+        return 0;
+    }
+    if (io->error) return 0;
+    for (i = 0; i < n; ++i) {
+        uint8_t byte = mkv_buffer_r8(io);
+        if (io->error) return 0;
+        value = (value << 8) | byte;
+    }
+    return value;
 }
 
 static inline int64_t mkv_buffer_read_int(struct mkv_ioutil_t* io, int n)
 {
-	int64_t v;
-	v = (int64_t)mkv_buffer_read_uint(io, n);
-
-	// sign_extend
-	return n < 1 ? 0 : ( (v & (1LL<<((n*8)-1))) ? v | (0xFFFFFFFFFFFFFFFFULL << (n*8)) : v);
+    uint64_t raw;
+    if (!io || n < 1 || n > 8) {
+        if (io) io->error = -1;
+        return 0;
+    }
+    raw = mkv_buffer_read_uint(io, n);
+    if (io->error != 0) return 0;
+    if (n < 8) {
+        /* Avoid shifting by 64 or shifting a signed 1 into its sign bit.
+         * Sign extension is carried out entirely as unsigned arithmetic. */
+        const unsigned shift = (unsigned)n * 8u;
+        const uint64_t sign = UINT64_C(1) << (shift - 1u);
+        if (raw & sign) raw |= UINT64_MAX << shift;
+    }
+    /* Converting an out-of-range uint64_t directly to int64_t is
+     * implementation-defined. This form is valid even at INT64_MIN. */
+    return raw <= (uint64_t)INT64_MAX ?
+        (int64_t)raw : -1 - (int64_t)(~raw);
 }
 
 static inline void mkv_buffer_write_master(struct mkv_ioutil_t* io, uint32_t id, uint64_t size, unsigned int bytes)
 {
-	unsigned int n;
-	uint8_t buf[4 + 8];
-	n = ebml_write_element(buf, id, size, bytes);
-	mkv_buffer_write(io, buf, n);
+    unsigned int n;
+    uint8_t buf[4 + 8];
+    if (!io || io->error != 0) return;
+    n = ebml_write_element(buf, id, size, bytes);
+    if (!n) {
+        /* Invalid size must not be emitted as a valid-looking VINT,
+         * nor should it be hidden behind a zero-length write. */
+        io->error = -ERANGE;
+        return;
+    }
+    mkv_buffer_write(io, buf, n);
 }
 
 static inline void mkv_buffer_write_uint_element(struct mkv_ioutil_t* io, uint32_t id, uint64_t v)
@@ -160,8 +210,12 @@ static inline void mkv_buffer_write_uint_element(struct mkv_ioutil_t* io, uint32
 
 static inline void mkv_buffer_write_double_element(struct mkv_ioutil_t* io, uint32_t id, double v)
 {
-	mkv_buffer_write_master(io, id, 8, 0);
-	mkv_buffer_w64(io, *(uint64_t*)&v);
+    uint64_t bits = 0;
+    /* Matroska Float width 8 is IEEE-754 binary64 in network byte order.
+     * Copy the representation without violating C11 strict aliasing. */
+    memcpy(&bits, &v, sizeof(bits));
+    mkv_buffer_write_master(io, id, 8, 0);
+    mkv_buffer_w64(io, bits);
 }
 
 static inline void mkv_buffer_write_string_element(struct mkv_ioutil_t* io, uint32_t id, const char* s, size_t n)

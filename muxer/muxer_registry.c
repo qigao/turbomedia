@@ -120,6 +120,25 @@ const turbo_muxer_ops_t *turbo_muxer_find_by_extension(const char *ext) {
     return NULL;
 }
 
+#ifdef TURBO_MEDIA_HAS_MKV
+int turbo_mkv_muxer_set_memory_limit(void *ctx, size_t limit);
+int turbo_mkv_muxer_write_packet_with_discard_padding(
+    void *ctx, const turbo_muxer_packet_t *packet, uint64_t padding_ns);
+#endif
+
+int turbo_muxer_set_memory_limit(turbo_muxer_t *muxer, size_t limit) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    if (!muxer || !muxer->ctx || muxer->config.output_path ||
+        !muxer->ops || muxer->ops->format != TURBO_MUXER_WEBM)
+        return -1;
+    return turbo_mkv_muxer_set_memory_limit(muxer->ctx, limit);
+#else
+    (void)muxer;
+    (void)limit;
+    return -1;
+#endif
+}
+
 /* =============================================================================
  * Muxer Instance Functions
  * ============================================================================= */
@@ -216,6 +235,26 @@ int turbo_muxer_write_packet(turbo_muxer_t *muxer,
     }
 
     return muxer->ops->write_packet(muxer->ctx, packet);
+}
+
+int turbo_muxer_write_packet_with_discard_padding(
+    turbo_muxer_t *muxer, const turbo_muxer_packet_t *packet,
+    uint64_t discard_padding_ns) {
+#ifdef TURBO_MEDIA_HAS_MKV
+    int result;
+    if (!muxer || !muxer->ctx || !packet ||
+        muxer->ops != &turbo_webm_muxer_ops || discard_padding_ns == 0)
+        return -1;
+    if (!muxer->header_written) {
+        result = turbo_muxer_write_header(muxer);
+        if (result != 0) return result;
+    }
+    return turbo_mkv_muxer_write_packet_with_discard_padding(
+        muxer->ctx, packet, discard_padding_ns);
+#else
+    (void)muxer; (void)packet; (void)discard_padding_ns;
+    return -1;
+#endif
 }
 
 int turbo_muxer_write_trailer(turbo_muxer_t *muxer) {

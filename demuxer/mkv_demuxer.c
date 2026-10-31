@@ -263,12 +263,33 @@ static int mkv_demuxer_read_packet_impl(void *ctx_ptr,
     return result;
 }
 
+/* The existing read_packet implementation keeps the current Reader,
+ * ownership and packet ABI intact; this is a non-virtual extension for
+ * callers that need exact signed BlockGroup trimming. */
+int turbo_mkv_demuxer_last_discard_padding_ns(
+    void *ctx_ptr, int64_t *padding_ns) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    if (!ctx || !ctx->opened || !ctx->reader || !padding_ns)
+        return SALTS_EINVAL;
+    return mkv_reader_last_discard_padding_ns(ctx->reader, padding_ns);
+}
+
 static int mkv_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     int64_t timestamp = timestamp_ms;
     (void)flags;
     if (!ctx || !ctx->opened || timestamp_ms < 0) return SALTS_EINVAL;
     return mkv_reader_seek(ctx->reader, &timestamp);
+}
+
+/* Conservative cue placement for Opus preroll. Unlike the legacy seek
+ * which returns the nearest cue, this one only selects cue <= threshold. */
+int turbo_mkv_demuxer_seek_floor(void *ctx_ptr, int64_t *timestamp_ms) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    if (!ctx || !ctx->opened || !ctx->reader || !timestamp_ms ||
+        *timestamp_ms < 0)
+        return SALTS_EINVAL;
+    return mkv_reader_seek_floor(ctx->reader, timestamp_ms);
 }
 
 static int mkv_demuxer_get_stream_count_impl(void *ctx_ptr) {
@@ -288,6 +309,23 @@ static int mkv_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
     if (!stream) return SALTS_EINVAL;
     *info = stream->info;
     return SALTS_OK;
+}
+
+/* Query parsed TrackEntry elements by the real EBML TrackNumber. This
+ * maps public stream indexes without deriving delay from the OpusHead. */
+int turbo_mkv_demuxer_get_track_timing(
+    void *ctx_ptr, int stream_index,
+    uint64_t *codec_delay_ns, uint64_t *seek_preroll_ns) {
+    mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
+    const mkv_demuxer_stream_t *stream;
+    if (!ctx || !ctx->opened || !ctx->reader || stream_index < 0 ||
+        !codec_delay_ns || !seek_preroll_ns)
+        return SALTS_EINVAL;
+    stream = (const mkv_demuxer_stream_t *)vec_at_const(
+        &ctx->streams, (size_t)stream_index);
+    if (!stream) return SALTS_EINVAL;
+    return mkv_reader_get_track_timing_ns(
+        ctx->reader, stream->track, codec_delay_ns, seek_preroll_ns);
 }
 
 static int mkv_demuxer_get_metadata_impl(void *ctx_ptr,

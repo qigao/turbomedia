@@ -178,6 +178,13 @@ TURBO_MEDIA_API int turbo_muxer_add_stream(turbo_muxer_t *muxer,
 /**
  * 写入头部
  */
+/* Strictly bound the in-memory WebM writer before publishing packets.
+ * Does not modify any public config struct or change file-backed writers.
+ * Existing bytes larger than limit reject immediately. The limit also applies
+ * to subsequent seek expansion, not only to append writes. */
+TURBO_MEDIA_API int turbo_muxer_set_memory_limit(turbo_muxer_t *muxer,
+                                                size_t max_output_bytes);
+
 TURBO_MEDIA_API int turbo_muxer_write_header(turbo_muxer_t *muxer);
 
 /**
@@ -185,6 +192,13 @@ TURBO_MEDIA_API int turbo_muxer_write_header(turbo_muxer_t *muxer);
  */
 TURBO_MEDIA_API int turbo_muxer_write_packet(turbo_muxer_t *muxer,
                                        const turbo_muxer_packet_t *packet);
+
+/* ABI-preserving WebM Opus terminal packet path. Positive nanoseconds
+ * trim the END of this Block. Only the built-in WebM Opus track accepts
+ * it; later packets on the same trimmed audio track are rejected. */
+TURBO_MEDIA_API int turbo_muxer_write_packet_with_discard_padding(
+    turbo_muxer_t *muxer, const turbo_muxer_packet_t *packet,
+    uint64_t discard_padding_ns);
 
 /**
  * 写入尾部

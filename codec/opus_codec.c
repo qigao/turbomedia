@@ -254,6 +254,18 @@ static void turbo_opus_set_bitrate(void *ctx_ptr, int bitrate_bps) {
  * Common Functions
  * ============================================================================= */
 
+int turbo_opus_encoder_lookahead(void *opaque, uint32_t *lookahead) {
+    opus_encoder_ctx_t *ctx = (opus_encoder_ctx_t *)opaque;
+    opus_int32 samples = 0;
+    if (!ctx || !ctx->is_encoder_ctx || !ctx->encoder || !lookahead)
+        return TURBO_CODEC_ERR_INVALID;
+    if (opus_encoder_ctl(ctx->encoder, OPUS_GET_LOOKAHEAD(&samples)) != OPUS_OK ||
+        samples < 0)
+        return TURBO_CODEC_ERR_CODEC;
+    *lookahead = (uint32_t)samples;
+    return TURBO_CODEC_OK;
+}
+
 static void turbo_opus_destroy(void *ctx_ptr) {
     opus_encoder_ctx_t *enc = (opus_encoder_ctx_t *)ctx_ptr;
     opus_decoder_ctx_t *dec = (opus_decoder_ctx_t *)ctx_ptr;

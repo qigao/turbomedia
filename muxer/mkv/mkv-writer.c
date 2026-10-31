@@ -25,20 +25,34 @@ struct mkv_writer_t
     uint64_t segment_offset;
 };
 
+/* Void payload bytes have no semantics, but seek-forward alone can
+ * expose uninitialized storage in memory-backed output (or sparse holes in
+ * file-backed output). Serialize deterministic zero bytes in bounded chunks
+ * without allocating another buffer or changing on-disk element sizes. */
 static void mkv_write_void(struct mkv_ioutil_t* io, uint32_t size)
 {
-    assert(size >= 2);
-    if (size < 10)
-    {
-        // 1-byte length
-        mkv_buffer_write_master(io, EMLB_ID_VOID, size - 2, 0);
-        mkv_buffer_skip(io, size - 2);
+    static const uint8_t zeros[32] = {0};
+    uint32_t remaining;
+
+    if (!io) return;
+    if (size < 2u) {
+        io->error = -EINVAL;
+        return;
     }
-    else
-    {
-        // 8-bytes length
-        mkv_buffer_write_master(io, EMLB_ID_VOID, size - 9, 8);
-        mkv_buffer_skip(io, size - 9);
+    if (size < 10u) {
+        /* One-byte size VINT; total encoded element length is 'size'. */
+        remaining = size - 2u;
+        mkv_buffer_write_master(io, EMLB_ID_VOID, remaining, 0);
+    } else {
+        /* Eight-byte size VINT; preserve the existing reserved layout. */
+        remaining = size - 9u;
+        mkv_buffer_write_master(io, EMLB_ID_VOID, remaining, 8);
+    }
+    while (remaining && io->error == 0) {
+        uint32_t count = remaining < sizeof(zeros) ?
+                         remaining : (uint32_t)sizeof(zeros);
+        mkv_buffer_write(io, zeros, count);
+        remaining -= count;
     }
 }
 
@@ -106,9 +120,13 @@ static void mkv_write_seek_head(struct mkv_ioutil_t *io, const struct mkv_segmen
 static void mkv_write_info(struct mkv_ioutil_t* io, struct mkv_writer_t* writer)
 {
     uint64_t offset;
-    uint8_t uid[16]; // 128-bits
     int live = (MKV_OPTION_LIVE & writer->options) ? 1 : 0;
-    int size = 7 /*timescale*/ + 2 * (3 + strlen(MKV_APP)) + 19 /*SegmentUID*/ + (live ? 0 : 11 /*duration*/);
+    /* SegmentUUID (0x73A4) is optional for unlinked WebM.
+     * The former writer serialized an UNINITIALIZED 16-byte stack buffer,
+     * leaking memory and emitting an invalid, unowned identifier.
+     * Omit the element until a real segment identity is supplied. */
+    int size = 7 /*timescale*/ + 2 * (3 + strlen(MKV_APP)) +
+               (live ? 0 : 11 /*duration*/);
 
     // Segment/Info
     mkv_buffer_write_master(io, EBML_ID_INFO, size, 0);
@@ -117,8 +135,7 @@ static void mkv_write_info(struct mkv_ioutil_t* io, struct mkv_writer_t* writer)
     mkv_buffer_write_uint_element(io, 0x2AD7B1, writer->mkv.timescale); // TimestampScale
     mkv_buffer_write_string_element(io, 0x4D80, MKV_APP, strlen(MKV_APP)); // MuxingApp
     mkv_buffer_write_string_element(io, 0x5741, MKV_APP, strlen(MKV_APP)); // WritingApp
-    mkv_buffer_write_binary_element(io, 0x73A4, uid, sizeof(uid)); // SegmentUID
-    
+
     if (!live)
     {
         writer->info_duration_offset = mkv_buffer_tell(io);
@@ -239,8 +256,20 @@ void mkv_writer_destroy(struct mkv_writer_t* writer)
             track->duration = track->last_ts - track->first_ts;
             if (track->sample_count > 1)
                 track->duration += track->duration / (track->sample_count - 1); // duration += avg-duration
-            if ((double)track->duration > mkv->duration)
-                mkv->duration = (double)track->duration; // maximum track duration
+            /* CodecDelay consumes initial samples and terminal
+             * DiscardPadding consumes padded output. Both affect the
+             * actual playing duration of an Opus track. */
+            {
+                double played_ms = (double)track->duration;
+                if (track->codecid == MKV_CODEC_AUDIO_OPUS) {
+                    double trimmed_ms = ((double)track->codec_delay_ns +
+                                         (double)track->tail_discard_ns) / 1000000.0;
+                    played_ms = played_ms > trimmed_ms ?
+                                played_ms - trimmed_ms : 0.0;
+                }
+                if (played_ms > mkv->duration)
+                    mkv->duration = played_ms;
+            }
         }
 
         // Segment Information -> Duration
@@ -259,7 +288,9 @@ void mkv_writer_destroy(struct mkv_writer_t* writer)
     free(writer);
 }
 
-int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, size_t bytes, int64_t pts, int64_t dts, int flags)
+int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
+    int tid, const void* data, size_t bytes, int64_t pts, int64_t dts,
+    int flags, uint64_t discard_padding_ns)
 {
     int r;
     int64_t ts, diff;
@@ -272,29 +303,69 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
     struct mkv_sample_t sample;
     struct mkv_cluster_t* cluster;
 
-    assert(bytes < UINT32_MAX && bytes < UINT32_MAX - 16);
+    if (!writer || !data || !bytes || bytes >= UINT32_MAX - 32)
+        return -EINVAL;
     if (tid < 1 || tid > (int)writer->mkv.track_count) // base from 1
         return -ENOENT;
     
     mkv = &writer->mkv;
     track = &mkv->tracks[tid -1];
     cluster = &writer->cluster;
+    if (track->tail_discard_ns ||
+        (discard_padding_ns &&
+         (track->codecid != MKV_CODEC_AUDIO_OPUS ||
+          discard_padding_ns >= UINT64_C(20000000))))
+        return -EINVAL;
 
+    /* This Writer fixes TimestampScale at 1 ms (one million ns).
+     * Check public timestamps before touching any output: the old
+     * ts * 1000000 and signed additions could overflow, and large
+     * relative Block timecodes were silently truncated to int16_t. */
+    if (writer->io.error != 0)
+        return writer->io.error;
+    if (mkv->timescale != UINT64_C(1000000))
+        return -EINVAL;
     ts = writer->use_dts ? dts : pts;
+    if ((writer->segment_ts > 0 &&
+         ts > INT64_MAX - writer->segment_ts) ||
+        (writer->segment_ts < 0 &&
+         ts < INT64_MIN - writer->segment_ts))
+        return -ERANGE;
     ts += writer->segment_ts;
-    duration = ts - cluster->timestamp;
-    
-    new_cluster = 0;
-    key_frame = (flags & MKV_FLAGS_KEYFRAME) && mkv_codec_is_video(track->codecid) ? 1 : 0;
+    if (ts < INT16_MIN ||
+        (ts >= 0 && (uint64_t)ts > UINT64_MAX / mkv->timescale) ||
+        cluster->timestamp > INT64_MAX ||
+        (ts < 0 &&
+         cluster->timestamp > (uint64_t)(INT64_MAX + ts)))
+        return -ERANGE;
+    duration = ts - (int64_t)cluster->timestamp;
 
-    cluster_size = mkv_buffer_tell(&writer->io) - cluster->position;
-    if (cluster->position < 1 || cluster_size + bytes > UINT32_MAX
-        || cluster_size + bytes >= writer->cluster_limit_size
-        || duration > writer->cluster_limit_duration + 30000 /*30s*/
-        || (duration >= writer->cluster_limit_duration && (!writer->has_video || key_frame)))
+    new_cluster = 0;
+    key_frame = (flags & MKV_FLAGS_KEYFRAME) &&
+                mkv_codec_is_video(track->codecid) ? 1 : 0;
+
     {
-        new_cluster = 1;
+        uint64_t current = mkv_buffer_tell(&writer->io);
+        if (writer->io.error != 0 || current < cluster->position)
+            return -EIO;
+        cluster_size = current - cluster->position;
     }
+    /* A Block relative timestamp is a signed 16-bit tick count.
+     * Roll over even when video has not yet reached its next keyframe;
+     * otherwise a 32.768s gap silently wraps the written timestamp. */
+    if (cluster->position < 1 ||
+        cluster_size > UINT32_MAX - bytes ||
+        cluster_size + bytes >= writer->cluster_limit_size ||
+        duration < INT16_MIN || duration > INT16_MAX ||
+        duration > writer->cluster_limit_duration + 30000 /*30s*/ ||
+        (duration >= writer->cluster_limit_duration &&
+         (!writer->has_video || key_frame)))
+        new_cluster = 1;
+    /* A valid negative preroll at the start of the file can use a
+     * zero Cluster Timestamp and a signed negative Block delta.
+     * Never create a backward Cluster if one already exists. */
+    if (new_cluster && ts < 0 && cluster->position > 0)
+        return -ERANGE;
 
     if (new_cluster)
     {
@@ -311,18 +382,22 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
         }
 
         writer->has_video = 0; // clear video flag
-        cluster->timestamp = ts;
+        cluster->timestamp = ts < 0 ? 0u : (uint64_t)ts;
         cluster->prev_size = 0;
         cluster->position = mkv_buffer_tell(&writer->io); // don't with id
 
         // Segment/Cluster
         mkv_buffer_write_master(&writer->io, EBML_ID_CLUSTER, 0x0FFFFFFF, 4); // placeholder
-        mkv_buffer_write_uint_element(&writer->io, 0xE7, ts); // Segment/Cluster/Timestamp
+        mkv_buffer_write_uint_element(&writer->io, 0xE7, cluster->timestamp);
     }
 
-    // fix: case on ts - cluster->timestamp < 0
-    //ts = (ts - cluster->timestamp) * 1000000 / mkv->timescale;
-    diff = ts * 1000000 / mkv->timescale - cluster->timestamp * 1000000 / mkv->timescale;
+    if (writer->io.error != 0)
+        return writer->io.error;
+    /* Since TimestampScale is exactly 1 ms, subtraction is the
+     * complete conversion: no overflowing multiply, no truncation. */
+    diff = ts - (int64_t)cluster->timestamp;
+    if (diff < INT16_MIN || diff > INT16_MAX)
+        return -ERANGE;
 
     memset(&sample, 0, sizeof(sample));
     sample.track = tid;
@@ -333,13 +408,35 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
     sample.pts = diff;
     sample.dts = diff;
 
-    r = mkv_cluster_simple_block_write(mkv, &sample, &writer->io);
+    r = discard_padding_ns ?
+        mkv_cluster_block_group_write(&sample, &writer->io, discard_padding_ns) :
+        mkv_cluster_simple_block_write(mkv, &sample, &writer->io);
     if (r < 0)
         return r;
+    if (discard_padding_ns)
+        track->tail_discard_ns = discard_padding_ns;
 
-    if (key_frame)
+    /* Negative preroll Blocks are legal, but CueTime is unsigned.
+     * The first nonnegative keyframe is a usable seek anchor. */
+    if (key_frame && ts >= 0)
     {
-        r = mkv_cue_add(mkv, tid, ts, cluster->position, sample.offset-cluster->position);
+        uint64_t segment_data_start, cluster_data_start;
+        /* RFC 9559 Segment Position: CueClusterPosition is measured
+         * from Segment payload, not from the beginning of the file.
+         * CueRelativePosition is measured from Cluster payload, not
+         * from its EBML ID. Both headers have a fixed 8-byte length
+         * field in this owned writer. */
+        if (writer->segment_offset > UINT64_MAX - 8u ||
+            cluster->position > UINT64_MAX - 8u)
+            return -ERANGE;
+        segment_data_start = writer->segment_offset + 8u;
+        cluster_data_start = cluster->position + 8u;
+        if (cluster->position < segment_data_start ||
+            sample.offset < cluster_data_start)
+            return -EINVAL;
+        r = mkv_cue_add(mkv, tid, ts,
+                        cluster->position - segment_data_start,
+                        sample.offset - cluster_data_start);
         if (0 != r)
             return r;
     }
@@ -353,6 +450,13 @@ int mkv_writer_write(struct mkv_writer_t* writer, int tid, const void* data, siz
         writer->has_video = 1;
 
     return mkv_buffer_error(&writer->io);
+}
+
+int mkv_writer_write(struct mkv_writer_t* writer, int tid,
+    const void* data, size_t bytes, int64_t pts, int64_t dts, int flags)
+{
+    return mkv_writer_write_with_discard_padding(
+        writer, tid, data, bytes, pts, dts, flags, 0);
 }
 
 int mkv_writer_add_audio(struct mkv_writer_t* writer, enum mkv_codec_t codec, int channel_count, int bits_per_sample, int sample_rate, const void* extra_data, size_t extra_data_size)

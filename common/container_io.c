@@ -70,6 +70,7 @@ int turbo_container_io_open_writer(turbo_container_io_t *io, const char *path) {
     memset(io, 0, sizeof(*io));
     io->file = SALTS_INVALID_FILE;
     io->error = SALTS_OK;
+    io->max_output_bytes = SIZE_MAX;
     if (path) {
         io->file = cmeta_fs_open(path, SALTS_FS_O_RDWR | SALTS_FS_O_CREAT |
                                            SALTS_FS_O_TRUNC,
@@ -183,6 +184,17 @@ int turbo_container_io_read_some(turbo_container_io_t *io, void *data,
     return SALTS_OK;
 }
 
+int turbo_container_io_set_memory_limit(turbo_container_io_t *io,
+                                        size_t max_output_bytes) {
+    if (!io || io->mode != TURBO_CONTAINER_IO_MEMORY_WRITE ||
+        max_output_bytes == 0)
+        return SALTS_EINVAL;
+    if (vec_size(&io->output) > max_output_bytes)
+        return SALTS_EFBIG;
+    io->max_output_bytes = max_output_bytes;
+    return SALTS_OK;
+}
+
 int turbo_container_io_write(void *param, const void *data, uint64_t bytes) {
     turbo_container_io_t *io = (turbo_container_io_t *)param;
     size_t count;
@@ -200,6 +212,8 @@ int turbo_container_io_write(void *param, const void *data, uint64_t bytes) {
         return container_io_fail(io, SALTS_EFBIG);
 
     required = io->position + count;
+    if (required > io->max_output_bytes)
+        return container_io_fail(io, SALTS_EFBIG);
     if (required > vec_size(&io->output)) {
         result = turbo_media_stl_status_to_error(vec_resize(&io->output, required));
         if (result != SALTS_OK) return container_io_fail(io, result);
@@ -238,6 +252,9 @@ int turbo_container_io_seek(void *param, int64_t offset) {
 
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_READ && target > size)
         return container_io_fail(io, SALTS_ERANGE);
+    if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE &&
+        target > io->max_output_bytes)
+        return container_io_fail(io, SALTS_EFBIG);
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE && target > size) {
         int resize_result = turbo_media_stl_status_to_error(
             vec_resize(&io->output, target));

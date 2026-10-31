@@ -178,6 +178,7 @@ add_subdirectory(streamgraph) # Shared platform C11 typed-graph component (no FF
 add_subdirectory(crypto)
 add_subdirectory(speech)
 add_subdirectory(codec)
+add_subdirectory(encoder)
 add_subdirectory(muxer)
 add_subdirectory(demuxer)
 add_subdirectory(network)
@@ -212,7 +213,7 @@ install(
 
 install(
   DIRECTORY core/include/ crypto/include/ speech/include/ recognition/include/
-             muxer/include/ demuxer/include/ network/include/
+             encoder/include/ muxer/include/ demuxer/include/ network/include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   FILES_MATCHING PATTERN "*.h")
 install(

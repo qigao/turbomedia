@@ -22,3 +22,65 @@ Player 提供阻塞和后台线程两种播放流程：
 - `turbo_player_seek_ms`：请求时间戳跳转并刷新解码状态。
 
 `ffmpeg_probe` 也接受 `--async` 和 `--seek-ms N`，用于冒烟验证这些路径。
+
+## Bounded raw-image Encoder — Draft API
+
+`TurboMedia::Encoder` has a versioned C11 one-shot `tm_encoder_image_encode()`
+for borrowed GRAY8/GA8/RGB24/RGBA32 frames. PNG/JPEG are implemented
+by the single required stb provider inside `TurboMedia::Encoder`, with a
+quota-bounded memory writer. WebP calls the exact selected FFmpeg backend
+and reports `TM_ENCODER_EUNSUPPORTED` if it is not available. No format
+has an alternate runtime fallback provider.
+
+PNG preserves native `parameters` tEXt and JPEG the sd-style `parameters`
+COM marker. These additions are bounded and tested by decoding the resulting
+image. WebP XMP is now written by TurboMedia into a validated
+extended RIFF/VP8X still image. The WebP source must be an available real
+FFmpeg WebP codec; callers supply complete UTF-8 XMP XML, and the internal
+RIFF rewrite rejects duplicate XMP, animation, malformed input, unsupported
+chunks, and over-capacity metadata without selecting a fallback.
+The in-repo RIFF tests run even on SDKs without an FFmpeg WebP encoder.
+
+**Still not sd migration-ready:** a real WebP encode+XMP test on a platform
+with that codec enabled, audio+video mux, AVI/animated WebP compatibility,
+and platform SDK qualification remain open. No existing sd runtime changes.
+
+The same versioned C11 Encoder now includes a first **silent VP8/WebM**
+one-shot media path: borrowed raw frame arrays are converted to I420, encoded
+by the existing `TurboMedia::Codec` VP8 and packaged by the existing
+`TurboMedia::Muxer` WebM. The owner checks packet failures, frame order,
+codec errors, cancellation between frames, and complete-container output
+before invoking the caller's sink. The in-repo native test uses the real
+`TurboMedia::Demuxer` to inspect encoded VP8 packets.
+
+**Opus pre-skip prerequisite:** `TurboMedia::Codec` now exposes an
+owner-safe `turbo_codec_opus_lookahead_samples()` query on the actual encoder,
+instead of assuming a fixed delay. The shared Matroska/WebM track writer
+validates the supplied `OpusHead`, computes CodecDelay using its 48kHz
+pre-skip timebase and writes both CodecDelay and 80ms SeekPreRoll. Existing
+`turbo_stream_info_t` and muxer public struct layouts are unchanged.
+The in-repo native CTests inspect both emitted Matroska fields and reject
+missing/mismatched OpusHead metadata.
+
+The `tm_encoder_webm_encode_av_v2()` entrypoint adds a **strict**
+borrowed interleaved float-PCM soundtrack. The first qualified A/V profile
+accepts 48 kHz mono/stereo audio whose duration exactly matches the VP8
+frame sequence and consists of complete 20ms Opus frames. Invalid float
+samples (NaN/Inf), capacity errors and cancellation fail before publishing
+any output. TurboMedia converts finite PCM to PCM16 using a bounded
+per-packet stack buffer, calls its **existing Opus Codec**, builds
+`OpusHead` with the real encoder pre-skip and interleaves packets by PTS
+through its **existing WebM Muxer**. The original `tm_encoder_webm_encode()`
+remains silent-only and explicitly rejects audio arguments.
+
+**Strict remaining limitations:** other source sample rates, fractional
+last Opus frames, resampling, sample-accurate end trimming and actual sd
+integration remain open in Issue #274. They return EUNSUPPORTED rather
+than silently truncating, resampling, or dropping soundtrack data. The WebM in-memory writer now enforces the
+per-task output limit during write and seek; this still does not bound
+libvpx/swscale working-set allocations or network reader copies.
+Animated WebP, AVI, WebP XMP, audio+video interleaving, bounded muxer internal
+storage and verified Windows SDK still remain open. No silent fallback. The existing
+sd local output must not be misidentified as TurboMedia-backed until these
+contracts, exact package identity and platform-native CI pass.
+See [Issue #272](https://github.com/qigao/turbomedia/issues/272).
