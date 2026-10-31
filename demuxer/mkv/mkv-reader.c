@@ -194,35 +194,99 @@ static int ebml_value_parse_double(struct mkv_reader_t* reader,
     return 0;
 }
 
-static int ebml_value_parse_binary(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+/* Non-master EBML strings/binary values MUST have a known, representable
+ * length. Do not malloc the advertised size before the bytes are actually
+ * available: corrupt VINTs could otherwise reserve a huge allocation or
+ * overflow the NUL byte on signed size arithmetic. A 4KB chunked read
+ * preserves full-size legitimate CodecPrivate, names, tags and attachments,
+ * without inventing a fixed size limit or a second parser. */
+static int ebml_read_owned_bytes(
+    struct mkv_reader_t* reader, const struct mkv_element_node_t* node,
+    void** output)
 {
-	struct ebml_binary_t* v;
-	assert(node->parent);
-	v = (struct ebml_binary_t*)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_STRING == node->e->type || EBML_TYPE_UTF8 == node->e->type || EBML_TYPE_BINARY == node->e->type);
-
-	v->len = node->size;
-	v->ptr = malloc(node->size + 1);
-	if (!v->ptr)
-		return -ENOMEM;
-	((char*)v->ptr)[v->len] = 0;
-	mkv_buffer_read(&reader->io, v->ptr, v->len);
-	return mkv_buffer_error(&reader->io);
+    const size_t chunk_limit = 4096u;
+    uint8_t* buf = NULL;
+    size_t length, offset = 0, capacity = 0;
+    if (!reader || !node || !output || node->size < 0 ||
+        (uint64_t)node->size >= SIZE_MAX)
+        return -EINVAL;
+    length = (size_t)node->size;
+    while (offset < length) {
+        size_t chunk = length - offset;
+        size_t need;
+        if (chunk > chunk_limit) chunk = chunk_limit;
+        need = offset + chunk + 1u; /* length <= SIZE_MAX-1 */
+        if (need > capacity) {
+            size_t next = capacity ? capacity : need;
+            void* grown;
+            while (next < need) {
+                if (next > SIZE_MAX / 2u) {
+                    next = need;
+                    break;
+                }
+                next *= 2u;
+            }
+            grown = realloc(buf, next);
+            if (!grown) {
+                free(buf);
+                return -ENOMEM;
+            }
+            buf = (uint8_t*)grown;
+            capacity = next;
+        }
+        mkv_buffer_read(&reader->io, buf + offset, chunk);
+        if (reader->io.error != 0) {
+            int error = reader->io.error;
+            free(buf);
+            return error;
+        }
+        offset += chunk;
+    }
+    if (!buf) {
+        buf = (uint8_t*)malloc(1u);
+        if (!buf) return -ENOMEM;
+    }
+    buf[length] = 0;
+    *output = buf;
+    return 0;
 }
 
-static int ebml_value_parse_string(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+static int ebml_value_parse_binary(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
 {
-	void** v;
-	assert(node->parent);
-	v = (void**)((uint8_t*)node->parent->ptr + node->e->offset);
-	assert(EBML_TYPE_STRING == node->e->type || EBML_TYPE_UTF8 == node->e->type || EBML_TYPE_BINARY == node->e->type);
+    struct ebml_binary_t* value;
+    void* bytes = NULL;
+    int r;
+    if (!node || !node->e || !node->parent || !node->parent->ptr ||
+        (node->e->type != EBML_TYPE_STRING &&
+         node->e->type != EBML_TYPE_UTF8 &&
+         node->e->type != EBML_TYPE_BINARY))
+        return -EINVAL;
+    r = ebml_read_owned_bytes(reader, node, &bytes);
+    if (r != 0) return r;
+    value = (struct ebml_binary_t*)((uint8_t*)node->parent->ptr +
+                                   node->e->offset);
+    value->ptr = bytes;
+    value->len = (size_t)node->size;
+    return 0;
+}
 
-	*v = malloc(node->size + 1);
-	if (!*v)
-		return -ENOMEM;
-	((char*)*v)[node->size] = 0;
-	mkv_buffer_read(&reader->io, *v, node->size);
-	return mkv_buffer_error(&reader->io);
+static int ebml_value_parse_string(
+    struct mkv_reader_t* reader, struct mkv_element_node_t* node)
+{
+    void** value;
+    void* bytes = NULL;
+    int r;
+    if (!node || !node->e || !node->parent || !node->parent->ptr ||
+        (node->e->type != EBML_TYPE_STRING &&
+         node->e->type != EBML_TYPE_UTF8 &&
+         node->e->type != EBML_TYPE_BINARY))
+        return -EINVAL;
+    r = ebml_read_owned_bytes(reader, node, &bytes);
+    if (r != 0) return r;
+    value = (void**)((uint8_t*)node->parent->ptr + node->e->offset);
+    *value = bytes;
+    return 0;
 }
 
 static int ebml_value_parse_utf8(struct mkv_reader_t* reader, struct mkv_element_node_t* node)
@@ -1038,12 +1102,14 @@ static int mkv_reader_build(mkv_reader_t* reader)
 	for (i = 0; i < reader->mkv.track_count; i++)
 	{
 		track = &reader->mkv.tracks[i];
+        /* CodecID is required to identify packet semantics. A missing or
+         * unknown CodecID is a malformed/unsupported TrackEntry, never a
+         * reason to assert or dereference track->name[0] later. */
+        if (!track->name || !track->name[0])
+            return -EINVAL;
 		track->codecid = mkv_codec_find_id(track->name);
-		if (MKV_CODEC_UNKNOWN == track->codecid)
-		{
-			assert(0);
-			return -1;
-		}
+        if (MKV_CODEC_UNKNOWN == track->codecid)
+            return -ENOTSUP;
 
 		// Number of nanoseconds (not scaled via TimestampScale) per frame 
 		// ('frame' in the Matroska sense -- one Element put into a (Simple)Block).

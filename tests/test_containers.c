@@ -455,6 +455,74 @@ suite("container adapters") {
             turbo_demuxer_destroy(demuxer);
             turbo_muxer_destroy(muxer);
         }
+        it("round trips CodecPrivate larger than the 4KB parser chunk") {
+            uint8_t private_data[9001];
+            const uint8_t frame[] = {0x7fu, 0xfbu, 0x90u, 0x64u};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t source = {0}, decoded_info = {0};
+            turbo_muxer_packet_t pkt = {0};
+            turbo_demuxer_config_t demux_config = {0};
+            turbo_demuxer_packet_t decoded = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *bytes = NULL;
+            size_t count = 0, i;
+            int track = -1, result;
+            for (i = 0; i < sizeof(private_data); ++i)
+                private_data[i] = (uint8_t)(i * 37u + 19u);
+            config.format = TURBO_MUXER_MKV;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            source.type = TURBO_CODEC_TYPE_AUDIO;
+            source.codec_name = "mp3";
+            source.channels = 2;
+            source.sample_rate = 44100;
+            source.extradata = private_data;
+            source.extradata_size = sizeof(private_data);
+            result = turbo_muxer_add_stream(muxer, &source, &track);
+            check_equal(result, 0);
+            if (result != 0) goto large_private_cleanup;
+            pkt.stream_id = track;
+            pkt.data = frame;
+            pkt.size = sizeof(frame);
+            pkt.duration = 26000;
+            pkt.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &pkt), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            result = turbo_muxer_get_data(muxer, &bytes, &count);
+            check_equal(result, 0);
+            if (result != 0 || !bytes || !count)
+                goto large_private_cleanup;
+            demux_config.data = bytes;
+            demux_config.data_size = count;
+            demuxer = turbo_demuxer_create_by_name("mkv", &demux_config);
+            check_not_null(demuxer);
+            if (!demuxer) goto large_private_cleanup;
+            result = turbo_demuxer_open(demuxer);
+            check_equal(result, 0);
+            if (result != 0) goto large_private_cleanup;
+            result = turbo_demuxer_get_stream_info(
+                demuxer, 0, &decoded_info);
+            check_equal(result, 0);
+            if (result != 0) goto large_private_cleanup;
+            check_equal(decoded_info.extradata_size, sizeof(private_data));
+            check_not_null(decoded_info.extradata);
+            if (decoded_info.extradata &&
+                decoded_info.extradata_size == sizeof(private_data))
+                check_equal(decoded_info.extradata,
+                            private_data, sizeof(private_data));
+            result = turbo_demuxer_read_packet(demuxer, &decoded);
+            check_equal(result, 1);
+            if (result == 1) {
+                check_equal(decoded.size, sizeof(frame));
+                check_equal(decoded.data, frame, sizeof(frame));
+            }
+        large_private_cleanup:
+            turbo_demuxer_free_packet(&decoded);
+            turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
     }
 
     group("native Matroska signed EBML primitives") {
@@ -510,8 +578,8 @@ suite("container adapters") {
         }
     }
 
-    group("native Matroska EBML numeric admission") {
-        it("rejects corrupted TrackEntry uint/float element widths") {
+    group("native Matroska EBML field admission") {
+        it("rejects malformed widths and missing or unsupported CodecID") {
             static const uint8_t opus_head[19] = {
                 'O','p','u','s','H','e','a','d',
                 1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
@@ -550,7 +618,7 @@ suite("container adapters") {
             corrupt = (uint8_t *)malloc(size);
             check_not_null(corrupt);
             if (!corrupt) goto numeric_cleanup;
-            for (variant = 0; variant < 3; ++variant) {
+            for (variant = 0; variant < 8; ++variant) {
                 found = 0;
                 memcpy(corrupt, data, size);
                 for (at = 0; at + 4u <= size; ++at) {
@@ -574,6 +642,40 @@ suite("container adapters") {
                                corrupt[at + 1u] == 0x88u) {
                         /* Float must have a 4- or 8-byte payload. */
                         corrupt[at + 1u] = 0x85u;
+                        found = 1;
+                    } else if ((variant == 3 || variant == 5) &&
+                               at + 11u <= size &&
+                               corrupt[at] == 0x63u &&
+                               corrupt[at + 1u] == 0xa2u &&
+                               corrupt[at + 2u] == 0x93u &&
+                               memcmp(corrupt + at + 3u,
+                                      "OpusHead", 8u) == 0) {
+                        /* A binary CodecPrivate must not have unknown size
+                         * (0xff). An eight-byte VINT whose value includes
+                         * the following ASCII OpusHead bytes advertises
+                         * an absurdly large size; reject without malloc
+                         * of the untrusted advertised length. */
+                        corrupt[at + 2u] =
+                            variant == 3 ? 0xffu : 0x01u;
+                        found = 1;
+                    } else if ((variant == 4 || variant >= 6) &&
+                               at + 8u <= size &&
+                               corrupt[at] == 0x86u &&
+                               corrupt[at + 1u] == 0x86u &&
+                               memcmp(corrupt + at + 2u,
+                                      "A_OPUS", 6u) == 0) {
+                        if (variant == 4) {
+                            /* CodecID string cannot have unknown size. */
+                            corrupt[at + 1u] = 0xffu;
+                        } else if (variant == 6) {
+                            /* Unsupported same-width CodecID must not
+                             * reach an assert in mkv_reader_build. */
+                            corrupt[at + 2u] = 'X';
+                        } else {
+                            /* The same-sized global Void element omits
+                             * CodecID entirely from this TrackEntry. */
+                            corrupt[at] = 0xecu;
+                        }
                         found = 1;
                     }
                     if (found) break;
