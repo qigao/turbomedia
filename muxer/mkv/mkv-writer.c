@@ -317,21 +317,55 @@ int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
           discard_padding_ns >= UINT64_C(20000000))))
         return -EINVAL;
 
+    /* This Writer fixes TimestampScale at 1 ms (one million ns).
+     * Check public timestamps before touching any output: the old
+     * ts * 1000000 and signed additions could overflow, and large
+     * relative Block timecodes were silently truncated to int16_t. */
+    if (writer->io.error != 0)
+        return writer->io.error;
+    if (mkv->timescale != UINT64_C(1000000))
+        return -EINVAL;
     ts = writer->use_dts ? dts : pts;
+    if ((writer->segment_ts > 0 &&
+         ts > INT64_MAX - writer->segment_ts) ||
+        (writer->segment_ts < 0 &&
+         ts < INT64_MIN - writer->segment_ts))
+        return -ERANGE;
     ts += writer->segment_ts;
-    duration = ts - cluster->timestamp;
-    
-    new_cluster = 0;
-    key_frame = (flags & MKV_FLAGS_KEYFRAME) && mkv_codec_is_video(track->codecid) ? 1 : 0;
+    if (ts < INT16_MIN ||
+        (ts >= 0 && (uint64_t)ts > UINT64_MAX / mkv->timescale) ||
+        cluster->timestamp > INT64_MAX ||
+        (ts < 0 &&
+         cluster->timestamp > (uint64_t)(INT64_MAX + ts)))
+        return -ERANGE;
+    duration = ts - (int64_t)cluster->timestamp;
 
-    cluster_size = mkv_buffer_tell(&writer->io) - cluster->position;
-    if (cluster->position < 1 || cluster_size + bytes > UINT32_MAX
-        || cluster_size + bytes >= writer->cluster_limit_size
-        || duration > writer->cluster_limit_duration + 30000 /*30s*/
-        || (duration >= writer->cluster_limit_duration && (!writer->has_video || key_frame)))
+    new_cluster = 0;
+    key_frame = (flags & MKV_FLAGS_KEYFRAME) &&
+                mkv_codec_is_video(track->codecid) ? 1 : 0;
+
     {
-        new_cluster = 1;
+        uint64_t current = mkv_buffer_tell(&writer->io);
+        if (writer->io.error != 0 || current < cluster->position)
+            return -EIO;
+        cluster_size = current - cluster->position;
     }
+    /* A Block relative timestamp is a signed 16-bit tick count.
+     * Roll over even when video has not yet reached its next keyframe;
+     * otherwise a 32.768s gap silently wraps the written timestamp. */
+    if (cluster->position < 1 ||
+        cluster_size > UINT32_MAX - bytes ||
+        cluster_size + bytes >= writer->cluster_limit_size ||
+        duration < INT16_MIN || duration > INT16_MAX ||
+        duration > writer->cluster_limit_duration + 30000 /*30s*/ ||
+        (duration >= writer->cluster_limit_duration &&
+         (!writer->has_video || key_frame)))
+        new_cluster = 1;
+    /* A valid negative preroll at the start of the file can use a
+     * zero Cluster Timestamp and a signed negative Block delta.
+     * Never create a backward Cluster if one already exists. */
+    if (new_cluster && ts < 0 && cluster->position > 0)
+        return -ERANGE;
 
     if (new_cluster)
     {
@@ -348,18 +382,22 @@ int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
         }
 
         writer->has_video = 0; // clear video flag
-        cluster->timestamp = ts;
+        cluster->timestamp = ts < 0 ? 0u : (uint64_t)ts;
         cluster->prev_size = 0;
         cluster->position = mkv_buffer_tell(&writer->io); // don't with id
 
         // Segment/Cluster
         mkv_buffer_write_master(&writer->io, EBML_ID_CLUSTER, 0x0FFFFFFF, 4); // placeholder
-        mkv_buffer_write_uint_element(&writer->io, 0xE7, ts); // Segment/Cluster/Timestamp
+        mkv_buffer_write_uint_element(&writer->io, 0xE7, cluster->timestamp);
     }
 
-    // fix: case on ts - cluster->timestamp < 0
-    //ts = (ts - cluster->timestamp) * 1000000 / mkv->timescale;
-    diff = ts * 1000000 / mkv->timescale - cluster->timestamp * 1000000 / mkv->timescale;
+    if (writer->io.error != 0)
+        return writer->io.error;
+    /* Since TimestampScale is exactly 1 ms, subtraction is the
+     * complete conversion: no overflowing multiply, no truncation. */
+    diff = ts - (int64_t)cluster->timestamp;
+    if (diff < INT16_MIN || diff > INT16_MAX)
+        return -ERANGE;
 
     memset(&sample, 0, sizeof(sample));
     sample.track = tid;
@@ -378,7 +416,9 @@ int mkv_writer_write_with_discard_padding(struct mkv_writer_t* writer,
     if (discard_padding_ns)
         track->tail_discard_ns = discard_padding_ns;
 
-    if (key_frame)
+    /* Negative preroll Blocks are legal, but CueTime is unsigned.
+     * The first nonnegative keyframe is a usable seek anchor. */
+    if (key_frame && ts >= 0)
     {
         uint64_t segment_data_start, cluster_data_start;
         /* RFC 9559 Segment Position: CueClusterPosition is measured

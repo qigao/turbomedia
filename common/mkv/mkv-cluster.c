@@ -223,6 +223,8 @@ int mkv_cluster_simple_block_write(struct mkv_t* mkv,
     (void)mkv;
     if (!sample || !io || sample->track < 1 || sample->track >= 8)
         return -EINVAL;
+    if (sample->pts < INT16_MIN || sample->pts > INT16_MAX)
+        return -ERANGE;
     mkv_buffer_write_master(io, 0xA3, UINT64_C(4) + sample->bytes, 0);
     mkv_write_block_payload(sample, io, 1);
     return mkv_buffer_error(io);
@@ -237,6 +239,8 @@ int mkv_cluster_block_group_write(struct mkv_sample_t* sample,
     if (!sample || !io || sample->track < 1 || sample->track >= 8 ||
         tail_padding_ns == 0 || tail_padding_ns > INT64_MAX)
         return -EINVAL;
+    if (sample->pts < INT16_MIN || sample->pts > INT16_MAX)
+        return -ERANGE;
     /* Signed EBML integer: positive trims the END of the Block. */
     while (n < 8 && tail_padding_ns >= (UINT64_C(1) << (n * 8 - 1)))
         ++n;

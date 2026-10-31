@@ -621,6 +621,130 @@ suite("container adapters") {
         }
     }
 
+    group("native Matroska signed relative timecodes") {
+        it("rolls the Cluster before a 33-second non-keyframe would wrap int16") {
+            static const uint8_t vp8_packet[] = {0x10u, 0, 0, 0, 0};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_demuxer_packet_t output = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *data = NULL;
+            size_t count = 0;
+            int video = -1, r;
+            config.format = TURBO_MUXER_MKV;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_VIDEO;
+            stream.codec_name = "vp8";
+            stream.width = 16;
+            stream.height = 16;
+            stream.framerate = 10;
+            r = turbo_muxer_add_stream(muxer, &stream, &video);
+            check_equal(r, 0);
+            if (r != 0) goto cluster_time_cleanup;
+
+            packet.stream_id = video;
+            packet.data = vp8_packet;
+            packet.size = sizeof(vp8_packet);
+            packet.duration = INT64_C(100000);
+            packet.is_keyframe = 1;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            /* With an active video track, the old 5-second policy waits
+             * for a keyframe and did not roll a Cluster before the
+             * signed 16-bit relative Block timestamp wrapped. */
+            packet.pts = packet.dts = INT64_C(33000000);
+            packet.is_keyframe = 0;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            r = turbo_muxer_get_data(muxer, &data, &count);
+            check_equal(r, 0);
+            if (r != 0 || !data) goto cluster_time_cleanup;
+            dc.data = data;
+            dc.data_size = count;
+            demuxer = turbo_demuxer_create_by_name("mkv", &dc);
+            check_not_null(demuxer);
+            if (!demuxer) goto cluster_time_cleanup;
+            r = turbo_demuxer_open(demuxer);
+            check_equal(r, 0);
+            if (r != 0) goto cluster_time_cleanup;
+            check_equal(turbo_demuxer_read_packet(demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(0));
+            turbo_demuxer_free_packet(&output);
+            r = turbo_demuxer_read_packet(demuxer, &output);
+            check_equal(r, 1);
+            if (r == 1) {
+                check_equal(output.pts, INT64_C(33000));
+                check_equal(output.dts, INT64_C(33000));
+                check_equal(output.size, sizeof(vp8_packet));
+            }
+            turbo_demuxer_free_packet(&output);
+            check_equal(turbo_demuxer_read_packet(demuxer, &output), 0);
+
+        cluster_time_cleanup:
+            turbo_demuxer_free_packet(&output);
+            turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
+        it("rejects unrepresentable media timestamps without publishing a packet") {
+            static const uint8_t vp8_packet[] = {0x10u, 0, 0, 0, 0};
+            turbo_muxer_config_t config = {0};
+            turbo_stream_info_t stream = {0};
+            turbo_muxer_packet_t packet = {0};
+            turbo_demuxer_config_t dc = {0};
+            turbo_demuxer_packet_t decoded = {0};
+            turbo_muxer_t *muxer = NULL;
+            turbo_demuxer_t *demuxer = NULL;
+            uint8_t *data = NULL;
+            size_t size = 0;
+            int track = -1, r;
+            config.format = TURBO_MUXER_MKV;
+            muxer = turbo_muxer_create(&config);
+            check_not_null(muxer);
+            if (!muxer) return;
+            stream.type = TURBO_CODEC_TYPE_VIDEO;
+            stream.codec_name = "vp8";
+            stream.width = 16;
+            stream.height = 16;
+            stream.framerate = 10;
+            r = turbo_muxer_add_stream(muxer, &stream, &track);
+            check_equal(r, 0);
+            if (r != 0) goto time_reject_cleanup;
+            packet.stream_id = track;
+            packet.data = vp8_packet;
+            packet.size = sizeof(vp8_packet);
+            packet.duration = INT64_C(100000);
+            packet.pts = packet.dts = INT64_MAX;
+            packet.is_keyframe = 1;
+            check_true(turbo_muxer_write_packet(muxer, &packet) < 0);
+            packet.pts = packet.dts = 0;
+            check_equal(turbo_muxer_write_packet(muxer, &packet), 0);
+            check_equal(turbo_muxer_write_trailer(muxer), 0);
+            r = turbo_muxer_get_data(muxer, &data, &size);
+            check_equal(r, 0);
+            if (r != 0 || !data) goto time_reject_cleanup;
+            dc.data = data;
+            dc.data_size = size;
+            demuxer = turbo_demuxer_create_by_name("mkv", &dc);
+            check_not_null(demuxer);
+            if (!demuxer) goto time_reject_cleanup;
+            r = turbo_demuxer_open(demuxer);
+            check_equal(r, 0);
+            if (r != 0) goto time_reject_cleanup;
+            check_equal(turbo_demuxer_read_packet(demuxer, &decoded), 1);
+            check_equal(decoded.pts, INT64_C(0));
+            turbo_demuxer_free_packet(&decoded);
+            check_equal(turbo_demuxer_read_packet(demuxer, &decoded), 0);
+        time_reject_cleanup:
+            turbo_demuxer_free_packet(&decoded);
+            turbo_demuxer_destroy(demuxer);
+            turbo_muxer_destroy(muxer);
+        }
+    }
+
     group("native Matroska VINT admission") {
         it("enforces RFC 9559 ID widths and rejects zero VINT markers") {
             static const uint8_t id_one_matroska[] = {0x80u};
