@@ -1413,57 +1413,69 @@ int mkv_reader_seek_floor(mkv_reader_t *reader, int64_t *timestamp_ms)
 #endif
 }
 
+/* The nearest-Cue API is intentionally different from the floor-Cue
+ * API used by Opus preroll. Both must be bounded and must leave the reader
+ * and caller's timestamp unchanged on invalid/overflowing input. */
 int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 {
-	uint64_t clock;
-	size_t idx, start, end;
-#define DIFF(a, b) ((a) > (b) ? ((a) - (b)) : ((b) - (a)))
-
 #if !defined(MKV_LIVE_STREAMING)
-	struct mkv_cue_position_t* cue, *prev, *next;
+    uint64_t requested_ns, tick, anchor_ns, offset;
+    size_t lo, hi, mid, candidate, count;
+    const struct mkv_cue_position_t *cue;
 
-	if (reader->mkv.cue.count < 1)
-		return -1;
-
-	idx = start = 0;
-	end = reader->mkv.cue.count;
-	assert(reader->mkv.cue.count > 0);
-	clock = (uint64_t)(*timestamp) * 1000000 / reader->mkv.timescale;
-
-	while (start < end)
-	{
-		idx = (start + end) / 2;
-		cue = &reader->mkv.cue.positions[idx];
-
-		if (cue->timestamp > clock)
-			end = idx;
-		else if (cue->timestamp < clock)
-			start = idx + 1;
-		else
-			break;
-	}
-
-	cue = &reader->mkv.cue.positions[idx];
-	prev = &reader->mkv.cue.positions[idx > 0 ? idx - 1 : idx];
-	next = &reader->mkv.cue.positions[idx + 1 < reader->mkv.cue.count ? idx + 1 : idx];
-	if (DIFF(prev->timestamp, clock) < DIFF(cue->timestamp, clock))
-		cue = prev;
-	if (DIFF(next->timestamp, clock) < DIFF(cue->timestamp, clock))
-		cue = next;
-
-	*timestamp = cue->timestamp * reader->mkv.timescale / 1000000;
-    if (!reader->segment_data_start ||
-        reader->segment_data_start > INT64_MAX ||
-        cue->cluster > INT64_MAX - reader->segment_data_start)
+    if (!reader || !timestamp || *timestamp < 0 ||
+        !reader->mkv.timescale || !reader->segment_data_start ||
+        reader->mkv.cue.count <= 0 || !reader->mkv.cue.positions)
+        return -EINVAL;
+    if ((uint64_t)*timestamp > UINT64_MAX / UINT64_C(1000000))
         return -ERANGE;
-	mkv_buffer_seek(&reader->io,
-                    reader->segment_data_start + cue->cluster);
-    if (reader->io.error != 0) return reader->io.error;
-	reader->offset = reader->mkv.count; // clear
+    requested_ns = (uint64_t)*timestamp * UINT64_C(1000000);
+    tick = requested_ns / reader->mkv.timescale;
+    count = (size_t)reader->mkv.cue.count;
+    lo = 0;
+    hi = count;
+
+    /* Lower bound on ascending Cue timestamps. Prefer the earlier Cue
+     * for an exact midpoint, without unsigned subtraction underflow. */
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2u;
+        if (reader->mkv.cue.positions[mid].timestamp < tick)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    if (lo == 0u) {
+        candidate = 0u;
+    } else if (lo == count) {
+        candidate = count - 1u;
+    } else {
+        const uint64_t before = reader->mkv.cue.positions[lo - 1u].timestamp;
+        const uint64_t after = reader->mkv.cue.positions[lo].timestamp;
+        candidate = tick - before <= after - tick ? lo - 1u : lo;
+    }
+    cue = &reader->mkv.cue.positions[candidate];
+    if (cue->timestamp > UINT64_MAX / reader->mkv.timescale)
+        return -ERANGE;
+    anchor_ns = cue->timestamp * reader->mkv.timescale;
+    if (anchor_ns / UINT64_C(1000000) > (uint64_t)INT64_MAX ||
+        reader->segment_data_start > (uint64_t)INT64_MAX ||
+        cue->cluster > (uint64_t)INT64_MAX - reader->segment_data_start)
+        return -ERANGE;
+
+    offset = reader->segment_data_start + cue->cluster;
+    mkv_buffer_seek(&reader->io, offset);
+    if (reader->io.error != 0)
+        return reader->io.error;
+
+    *timestamp = (int64_t)(anchor_ns / UINT64_C(1000000));
+    reader->offset = reader->mkv.count;
     reader->resume_after_group = 0;
     reader->last_discard_padding_ns = 0;
-	return 0;
+    return 0;
 #else
+    uint64_t clock;
+    size_t idx, start, end;
+#define DIFF(a, b) ((a) > (b) ? ((a) - (b)) : ((b) - (a)))
 	size_t mid, prev, next;
 	struct mkv_sample_t* sample;
 
@@ -1506,7 +1518,6 @@ int mkv_reader_seek(mkv_reader_t* reader, int64_t* timestamp)
 	*timestamp = reader->mkv.samples[idx].dts * reader->mkv.timescale / 1000000;
 	reader->offset = idx;
 	return 0;
-#endif
-
 #undef DIFF
+#endif
 }

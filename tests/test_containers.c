@@ -1804,6 +1804,23 @@ suite("container adapters") {
             check_equal(output.pts, INT64_C(12000));
             turbo_demuxer_free_packet(&output);
 
+            /* A huge signed millisecond input formerly overflowed when
+             * multiplied by one million, often returning a false success.
+             * Reject before seeking and keep the previous position alive. */
+            check_true(turbo_demuxer_seek(demuxer, INT64_MAX, 0) < 0);
+            check_true(turbo_demuxer_seek(demuxer, -1, 0) < 0);
+            check_equal(turbo_demuxer_seek(demuxer, 4000, 0), 0);
+            check_equal(turbo_demuxer_read_packet(
+                demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(6000));
+            turbo_demuxer_free_packet(&output);
+            /* A midpoint is deterministic: prefer the earlier Cue. */
+            check_equal(turbo_demuxer_seek(demuxer, 9000, 0), 0);
+            check_equal(turbo_demuxer_read_packet(
+                demuxer, &output), 1);
+            check_equal(output.pts, INT64_C(6000));
+            turbo_demuxer_free_packet(&output);
+
             check_equal(turbo_demuxer_seek_opus_preroll(
                 demuxer, audio, 50, &anchor), 0);
             check_equal(anchor, INT64_C(0));
