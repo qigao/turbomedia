@@ -525,6 +525,135 @@ suite("container adapters") {
         }
     }
 
+    group("native Matroska VINT admission") {
+        it("enforces RFC 9559 ID widths and rejects zero VINT markers") {
+            static const uint8_t id_one_matroska[] = {0x80u};
+            static const uint8_t id_header[] = {
+                0x1au, 0x45u, 0xdfu, 0xa3u
+            };
+            static const uint8_t id_track[] = {0x42u, 0x86u};
+            static const uint8_t id_zero[] = {0x00u};
+            static const uint8_t id_five[] = {
+                0x08u, 0x01u, 0x02u, 0x03u, 0x04u
+            };
+            static const uint8_t id_reserved[] = {0xffu};
+            static const uint8_t id_empty_data[] = {0x40u, 0x00u};
+            static const uint8_t id_full_data[] = {0x7fu, 0xffu};
+            static const struct {
+                const uint8_t *data;
+                size_t size;
+                uint32_t expected;
+                int reject;
+            } cases[] = {
+                {id_one_matroska, sizeof(id_one_matroska), 0x80u, 0},
+                {id_header, sizeof(id_header), 0x1a45dfa3u, 0},
+                {id_track, sizeof(id_track), 0x4286u, 0},
+                {id_zero, sizeof(id_zero), 0, 1},
+                {id_five, sizeof(id_five), 0, 1},
+                {id_reserved, sizeof(id_reserved), 0, 1},
+                {id_empty_data, sizeof(id_empty_data), 0, 1},
+                {id_full_data, sizeof(id_full_data), 0, 1},
+            };
+            size_t i;
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                mkv_signed_probe probe = {
+                    cases[i].data, cases[i].size, 0
+                };
+                struct mkv_ioutil_t io = {0};
+                uint32_t id;
+                io.io.read = mkv_signed_probe_read;
+                io.param = &probe;
+                id = mkv_buffer_read_id(&io);
+                if (cases[i].reject) {
+                    check_true(io.error != 0);
+                    check_equal(id, 0u);
+                } else {
+                    check_equal(io.error, 0);
+                    check_equal(id, cases[i].expected);
+                    check_equal(probe.position, cases[i].size);
+                }
+            }
+        }
+        it("distinguishes valid unknown-size Masters from malformed VINT") {
+            static const uint8_t zero_size[] = {0x80u};
+            static const uint8_t one_size[] = {0x81u};
+            static const uint8_t unknown_size[] = {0xffu};
+            static const uint8_t eight_byte_one[] = {
+                0x01u, 0u, 0u, 0u, 0u, 0u, 0u, 1u
+            };
+            static const uint8_t invalid_marker[] = {0x00u};
+            static const uint8_t short_size[] = {0x40u};
+            static const struct {
+                const uint8_t *data;
+                size_t size;
+                int64_t expected;
+                int reject;
+            } cases[] = {
+                {zero_size, sizeof(zero_size), 0, 0},
+                {one_size, sizeof(one_size), 1, 0},
+                {unknown_size, sizeof(unknown_size), -1, 0},
+                {eight_byte_one, sizeof(eight_byte_one), 1, 0},
+                {invalid_marker, sizeof(invalid_marker), 0, 1},
+                {short_size, sizeof(short_size), 0, 1},
+            };
+            size_t i;
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                mkv_signed_probe probe = {
+                    cases[i].data, cases[i].size, 0
+                };
+                struct mkv_ioutil_t io = {0};
+                int64_t size;
+                io.io.read = mkv_signed_probe_read;
+                io.param = &probe;
+                size = mkv_buffer_read_size(&io);
+                if (cases[i].reject)
+                    check_true(io.error != 0);
+                else {
+                    check_equal(io.error, 0);
+                    check_equal(size, cases[i].expected);
+                    check_equal(probe.position, cases[i].size);
+                }
+            }
+        }
+        it("bounds signed EBML lace deltas and truncated sizes") {
+            static const uint8_t zero[] = {0xbfu};
+            static const uint8_t negative[] = {0xbeu};
+            static const uint8_t positive[] = {0xc0u};
+            static const uint8_t invalid[] = {0x00u};
+            static const uint8_t short_input[] = {0x40u};
+            static const struct {
+                const uint8_t *data;
+                size_t size;
+                int64_t expected;
+                int reject;
+            } cases[] = {
+                {zero, sizeof(zero), 0, 0},
+                {negative, sizeof(negative), -1, 0},
+                {positive, sizeof(positive), 1, 0},
+                {invalid, sizeof(invalid), 0, 1},
+                {short_input, sizeof(short_input), 0, 1}
+            };
+            size_t i;
+            for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                mkv_signed_probe probe = {
+                    cases[i].data, cases[i].size, 0
+                };
+                struct mkv_ioutil_t io = {0};
+                int64_t delta;
+                io.io.read = mkv_signed_probe_read;
+                io.param = &probe;
+                delta = mkv_buffer_read_signed_size(&io);
+                if (cases[i].reject)
+                    check_true(io.error != 0);
+                else {
+                    check_equal(io.error, 0);
+                    check_equal(delta, cases[i].expected);
+                    check_equal(probe.position, cases[i].size);
+                }
+            }
+        }
+    }
+
     group("native Matroska signed EBML primitives") {
         it("sign extends 1- and 8-byte integers without 64-bit shift UB") {
             static const uint8_t positive_one[] = {0x7fu};
