@@ -5,6 +5,7 @@
 #include "ebml.h"
 #include <stdint.h>
 #include <assert.h>
+#include <errno.h>
 #include <string.h>
 
 struct mkv_ioutil_t
@@ -143,10 +144,17 @@ static inline int64_t mkv_buffer_read_int(struct mkv_ioutil_t* io, int n)
 
 static inline void mkv_buffer_write_master(struct mkv_ioutil_t* io, uint32_t id, uint64_t size, unsigned int bytes)
 {
-	unsigned int n;
-	uint8_t buf[4 + 8];
-	n = ebml_write_element(buf, id, size, bytes);
-	mkv_buffer_write(io, buf, n);
+    unsigned int n;
+    uint8_t buf[4 + 8];
+    if (!io || io->error != 0) return;
+    n = ebml_write_element(buf, id, size, bytes);
+    if (!n) {
+        /* Invalid size must not be emitted as a valid-looking VINT,
+         * nor should it be hidden behind a zero-length write. */
+        io->error = -ERANGE;
+        return;
+    }
+    mkv_buffer_write(io, buf, n);
 }
 
 static inline void mkv_buffer_write_uint_element(struct mkv_ioutil_t* io, uint32_t id, uint64_t v)

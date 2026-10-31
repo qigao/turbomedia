@@ -778,6 +778,84 @@ suite("container adapters") {
         }
     }
 
+    group("native Matroska EBML numeric width admission") {
+        it("bounds 64-bit integer lengths without shift-by-64 UB") {
+            uint8_t buf[12] = {0};
+            static const uint8_t top_bit[8] = {
+                0x80u, 0, 0, 0, 0, 0, 0, 0
+            };
+            static const uint8_t all_bits[8] = {
+                0xffu, 0xffu, 0xffu, 0xffu,
+                0xffu, 0xffu, 0xffu, 0xffu
+            };
+            check_equal(ebml_uint_length(0u), 1u);
+            check_equal(ebml_uint_length(UINT64_C(0xffffffffffffff)), 7u);
+            check_equal(ebml_uint_length(UINT64_C(0x100000000000000)), 8u);
+            check_equal(ebml_uint_length(UINT64_MAX), 8u);
+            check_equal(ebml_write_uint(buf, UINT64_C(0x8000000000000000)),
+                        8u);
+            check_equal(buf, top_bit, sizeof(top_bit));
+            check_equal(ebml_write_uint(buf, UINT64_MAX), 8u);
+            check_equal(buf, all_bits, sizeof(all_bits));
+        }
+        it("reserves all-ones VINT sizes and guards full 8-byte range") {
+            uint8_t buf[12];
+            uint8_t saved[sizeof(buf)];
+            size_t i;
+            check_equal(ebml_size_length(0u), 1u);
+            check_equal(ebml_size_length(126u), 1u);
+            check_equal(ebml_size_length(127u), 2u);
+            check_equal(ebml_size_length(16382u), 2u);
+            check_equal(ebml_size_length(16383u), 3u);
+            check_equal(ebml_size_length(
+                (UINT64_C(1) << 56u) - 2u), 8u);
+            check_equal(ebml_size_length(
+                (UINT64_C(1) << 56u) - 1u), 0u);
+            check_equal(ebml_size_length(UINT64_MAX), 0u);
+
+            /* This actual eight-octet Segment placeholder is an
+             * explicitly encoded unknown-size Master sentinel. */
+            memset(buf, 0xcc, sizeof(buf));
+            check_equal(ebml_write_element(
+                buf, 0x18538067u, (UINT64_C(1) << 56u) - 1u, 8u), 12u);
+            check_equal(buf[0], 0x18u);
+            check_equal(buf[1], 0x53u);
+            check_equal(buf[2], 0x80u);
+            check_equal(buf[3], 0x67u);
+            check_equal(buf[4], 0x01u);
+            for (i = 5u; i < sizeof(buf); ++i)
+                check_equal(buf[i], 0xffu);
+
+            memset(buf, 0xa5, sizeof(buf));
+            memcpy(saved, buf, sizeof(buf));
+            check_equal(ebml_write_element(buf, 0xecu, UINT64_MAX, 0u), 0u);
+            check_equal(buf, saved, sizeof(buf));
+            check_equal(ebml_write_element(buf, 0xecu,
+                            (UINT64_C(1) << 56u), 8u), 0u);
+            check_equal(buf, saved, sizeof(buf));
+            check_equal(ebml_write_element(buf, 0xecu, 128u, 1u), 0u);
+            check_equal(buf, saved, sizeof(buf));
+            /* Known length 127 needs a two-octet size: 1-octet 0xff
+             * is reserved for Unknown-Sized Element. */
+            check_equal(ebml_write_element(buf, 0xecu, 127u, 0u), 3u);
+            check_equal(buf[0], 0xecu);
+            check_equal(buf[1], 0x40u);
+            check_equal(buf[2], 0x7fu);
+        }
+        it("fails the existing Writer sticky on oversized EBML lengths") {
+            mkv_write_probe output = {0};
+            struct mkv_ioutil_t io = {0};
+            output.capacity = sizeof(output.bytes);
+            io.param = &output;
+            io.io.write = mkv_write_probe_write;
+            mkv_buffer_write_master(&io, 0xecu, UINT64_MAX, 0u);
+            check_true(io.error != 0);
+            check_equal(output.position, 0u);
+            mkv_buffer_write_master(&io, 0xecu, 2u, 0u);
+            check_equal(output.position, 0u);
+        }
+    }
+
     group("native Matroska EBML writer correctness") {
         it("encodes signed lacing VINT in big-endian and round trips boundaries") {
             static const struct {
