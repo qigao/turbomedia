@@ -1066,29 +1066,34 @@ static int mkv_reader_build(mkv_reader_t* reader)
 
 mkv_reader_t* mkv_reader_create(const struct mkv_buffer_t* buffer, void* param)
 {
-	struct mkv_reader_t* reader;
-	reader = (struct mkv_reader_t*)calloc(1, sizeof(*reader));
-	if (NULL == reader)
-		return NULL;
+    struct mkv_reader_t* reader;
+    int parse_result;
+    if (!buffer || !buffer->read || !buffer->seek || !buffer->tell)
+        return NULL;
+    reader = (struct mkv_reader_t*)calloc(1, sizeof(*reader));
+    if (!reader) return NULL;
 
-	memcpy(&reader->io.io, buffer, sizeof(reader->io.io));
-	reader->io.param = param;
-	reader->ebml.version = 1;
-	reader->ebml.read_version = 1;
-	reader->ebml.max_id_length = 4;
-	reader->ebml.max_size_length = 8;
-	reader->ebml.doc_type_version = 1;
-	reader->ebml.doc_type_read_version = 1;
+    memcpy(&reader->io.io, buffer, sizeof(reader->io.io));
+    reader->io.param = param;
+    reader->ebml.version = 1;
+    reader->ebml.read_version = 1;
+    reader->ebml.max_id_length = 4;
+    reader->ebml.max_size_length = 8;
+    reader->ebml.doc_type_version = 1;
+    reader->ebml.doc_type_read_version = 1;
 
-	// ignore file read error(for streaming file)
-	mkv_reader_open(reader, s_elements, sizeof(s_elements) / sizeof(s_elements[0]), 0);
-	if (0 != mkv_reader_build(reader))
-	{
-		mkv_reader_destroy(reader);
-		return NULL;
-	}
-
-	return reader;
+    /* Normal end-of-input remains permitted for the streaming reader.
+     * However, a negative EBML PARSE result is never clean EOF. The old
+     * constructor discarded it, then published partially parsed Tracks,
+     * which made invalid 9-byte integers/float widths appear valid. */
+    parse_result = mkv_reader_open(
+        reader, s_elements, sizeof(s_elements) / sizeof(s_elements[0]), 0);
+    if (parse_result < 0 || reader->parse_failed ||
+        mkv_reader_build(reader) != 0) {
+        mkv_reader_destroy(reader);
+        return NULL;
+    }
+    return reader;
 }
 
 void mkv_reader_destroy(mkv_reader_t* reader)
