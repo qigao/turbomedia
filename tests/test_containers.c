@@ -275,6 +275,31 @@ static int mkv_write_probe_write(void *param, const void *src, uint64_t size)
     return 0;
 }
 
+/* Exercise the sole native seek/skip callbacks with a bounded
+ * simulated file cursor. This is not a second EBML parser/consumer. */
+typedef struct mkv_cursor_probe {
+    int64_t position;
+    int64_t capacity;
+    unsigned seek_calls;
+    int fail_tell;
+} mkv_cursor_probe;
+
+static int64_t mkv_cursor_probe_tell(void *param)
+{
+    mkv_cursor_probe *p = (mkv_cursor_probe *)param;
+    return p->fail_tell ? -1 : p->position;
+}
+
+static int mkv_cursor_probe_seek(void *param, int64_t offset)
+{
+    mkv_cursor_probe *p = (mkv_cursor_probe *)param;
+    ++p->seek_calls;
+    if (offset < 0 || offset > p->capacity)
+        return -1;
+    p->position = offset;
+    return 0;
+}
+
 suite("container adapters") {
     before_each() {
         turbo_muxer_registry_init();
@@ -775,6 +800,81 @@ suite("container adapters") {
                     check_equal(probe.position, cases[i].size);
                 }
             }
+        }
+    }
+
+    group("native Matroska primitive I/O bounds") {
+        it("rejects skip overflow and failed tell without moving the cursor") {
+            mkv_cursor_probe probe = {0};
+            struct mkv_ioutil_t io = {0};
+            probe.capacity = INT64_MAX;
+            probe.position = INT64_MAX - 1;
+            io.param = &probe;
+            io.io.tell = mkv_cursor_probe_tell;
+            io.io.seek = mkv_cursor_probe_seek;
+
+            mkv_buffer_skip(&io, 2u);
+            check_equal(io.error, -ERANGE);
+            check_equal(probe.position, INT64_MAX - 1);
+            check_equal(probe.seek_calls, 0u);
+
+            /* A valid explicit seek can recover from normal EOF; skip
+             * must never silently clear an existing parse error. */
+            io.error = 0;
+            probe.position = 3;
+            probe.capacity = 16;
+            probe.fail_tell = 1;
+            mkv_buffer_skip(&io, 1u);
+            check_equal(io.error, -EIO);
+            check_equal(probe.seek_calls, 0u);
+            probe.fail_tell = 0;
+            mkv_buffer_skip(&io, 1u);
+            check_equal(probe.seek_calls, 0u);
+            check_equal(io.error, -EIO);
+
+            io.error = 0;
+            mkv_buffer_skip(&io, 5u);
+            check_equal(io.error, 0);
+            check_equal(probe.position, 8);
+            check_equal(probe.seek_calls, 1u);
+
+            mkv_buffer_seek(&io, UINT64_MAX);
+            check_equal(io.error, -ERANGE);
+            check_equal(probe.position, 8);
+            check_equal(probe.seek_calls, 1u);
+        }
+        it("admits at most eight unsigned EBML integer bytes") {
+            static const uint8_t octets[] = {
+                0xffu, 0xffu, 0xffu, 0xffu,
+                0xffu, 0xffu, 0xffu, 0xffu
+            };
+            mkv_signed_probe input = {octets, sizeof(octets), 0};
+            struct mkv_ioutil_t io = {0};
+            uint64_t value;
+            io.param = &input;
+            io.io.read = mkv_signed_probe_read;
+            value = mkv_buffer_read_uint(&io, 0);
+            check_equal(value, UINT64_C(0));
+            check_equal(input.position, 0u);
+            value = mkv_buffer_read_uint(&io, 8);
+            check_equal(io.error, 0);
+            check_equal(value, UINT64_MAX);
+            check_equal(input.position, sizeof(octets));
+
+            input.position = 0;
+            io.error = 0;
+            check_equal(mkv_buffer_read_uint(&io, 9), UINT64_C(0));
+            check_equal(io.error, -EINVAL);
+            check_equal(input.position, 0u);
+            io.error = 0;
+            check_equal(mkv_buffer_read_uint(&io, -1), UINT64_C(0));
+            check_equal(io.error, -EINVAL);
+            check_equal(input.position, 0u);
+            io.error = 0;
+            input.size = 1u;
+            check_equal(mkv_buffer_read_uint(&io, 8), UINT64_C(0));
+            check_true(io.error != 0);
+            check_equal(input.position, 1u);
         }
     }
 

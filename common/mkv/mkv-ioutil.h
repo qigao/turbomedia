@@ -31,18 +31,37 @@ static inline uint64_t mkv_buffer_tell(const struct mkv_ioutil_t* io)
 
 static inline void mkv_buffer_seek(const struct mkv_ioutil_t* io, uint64_t offset)
 {
-	//	if (0 == io->error)
-	((struct mkv_ioutil_t*)io)->error = io->io.seek(io->param, offset);
+    if (!io) return;
+    /* The underlying seek callback takes int64_t. Do not implicitly
+     * reinterpret an out-of-range uint64_t as a negative SEEK_END offset.
+     * A valid explicit seek can still reset EOF for ordinary replay. */
+    if (!io->io.seek || offset > (uint64_t)INT64_MAX) {
+        ((struct mkv_ioutil_t*)io)->error = -ERANGE;
+        return;
+    }
+    ((struct mkv_ioutil_t*)io)->error =
+        io->io.seek(io->param, (int64_t)offset);
 }
 
 static inline void mkv_buffer_skip(struct mkv_ioutil_t* io, uint64_t bytes)
 {
-	uint64_t offset;
-	if (0 == io->error)
-	{
-		offset = io->io.tell(io->param);
-		io->error = io->io.seek(io->param, offset + bytes);
-	}
+    int64_t position;
+    if (!io || io->error) return;
+    if (!io->io.tell || !io->io.seek) {
+        io->error = -EINVAL;
+        return;
+    }
+    position = io->io.tell(io->param);
+    if (position < 0) {
+        io->error = -EIO;
+        return;
+    }
+    if (bytes > (uint64_t)INT64_MAX - (uint64_t)position) {
+        io->error = -ERANGE;
+        return;
+    }
+    io->error = io->io.seek(io->param,
+                             position + (int64_t)bytes);
 }
 
 static inline void mkv_buffer_read(struct mkv_ioutil_t* io, void* data, uint64_t bytes)
@@ -111,13 +130,22 @@ static inline void mkv_buffer_w64(const struct mkv_ioutil_t* io, uint64_t v)
 
 static inline uint64_t mkv_buffer_read_uint(struct mkv_ioutil_t* io, int n)
 {
-	uint64_t v;
-	v = 0;
-	while (n-- > 0)
-	{
-		v = (v << 8) | mkv_buffer_r8(io);
-	}
-	return v;
+    uint64_t value = 0;
+    int i;
+    if (!io) return 0;
+    /* Zero-byte unsigned EBML fields denote the default zero value.
+     * More than eight bytes must not silently truncate high-order data. */
+    if (n < 0 || n > 8) {
+        if (!io->error) io->error = -EINVAL;
+        return 0;
+    }
+    if (io->error) return 0;
+    for (i = 0; i < n; ++i) {
+        uint8_t byte = mkv_buffer_r8(io);
+        if (io->error) return 0;
+        value = (value << 8) | byte;
+    }
+    return value;
 }
 
 static inline int64_t mkv_buffer_read_int(struct mkv_ioutil_t* io, int n)
