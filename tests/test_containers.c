@@ -208,6 +208,27 @@ static int mkv_signed_probe_read(void *param, void *dst, uint64_t size)
     return 0;
 }
 
+/* Bounded write-side probe for the exact compiled native EBML
+ * primitives; no second parser or external test consumer. */
+typedef struct mkv_write_probe {
+    uint8_t bytes[16];
+    size_t capacity;
+    size_t position;
+} mkv_write_probe;
+
+static int mkv_write_probe_write(void *param, const void *src, uint64_t size)
+{
+    mkv_write_probe *probe = (mkv_write_probe *)param;
+    if (!probe || (!src && size) ||
+        probe->position > probe->capacity ||
+        size > probe->capacity - probe->position)
+        return -1;
+    if (size)
+        memcpy(probe->bytes + probe->position, src, (size_t)size);
+    probe->position += (size_t)size;
+    return 0;
+}
+
 suite("container adapters") {
     before_each() {
         turbo_muxer_registry_init();
@@ -704,6 +725,84 @@ suite("container adapters") {
                     check_equal(probe.position, cases[i].size);
                 }
             }
+        }
+    }
+
+    group("native Matroska EBML writer correctness") {
+        it("encodes signed lacing VINT in big-endian and round trips boundaries") {
+            static const struct {
+                int64_t value;
+                uint8_t expected[8];
+                size_t width;
+            } cases[] = {
+                {0, {0xbfu}, 1u},
+                {-1, {0xbeu}, 1u},
+                {1, {0xc0u}, 1u},
+                {-63, {0x80u}, 1u},
+                {64, {0xffu}, 1u},
+                {-64, {0x5fu, 0xbfu}, 2u},
+                {65, {0x60u, 0x40u}, 2u},
+                {INT64_C(36028797018963968),
+                    {0x01u, 0xffu, 0xffu, 0xffu,
+                     0xffu, 0xffu, 0xffu, 0xffu}, 8u},
+                {-INT64_C(36028797018963967),
+                    {0x01u, 0, 0, 0, 0, 0, 0, 0}, 8u},
+            };
+            static const int64_t invalid[] = {INT64_MIN, INT64_MAX};
+            size_t i;
+            for (i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                mkv_write_probe output = {0};
+                struct mkv_ioutil_t writer = {0};
+                mkv_signed_probe input;
+                struct mkv_ioutil_t reader = {0};
+                int64_t decoded;
+
+                output.capacity = sizeof(output.bytes);
+                writer.param = &output;
+                writer.io.write = mkv_write_probe_write;
+                mkv_buffer_write_signed_size(&writer, cases[i].value);
+                check_equal(writer.error, 0);
+                check_equal(output.position, cases[i].width);
+                if (output.position != cases[i].width)
+                    continue;
+                check_equal(output.bytes, cases[i].expected,
+                            cases[i].width);
+                input.bytes = output.bytes;
+                input.size = output.position;
+                input.position = 0;
+                reader.param = &input;
+                reader.io.read = mkv_signed_probe_read;
+                decoded = mkv_buffer_read_signed_size(&reader);
+                check_equal(reader.error, 0);
+                check_equal(decoded, cases[i].value);
+                check_equal(input.position, cases[i].width);
+            }
+            for (i = 0u; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+                mkv_write_probe output = {0};
+                struct mkv_ioutil_t writer = {0};
+                output.capacity = sizeof(output.bytes);
+                writer.param = &output;
+                writer.io.write = mkv_write_probe_write;
+                mkv_buffer_write_signed_size(&writer, invalid[i]);
+                check_true(writer.error != 0);
+                check_equal(output.position, 0u);
+            }
+        }
+        it("writes exact big-endian Float64 without pointer aliasing") {
+            static const uint8_t expected[] = {
+                0x44u, 0x89u, 0x88u,
+                0x3fu, 0xf8u, 0, 0, 0, 0, 0, 0
+            };
+            mkv_write_probe output = {0};
+            struct mkv_ioutil_t writer = {0};
+            output.capacity = sizeof(output.bytes);
+            writer.param = &output;
+            writer.io.write = mkv_write_probe_write;
+            mkv_buffer_write_double_element(&writer, 0x4489u, 1.5);
+            check_equal(writer.error, 0);
+            check_equal(output.position, sizeof(expected));
+            if (output.position == sizeof(expected))
+                check_equal(output.bytes, expected, sizeof(expected));
         }
     }
 

@@ -99,14 +99,34 @@ int64_t mkv_buffer_read_signed_size(struct mkv_ioutil_t* io)
     return (int64_t)value - bias;
 }
 
-void mkv_buffer_write_signed_size(struct mkv_ioutil_t* io, int64_t size)
+/* EBML signed VINT (used for lacing deltas): encode biased signed
+ * payload in network byte order. The former writer ORed the marker into a
+ * negative signed integer, emitted least-significant bytes first, and could
+ * overflow on INT64_MIN. It did not round-trip through the native reader. */
+void mkv_buffer_write_signed_size(struct mkv_ioutil_t* io, int64_t value)
 {
-    uint64_t tmp;
-    tmp = 2*(size < 0 ? size^-1 : size);
-    size |= (1ULL << ebml_size_length(tmp) * 7);
-    do
-    {
-        mkv_buffer_w8(io, (uint8_t)size);
-        size >>= 8;
-    } while(size > 0);
+    uint8_t bytes[8];
+    uint64_t encoded;
+    int64_t bias = 0;
+    unsigned int width, i;
+
+    if (!io || io->error != 0)
+        return;
+    for (width = 1u; width <= 8u; ++width) {
+        bias = (INT64_C(1) << (7u * width - 1u)) - 1;
+        if (value >= -bias && value <= bias + 1)
+            break;
+    }
+    if (width > 8u) {
+        io->error = -ERANGE;
+        return;
+    }
+
+    /* All intermediate arithmetic is signed-representable for width <= 8.
+     * The leading marker bit is inserted into unsigned storage only. */
+    encoded = (uint64_t)(value + bias) |
+              (UINT64_C(1) << (7u * width));
+    for (i = 0u; i < width; ++i)
+        bytes[i] = (uint8_t)(encoded >> (8u * (width - 1u - i)));
+    mkv_buffer_write(io, bytes, width);
 }

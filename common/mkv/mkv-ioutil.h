@@ -5,6 +5,7 @@
 #include "ebml.h"
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
 
 struct mkv_ioutil_t
 {
@@ -173,8 +174,12 @@ static inline void mkv_buffer_write_uint_element(struct mkv_ioutil_t* io, uint32
 
 static inline void mkv_buffer_write_double_element(struct mkv_ioutil_t* io, uint32_t id, double v)
 {
-	mkv_buffer_write_master(io, id, 8, 0);
-	mkv_buffer_w64(io, *(uint64_t*)&v);
+    uint64_t bits = 0;
+    /* Matroska Float width 8 is IEEE-754 binary64 in network byte order.
+     * Copy the representation without violating C11 strict aliasing. */
+    memcpy(&bits, &v, sizeof(bits));
+    mkv_buffer_write_master(io, id, 8, 0);
+    mkv_buffer_w64(io, bits);
 }
 
 static inline void mkv_buffer_write_string_element(struct mkv_ioutil_t* io, uint32_t id, const char* s, size_t n)
