@@ -852,7 +852,7 @@ suite("container adapters") {
             free(mutated);
             turbo_muxer_destroy(muxer);
         }
-        it("fails closed on malformed BlockGroup Block and DiscardPadding") {
+        it("validates BlockGroup reserved flags, unused bit, references and padding") {
             static const uint8_t opus_head[19] = {
                 'O','p','u','s','H','e','a','d',
                 1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0
@@ -907,30 +907,52 @@ suite("container adapters") {
                     break;
                 }
             check_true(group_at != SIZE_MAX);
-            if (group_at == SIZE_MAX) goto malformed_cleanup;
+            if (group_at == SIZE_MAX || group_at > length ||
+                length - group_at < 19u)
+                goto malformed_cleanup;
             mutated = (uint8_t *)malloc(length);
             check_not_null(mutated);
             if (!mutated) goto malformed_cleanup;
-            for (variant = 0; variant < 2; ++variant) {
+            for (variant = 0; variant < 6; ++variant) {
                 int r;
                 memcpy(mutated, container, length);
                 if (variant == 0) {
-                    /* Block payload length < 4 fixed header bytes. */
+                    /* Block payload length below its fixed header. */
                     mutated[group_at + 3u] = 0x83u;
-                } else {
-                    /* The correctly encoded positive DiscardPadding is
-                     * 75 A2 84 xx xx xx xx, now change VINT length to 0. */
-                    const size_t padding_at = group_at + 12u;
-                    check_true(padding_at + 3u <= length);
-                    if (padding_at + 3u > length) continue;
-                    check_equal(mutated[padding_at], 0x75u);
-                    check_equal(mutated[padding_at + 1u], 0xA2u);
-                    check_equal(mutated[padding_at + 2u], 0x84u);
-                    if (mutated[padding_at] != 0x75u ||
-                        mutated[padding_at + 1u] != 0xA2u ||
-                        mutated[padding_at + 2u] != 0x84u)
+                } else if (variant == 1) {
+                    /* DiscardPadding is a nonempty signed EBML integer. */
+                    const size_t at_padding = group_at + 12u;
+                    check_equal(mutated[at_padding], 0x75u);
+                    check_equal(mutated[at_padding + 1u], 0xA2u);
+                    check_equal(mutated[at_padding + 2u], 0x84u);
+                    if (mutated[at_padding] != 0x75u ||
+                        mutated[at_padding + 1u] != 0xA2u ||
+                        mutated[at_padding + 2u] != 0x84u)
                         continue;
-                    mutated[padding_at + 2u] = 0x80u;
+                    mutated[at_padding + 2u] = 0x80u;
+                } else if (variant == 2 || variant == 3 || variant == 5) {
+                    /* RFC 9559 Block upper four bits are reserved/MUST
+                     * zero. Bit 0 is unused, and must NOT be interpreted
+                     * as a SimpleBlock discardable bit. */
+                    mutated[group_at + 7u] =
+                        variant == 2 ? 0x80u :
+                        variant == 3 ? 0x01u : 0x10u;
+                } else {
+                    /* Replace 7-byte DiscardPadding with an encoded
+                     * signed ReferenceBlock whose value is 0 (self/unknown
+                     * reference per RFC 9559). A non-RAP must not be
+                     * published as a keyframe. */
+                    const size_t at_padding = group_at + 12u;
+                    check_equal(mutated[at_padding], 0x75u);
+                    check_equal(mutated[at_padding + 1u], 0xA2u);
+                    check_equal(mutated[at_padding + 2u], 0x84u);
+                    if (mutated[at_padding] != 0x75u ||
+                        mutated[at_padding + 1u] != 0xA2u ||
+                        mutated[at_padding + 2u] != 0x84u)
+                        continue;
+                    mutated[at_padding] = 0xFBu;
+                    mutated[at_padding + 1u] = 0x85u;
+                    memset(mutated + at_padding + 2u, 0, 5u);
                 }
                 dconfig.data = mutated;
                 dconfig.data_size = length;
@@ -947,15 +969,32 @@ suite("container adapters") {
                     demuxer = NULL;
                     continue;
                 }
-                /* The BlockGroup parser must roll back a sample allocated
-                 * before it learns that a later child is malformed. */
                 r = turbo_demuxer_read_packet_with_timing(
                     demuxer, &decoded, &timing);
-                check_true(r < 0);
-                check_true(decoded.data == NULL);
-                check_equal(timing.discard_padding_ns, INT64_C(0));
-                check_true(turbo_demuxer_read_packet_with_timing(
-                    demuxer, &decoded, &timing) < 0); /* sticky invalid */
+                if (variant == 3 || variant == 4) {
+                    /* Block bit 0 is UNUSED, not a discardable flag;
+                     * a real ReferenceBlock makes a BlockGroup non-RAP. */
+                    check_equal(r, 1);
+                    if (r == 1) {
+                        check_equal(decoded.size, sizeof(encoded_packet));
+                        check_equal(decoded.is_keyframe,
+                                    variant == 3 ? 1 : 0);
+                        check_equal(timing.discard_padding_ns,
+                                    variant == 3 ?
+                                    INT64_C(13500000) : INT64_C(0));
+                    }
+                    turbo_demuxer_free_packet(&decoded);
+                    check_equal(turbo_demuxer_read_packet_with_timing(
+                        demuxer, &decoded, &timing), 0);
+                } else {
+                    /* A malformed BlockGroup must never publish partial
+                     * samples or turn parse failure into a clean EOF. */
+                    check_true(r < 0);
+                    check_true(decoded.data == NULL);
+                    check_equal(timing.discard_padding_ns, INT64_C(0));
+                    check_true(turbo_demuxer_read_packet_with_timing(
+                        demuxer, &decoded, &timing) < 0);
+                }
                 turbo_demuxer_free_packet(&decoded);
                 turbo_demuxer_destroy(demuxer);
                 demuxer = NULL;

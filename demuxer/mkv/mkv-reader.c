@@ -405,10 +405,27 @@ static int mkv_segment_cluster_block_group_parse(
             goto invalid;
 
         if (id == 0xA1) {
-            /* Block and SimpleBlock use the same frame header, but the
-             * BlockGroup owns keyframe and DiscardPadding semantics. */
+            uint64_t block_at = value_at, header_end;
+            int64_t block_track;
+            uint8_t block_flags;
+            /* RFC 9559 Block flags differ from SimpleBlock: the four
+             * upper bits MUST be zero; bit 0 is UNUSED (not discardable).
+             * Validate the real TrackNumber VINT width before handing
+             * the payload to the sole shared Block parser. */
             if (found || bytes < 4 ||
-                (uint64_t)bytes >= UINT32_MAX - 4 ||
+                (uint64_t)bytes >= UINT32_MAX - 4)
+                goto invalid;
+            block_track = mkv_buffer_read_size(&reader->io);
+            (void)mkv_buffer_read_int(&reader->io, 2);
+            block_flags = mkv_buffer_r8(&reader->io);
+            header_end = mkv_buffer_tell(&reader->io);
+            if (reader->io.error != 0 || block_track < 1 ||
+                header_end < block_at ||
+                header_end - block_at > (uint64_t)bytes ||
+                (block_flags & 0xF0u) != 0)
+                goto invalid;
+            mkv_buffer_seek(&reader->io, block_at);
+            if (reader->io.error != 0 ||
                 mkv_cluster_simple_block_read(
                     &reader->mkv, reader->mkv.cluster,
                     &reader->io, bytes) != 0)
@@ -433,6 +450,10 @@ static int mkv_segment_cluster_block_group_parse(
             }
             padding_seen = 1;
         } else if (id == 0xFB) {
+            /* ReferenceBlock is an encoded signed integer, not a zero-byte
+             * marker. Multiple References are valid; one means dependent. */
+            if (bytes < 1 || bytes > 8)
+                goto invalid;
             reference_seen = 1;
         }
 
@@ -452,6 +473,10 @@ static int mkv_segment_cluster_block_group_parse(
             first_sample : reader->mkv.count - 1;
         reader->mkv.samples[trim_index].discard_padding_ns =
             discard_padding_ns;
+        /* Block's low bit is UNUSED, not SimpleBlock's discardable flag.
+         * The shared decoder parses both with the same header layout. */
+        reader->mkv.samples[first_sample].flags &=
+            ~MKV_FLAGS_DISCARDABLE;
         if (!reference_seen)
             reader->mkv.samples[first_sample].flags |= MKV_FLAGS_KEYFRAME;
         reader->resume_after_group = end;
