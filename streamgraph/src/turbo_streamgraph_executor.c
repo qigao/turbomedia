@@ -13,6 +13,10 @@ struct tm_ex_owner {
     size_t scratch_capacity,pending_bytes;
     uint64_t source_session_generation,display_generation;
     tm_fs_frame_ref_v1 pending;
+    tm_ex_source_metadata_fn source_metadata;
+    void *source_metadata_context;
+    tm_fs_frame_metadata_v1 pending_metadata;
+    int has_pending_metadata;
     tm_ex_stats_v1 stats;
     int stopped,in_callback;
 };
@@ -160,6 +164,17 @@ tm_ex_status tm_ex_create(const tm_sg_program *p,tm_fs_store *store,
     *out=o;
     return TM_EX_OK;
 }
+tm_ex_status tm_ex_bind_source_metadata(tm_ex_owner *o,
+                                        tm_ex_source_metadata_fn fn, void *ctx) {
+    if (!o) return TM_EX_EINVAL;
+    if (!fn || !ctx || o->in_callback || o->stopped ||
+        o->stats.sourced || o->pending_bytes || o->pending.frame_id ||
+        o->source_metadata) return TM_EX_ESTATE;
+    o->source_metadata = fn;
+    o->source_metadata_context = ctx;
+    return TM_EX_OK;
+}
+
 static tm_ex_status retire_ref(tm_ex_owner *o,tm_fs_frame_ref_v1 *ref){
     tm_fs_status st=tm_fs_retire(o->store,ref);
     if(st!=TM_FS_OK && st!=TM_FS_EBUSY)return TM_EX_EFRAME;
@@ -191,15 +206,35 @@ tm_ex_status tm_ex_pump_source(tm_ex_owner *o){
         if(result!=TM_EX_SOURCE_FRAME || !bytes || bytes>o->scratch_capacity){
             (void)tm_ex_stop(o); return TM_EX_EPROVIDER;
         }
+        if(o->source_metadata) {
+            tm_fs_frame_metadata_v1 m=TM_FS_FRAME_METADATA_V1_INIT;
+            int rc;
+            o->in_callback=1;
+            rc=o->source_metadata(o->source_metadata_context,&m);
+            o->in_callback=0;
+            if(rc!=0 || tm_fs_validate_metadata(&m)!=TM_FS_OK ||
+               m.source_session_generation!=o->source_session_generation ||
+               m.display_generation!=o->display_generation){
+                (void)tm_ex_stop(o);
+                return TM_EX_EPROVIDER;
+            }
+            o->pending_metadata=m;
+            o->has_pending_metadata=1;
+        }
         o->pending_bytes=bytes;
         o->stats.sourced++;
     }
     {
-        tm_fs_status fs=tm_fs_publish_cpu(o->store,o->scratch,o->pending_bytes,
-                          o->source_session_generation,o->display_generation,&o->pending);
+        tm_fs_status fs=tm_fs_publish_cpu_with_metadata(
+                          o->store,o->scratch,o->pending_bytes,
+                          o->source_session_generation,o->display_generation,
+                          o->has_pending_metadata ? &o->pending_metadata : NULL,
+                          &o->pending);
         if(fs==TM_FS_EFULL){o->stats.backpressure++;return TM_EX_EFULL;}
         if(fs!=TM_FS_OK){(void)tm_ex_stop(o);return TM_EX_EFRAME;}
         o->pending_bytes=0u;
+        o->has_pending_metadata=0;
+        memset(&o->pending_metadata,0,sizeof(o->pending_metadata));
     }
     if(tm_fs_acquire_weak(o->store,&o->pending,&lease)!=TM_FS_OK ||
        tm_fs_map_cpu(o->store,&lease,&view)!=TM_FS_OK){
@@ -253,6 +288,8 @@ tm_ex_status tm_ex_stop(tm_ex_owner *o){
     if(!o || o->in_callback)return TM_EX_EINVAL;
     if(o->stopped)return TM_EX_OK;
     o->stopped=1;o->stats.stopped=1u;o->pending_bytes=0u;
+    o->has_pending_metadata=0;
+    memset(&o->pending_metadata,0,sizeof(o->pending_metadata));
     if(o->pending.frame_id && retire_ref(o,&o->pending)!=TM_EX_OK)return TM_EX_EFRAME;
     return fo_code(tm_fo_seal(o->fanout));
 }

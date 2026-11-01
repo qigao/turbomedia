@@ -32,6 +32,7 @@ typedef struct {
     
     /* State */
     int frame_count;
+    uint32_t decoded_width, decoded_height;
     uint8_t *sps;
     size_t sps_len;
     uint8_t *pps;
@@ -450,7 +451,8 @@ static int h264_decode(void *ctx,
                        const uint8_t *input, size_t input_len,
                        uint8_t *output, size_t *output_len) {
     h264_context_t *h264 = (h264_context_t *)ctx;
-    if (!h264 || !h264->decoder || !input || !output || !output_len) {
+    if (!h264 || !h264->decoder || !input || !output || !output_len ||
+        input_len > (size_t)INT_MAX) {
         return TURBO_CODEC_ERR_INVALID;
     }
     
@@ -496,9 +498,20 @@ static int h264_decode(void *ctx,
         buf_info.UsrData.sSystemBuffer.iStride[1]
     };
     
-    size_t y_size = width * height;
-    size_t uv_size = y_size / 4;
-    size_t required_size = y_size + uv_size * 2;
+    size_t y_size, uv_size, required_size;
+
+    /* libavcodec/OEM inputs are NOT the source of trusted display geometry.
+     * Validate the actual OpenH264 output before arithmetic or buffer reads.
+     * Equal-area 32x128 and 64x64 must remain distinguishable to Graph. */
+    if (width <= 0 || height <= 0 ||
+        width > TURBO_VIDEO_MAX_WIDTH || height > TURBO_VIDEO_MAX_HEIGHT ||
+        (width & 1) || (height & 1) ||
+        stride[0] < width || stride[1] < width / 2 ||
+        !dst[0] || !dst[1] || !dst[2])
+        return TURBO_CODEC_ERR_CODEC;
+    y_size = (size_t)width * (size_t)height;
+    uv_size = y_size / 4u;
+    required_size = y_size + uv_size * 2u;
     
     if (*output_len < required_size) {
         return TURBO_CODEC_ERR_BUFFER;
@@ -520,8 +533,23 @@ static int h264_decode(void *ctx,
     }
     
     *output_len = required_size;
-    
+    h264->decoded_width = (uint32_t)width;
+    h264->decoded_height = (uint32_t)height;
+
     return TURBO_CODEC_OK;
+}
+
+/* Private cross-component Codec hook; public clients use the additive
+ * turbo_codec_decoded_video_geometry() query instead of inspecting state. */
+int turbo_h264_decoder_last_geometry(const void *decoder_ctx,
+                                     uint32_t *width, uint32_t *height) {
+    const h264_context_t *h264 = (const h264_context_t *)decoder_ctx;
+    if (!h264 || !h264->decoder || !width || !height)
+        return TURBO_CODEC_ERR_INVALID;
+    *width = h264->decoded_width;
+    *height = h264->decoded_height;
+    return h264->decoded_width && h264->decoded_height ?
+        TURBO_CODEC_OK : TURBO_CODEC_ERR_NEED_MORE;
 }
 
 static void h264_request_keyframe(void *ctx) {

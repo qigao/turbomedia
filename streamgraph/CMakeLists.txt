@@ -103,6 +103,35 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
       "$<TARGET_FILE:streamgraph_test_provider_n1>")
 endif()
 
+# Actual original TurboMedia Codec/OpenH264 source is compiled into the
+# EXISTING StreamGraph Executor CTest ONLY for the isolated native Linux
+# acceptance. No second decoder algorithm, Codec SDK, new test project/target,
+# probe CMake or alternative Graph executor is introduced. The top-level
+# TurboMedia product instead links the canonical TurboMedia::Codec DSO.
+option(TM_STREAMGRAPH_H264_NATIVE_TEST
+       "Use original TurboMedia Codec/OpenH264 in existing Executor CTest" OFF)
+if(TM_STREAMGRAPH_H264_NATIVE_TEST)
+  if(NOT _TM_SG_ISOLATED OR NOT TARGET streamgraph_executor_test)
+    message(FATAL_ERROR "H264 conformance must reuse isolated native Executor CTest")
+  endif()
+  find_path(TM_SG_OPENH264_INCLUDE_DIR NAMES wels/codec_api.h REQUIRED)
+  find_library(TM_SG_OPENH264_LIBRARY NAMES openh264 REQUIRED)
+  target_sources(streamgraph_executor_test PRIVATE
+    tests/test_h264_source.c
+    adapters/codec/src/turbo_streamgraph_h264.c
+    ../codec/codec_registry.c
+    ../codec/g711_codec.c
+    ../codec/h264_codec.c)
+  target_include_directories(streamgraph_executor_test PRIVATE
+    ${TM_SG_OPENH264_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/codec/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../media/include)
+  target_compile_definitions(streamgraph_executor_test PRIVATE
+    TURBO_MEDIA_HAS_H264=1 TM_STREAMGRAPH_REAL_H264_TEST=1)
+  target_link_libraries(streamgraph_executor_test PRIVATE
+    ${TM_SG_OPENH264_LIBRARY})
+endif()
+
 # Desktop-only, explicit opt-in: do not introduce FFmpeg into StreamGraph Core
 # or change Android/mobile SDK transitive dependencies.
 option(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER

@@ -23,7 +23,8 @@ typedef enum tm_fs_status {
     TM_FS_ESTALE = -5,
     TM_FS_EBUSY = -6,
     TM_FS_ESHUTDOWN = -7,
-    TM_FS_EEXHAUSTED = -8
+    TM_FS_EEXHAUSTED = -8,
+    TM_FS_ENOMETA = -9
 } tm_fs_status;
 
 typedef struct tm_fs_config_v1 {
@@ -81,6 +82,42 @@ TURBO_MEDIA_API tm_fs_status tm_fs_publish_cpu(tm_fs_store *store, const void *d
                                                 uint64_t source_session_generation,
                                                 uint64_t display_generation,
                                                 tm_fs_frame_ref_v1 *out_ref);
+
+/* A FrameRef retains only identity. This immutable, owner-published sidecar
+ * carries the capture/geometry identity and original media timestamps.
+ * The Store owns it for the same slot lifetime as the pixel bytes. Nothing
+ * here is a transferable pin or an Android compositor causal fence. */
+#define TM_FS_META_ABI_V1 1u
+typedef struct tm_fs_frame_metadata_v1 {
+    uint32_t size, version;
+    uint32_t width, height;
+    uint32_t format_id, flags;
+    uint64_t device_session_id, session_generation;
+    uint32_t display_id, reserved;
+    uint64_t source_session_generation, display_generation, geometry_generation;
+    uint64_t capture_session_hi, capture_session_lo;
+    uint64_t stream_generation, packet_sequence;
+    uint64_t pts, dts;
+    uint32_t timebase_num, timebase_den;
+} tm_fs_frame_metadata_v1;
+#define TM_FS_FRAME_METADATA_V1_INIT {sizeof(tm_fs_frame_metadata_v1),TM_FS_META_ABI_V1,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u}
+#define TM_FS_META_FLAG_KEY_FRAME 1u
+#define TM_FS_META_FLAG_DISCONTINUITY 2u
+
+TURBO_MEDIA_API tm_fs_status tm_fs_validate_metadata(
+    const tm_fs_frame_metadata_v1 *metadata);
+/* Atomic CPU-byte + metadata publication. The original publish_cpu ABI
+ * remains unchanged and produces an unannotated (legacy) FrameRef. */
+TURBO_MEDIA_API tm_fs_status tm_fs_publish_cpu_with_metadata(
+    tm_fs_store *store, const void *data, size_t size_bytes,
+    uint64_t source_session_generation, uint64_t display_generation,
+    const tm_fs_frame_metadata_v1 *metadata, tm_fs_frame_ref_v1 *out_ref);
+/* Fails ESTALE after retirement/slot reuse, ENOMETA for legacy frames.
+ * This lookup does NOT prolong the frame lifetime. Pin/Lease separately. */
+TURBO_MEDIA_API tm_fs_status tm_fs_get_metadata(
+    tm_fs_store *store, const tm_fs_frame_ref_v1 *ref,
+    tm_fs_frame_metadata_v1 *out_metadata);
+
 TURBO_MEDIA_API tm_fs_status tm_fs_reserve_pin(tm_fs_store *store,
                                                 const tm_fs_frame_ref_v1 *ref,
                                                 tm_fs_pin_v1 *out_pin);

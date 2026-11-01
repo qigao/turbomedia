@@ -59,6 +59,17 @@ TURBO_MEDIA_API tm_ex_status tm_ex_create(
     const tm_sg_program *program,tm_fs_store *store,
     const tm_ex_config_v1 *config,const tm_ex_binding_v1 *bindings,
     size_t binding_count,tm_ex_owner **out);
+typedef int (*tm_ex_source_metadata_fn)(
+    void *context, tm_fs_frame_metadata_v1 *out_metadata);
+
+/* Optional, owner-serialized source sidecar callback. The callback is
+ * invoked immediately after SOURCE_FRAME and before Store publication.
+ * A copy stays attached to the pending bytes across FULL/backpressure.
+ * Must bind before any source progress; no I/O or reentrancy in callback.
+ * Existing tm_ex_create/binding ABI is unchanged. */
+TURBO_MEDIA_API tm_ex_status tm_ex_bind_source_metadata(
+    tm_ex_owner *owner, tm_ex_source_metadata_fn callback, void *context);
+
 /* Full Fanout or FrameStore never advances the Source again while one
  * produced frame remains uncommitted. One pending frame at most. */
 TURBO_MEDIA_API tm_ex_status tm_ex_pump_source(tm_ex_owner *owner);
