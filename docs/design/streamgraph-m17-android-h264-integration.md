@@ -117,6 +117,19 @@ No local H264 test replaces independent full-platform SDK qualification.
 
 The v1 decoder additionally requires a Baseline SPS (profile_idc 66), rejecting Main/High streams rather than assuming the sender's PTS=DTS precludes B slices. Existing CTest includes negative profile, frame-budget, DTS, sequence and source-generation cases.
 
+**Geometry/provenance correction:** The canonical TurboMedia H264
+Codec now has an additive `turbo_codec_decoded_video_geometry()` query
+over the actual most recently decoded OpenH264 frame. It does not extend
+the Codec ops/vtable or public frame ABI. The H264 Graph adapter checks
+the real decoded width/height against its session binding, not merely
+I420 output length: different geometries can have the same byte count.
+Malformed decoder output dimensions/strides fail before a copy. This
+initial profile requires a complete VCL access unit to yield a frame
+immediately; `NEED_MORE` from a VCL is a sticky failure because a later
+output cannot otherwise be attributed to the correct PTS/DTS. Config-only
+`NEED_MORE` remains valid. A delayed codec profile needs explicit
+per-frame provenance mapping before being enabled.
+
 The first profile does **not** support AVCC length-prefixed NAL input,
 RTP FU-A/reassembly, GPU/MediaCodec zero-copy, B-frame reordering,
 cross-process FrameRef, dynamic geometry or full heterogeneous

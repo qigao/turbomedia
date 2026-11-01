@@ -47,7 +47,10 @@ typedef struct tm_sgh264_config_v1 {
  * Metadata is a full versioned copy of the actual capture provenance.
  * A copy of a FrameRef, packet or metadata never grants a FramePin/Lease.
  * This v1 accepts only access units framed with Annex-B start codes and
- * strictly monotonic sequence/PTS=DTS (no B-frame reorder).
+ * strictly monotonic sequence/PTS=DTS (no B-frame reorder or delayed
+ * VCL output). Each accepted VCL AU must yield exactly one decoded frame.
+ * A geometry change, including equal-I420-byte-count shape changes,
+ * is rejected using the real Codec decoder's output dimensions.
  *
  * EOS is an empty packet with EOS flag, never an empty image frame.
  * Codec config SPS/PPS can be a separate CONFIG packet and yields NEED_MORE.

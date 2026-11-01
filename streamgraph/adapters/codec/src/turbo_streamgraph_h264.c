@@ -76,7 +76,9 @@ tm_sgh264_status tm_sgh264_create(const tm_sgh264_config_v1 *cfg,
         !cfg->stream_generation) return TM_SGH264_EINVAL;
     pixels=(uint64_t)cfg->width*cfg->height;
     bytes=pixels+(pixels/2u);
-    if (bytes>TM_FS_MAX_FRAME_BYTES) return TM_SGH264_EUNSUPPORTED;
+    if (bytes>TM_FS_MAX_FRAME_BYTES ||
+        cfg->width>TURBO_VIDEO_MAX_WIDTH || cfg->height>TURBO_VIDEO_MAX_HEIGHT)
+        return TM_SGH264_EUNSUPPORTED;
     s=(tm_sgh264_source *)calloc(1u,sizeof(*s));
     if (!s) return TM_SGH264_ENOMEM;
     s->config=*cfg;
@@ -167,7 +169,24 @@ tm_sgh264_status tm_sgh264_submit(tm_sgh264_source *s,
         s->failed=1;
         return TM_SGH264_ECODEC;
     }
-    if (codec_rc==TURBO_CODEC_OK && decoded_bytes!=s->frame_bytes) {
+    if (codec_rc==TURBO_CODEC_OK) {
+        uint32_t actual_width=0u, actual_height=0u;
+        if (decoded_bytes!=s->frame_bytes ||
+            turbo_codec_decoded_video_geometry(s->decoder,
+                &actual_width,&actual_height)!=TURBO_CODEC_OK ||
+            actual_width!=s->config.width ||
+            actual_height!=s->config.height) {
+            /* Equal-area frames with a different width/height can have
+             * identical I420 byte lengths. Never attach host metadata to
+             * a decoder output from an incompatible geometry. */
+            s->failed=1;
+            return TM_SGH264_ECODEC;
+        }
+    }
+    if (codec_rc==TURBO_CODEC_ERR_NEED_MORE && saw_vcl) {
+        /* A late decoder output cannot be proven to belong to the next
+         * packet's PTS. Strict v1 accepts one frame per complete VCL AU.
+         * Config-only NEED_MORE is legal; VCL delay requires v2 mapping. */
         s->failed=1;
         return TM_SGH264_ECODEC;
     }

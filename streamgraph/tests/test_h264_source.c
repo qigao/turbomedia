@@ -208,6 +208,19 @@ void test_m17_real_h264_codec_into_graph(void){
     f.expected_pts=packet.metadata.pts;
     assert(tm_sgh264_ready(source,&ready)==TM_SGH264_OK && ready==1);
     assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EFULL);
+    {
+        turbo_codec_t *raw=turbo_codec_create_decoder("h264",NULL);
+        uint32_t w=0u,h=0u;
+        uint8_t raw_pixels[I420_BYTES];
+        size_t raw_bytes=sizeof(raw_pixels);
+        assert(raw!=NULL);
+        assert(turbo_codec_decoded_video_geometry(raw,&w,&h)==TURBO_CODEC_ERR_NEED_MORE);
+        assert(turbo_codec_decode(raw,encoded,encoded_size,
+                                  raw_pixels,&raw_bytes)==TURBO_CODEC_OK);
+        assert(turbo_codec_decoded_video_geometry(raw,&w,&h)==TURBO_CODEC_OK);
+        assert(w==W && h==H && raw_bytes==I420_BYTES);
+        turbo_codec_destroy(raw);
+    }
     f.store=NULL;
 
     fs.store_id=999u;fs.slot_capacity=2u;fs.max_frame_bytes=I420_BYTES;

@@ -281,6 +281,17 @@ TURBO_MEDIA_API int turbo_codec_decode(turbo_codec_t *codec,
 /**
  * Request keyframe from encoder
  */
+/**
+ * Read the EXACT geometry of the last successfully decoded H264 I420 frame.
+ * This is an additive, owner-serialized Codec query; it does NOT append
+ * fields to turbo_codec_t, turbo_encoded_frame_t or codec ops ABI.
+ * Returns NEED_MORE before the first successful H264 decode, INVALID for
+ * other Codec types or unsupported backends. Never infer dimensions solely
+ * from the output byte count (equal-area width/height swaps are possible).
+ */
+TURBO_MEDIA_API int turbo_codec_decoded_video_geometry(
+    const turbo_codec_t *codec, uint32_t *width, uint32_t *height);
+
 TURBO_MEDIA_API void turbo_codec_request_keyframe(turbo_codec_t *codec);
 
 /**

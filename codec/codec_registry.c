@@ -13,6 +13,11 @@ int turbo_g711_validate_audio_config(const turbo_audio_codec_config_t *config);
 #ifdef TURBO_MEDIA_HAS_OPUS
 int turbo_opus_validate_audio_config(const turbo_audio_codec_config_t *config);
 #endif
+#ifdef TURBO_MEDIA_HAS_H264
+/* Private Codec implementation detail: queried only after actual decode. */
+int turbo_h264_decoder_last_geometry(const void *decoder_ctx,
+                                     uint32_t *width, uint32_t *height);
+#endif
 
 /* =============================================================================
  * Registry
@@ -218,6 +223,20 @@ int turbo_codec_decode(turbo_codec_t *codec,
     return codec->ops->decode(codec->decoder_ctx,
                               input, input_len,
                               output, output_len);
+}
+
+int turbo_codec_decoded_video_geometry(
+    const turbo_codec_t *codec, uint32_t *width, uint32_t *height) {
+    if (!codec || !width || !height || !codec->is_decoder ||
+        !codec->decoder_ctx || !codec->ops) return TURBO_CODEC_ERR_INVALID;
+    *width = 0u;
+    *height = 0u;
+#ifdef TURBO_MEDIA_HAS_H264
+    if (codec->ops == &turbo_h264_codec_ops)
+        return turbo_h264_decoder_last_geometry(codec->decoder_ctx,
+                                                  width, height);
+#endif
+    return TURBO_CODEC_ERR_INVALID;
 }
 
 void turbo_codec_request_keyframe(turbo_codec_t *codec) {
