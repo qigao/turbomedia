@@ -31,12 +31,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
+      - name: Install real OpenH264 for StreamGraph native Linux acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenh264-dev
       - name: Configure, compile and test C11 contracts
         shell: bash
         run: |
           cd streamgraph
           if [ "$RUNNER_OS" = "Windows" ]; then
             cmake --preset native-ci -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            cmake --preset native-ci -DTM_STREAMGRAPH_H264_NATIVE_TEST=ON
           else
             cmake --preset native-ci
           fi
@@ -59,10 +67,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install real OpenH264 for source-instrumented Graph acceptance
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenh264-dev
       - name: Configure and test sanitizers
         run: |
           cd streamgraph
-          cmake --preset asan-ubsan
+          cmake --preset asan-ubsan -DTM_STREAMGRAPH_H264_NATIVE_TEST=ON
           cmake --build --preset asan-ubsan
           ASAN_OPTIONS=detect_leaks=1 ctest --preset asan-ubsan
 

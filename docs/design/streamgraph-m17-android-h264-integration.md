@@ -102,6 +102,19 @@ Platform Build; standalone Graph Core checks cover M17b only, not
 the native H264 Codec link. The historical SDK tag/tag-restore 404
 tracked by #225 must not be bypassed or reported as a source test failure.
 
+**Real test compilation without an SDK restore workaround:** existing
+`StreamGraph typed core contracts` Linux native/ASan jobs now opt into
+`TM_STREAMGRAPH_H264_NATIVE_TEST`. It does NOT create another target,
+project, executable or decoder algorithm: the original
+`codec/codec_registry.c`, `codec/g711_codec.c` and
+`codec/h264_codec.c` are linked with the production adapter into the
+existing `streamgraph_executor_test` binary using Ubuntu's real
+OpenH264 development library. The top-level product instead builds
+`TurboMedia::StreamGraphH264` linked to `TurboMedia::Codec`. These
+are two different **build closures** for the exact same source and
+public callback contracts, not two decoders in one runtime.
+No local H264 test replaces independent full-platform SDK qualification.
+
 The first profile does **not** support AVCC length-prefixed NAL input,
 RTP FU-A/reassembly, GPU/MediaCodec zero-copy, B-frame reordering,
 cross-process FrameRef, dynamic geometry or full heterogeneous
