@@ -180,6 +180,15 @@ within that bound, while 4096×2048 I420 is ~12.58 MiB and RGBA
 
 **M17d — branch-specific ownership.** Preview may use `latest`,
 inference `sample`, while recording demands `ordered.lossless`.
+The existing native OpenH264 Executor CTest now reserves two distinct
+delayed analysis FramePins **before** the read-only Processor returns.
+Once the recording and preview sinks settle, releasing the first pin must
+not recycle the frame while the second consumer still owns a pin.
+The second consumer re-acquires the same original bytes/metadata and
+settles independently. Duplicate release and repinning a retiring
+weak FrameRef must fail. This proves **same-owner FrameStore credits**,
+not a cross-thread or remote GraphBridge implementation.
+
 Every independently retained or delayed consumer reserves a distinct
 FramePin **before queue publication**, releases its lease/pin exactly
 once, and fences late results on source/display/model generations.

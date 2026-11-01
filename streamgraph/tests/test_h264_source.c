@@ -19,6 +19,7 @@ enum { W=64,H=64,I420_BYTES=W*H*3/2, ENCODED_CAP=512*1024 };
 typedef struct {
     tm_fs_store *store;
     tm_fs_pin_v1 delayed_pin;
+    tm_fs_pin_v1 second_delayed_pin;
     tm_fs_frame_ref_v1 delayed_ref;
     uint64_t expected_packet_sequence, expected_pts;
     unsigned visited, record, preview;
@@ -84,6 +85,11 @@ static int m17_processor(void *ctx,const tm_fs_frame_ref_v1 *ref,
     /* Delayed secondary inference needs its OWN pin before enqueue; FrameRef
      * alone grants no retention. Pin is reserved on Media Owner during visit. */
     assert(tm_fs_reserve_pin(f->store,ref,&f->delayed_pin)==TM_FS_OK);
+    /* Two independently delayed consumers must own two separate credits
+     * before either request is committed. Numeric ticket copies are not
+     * extra FrameStore pins. */
+    assert(tm_fs_reserve_pin(f->store,ref,&f->second_delayed_pin)==TM_FS_OK);
+    assert(f->delayed_pin.ticket_id!=f->second_delayed_pin.ticket_id);
     f->delayed_ref=*ref;
     f->visited++;
     return 0;
@@ -422,6 +428,19 @@ void test_m17_real_h264_codec_into_graph(void){
            meta.pts==f.expected_pts);
     assert(tm_fs_release_lease(store,&lease)==TM_FS_OK);
     assert(tm_fs_release_pin(store,&f.delayed_pin)==TM_FS_OK);
+    assert(tm_fs_release_pin(store,&f.delayed_pin)==TM_FS_ESTALE);
+    /* The second consumer still owns the original retiring frame.
+     * First completion cannot recycle bytes or metadata out from under B. */
+    assert(tm_fs_get_metadata(store,&f.delayed_ref,&meta)==TM_FS_OK);
+    assert(tm_fs_reserve_pin(store,&f.delayed_ref,&f.delayed_pin)==TM_FS_EBUSY);
+    assert(tm_fs_acquire_pinned(store,&f.second_delayed_pin,&lease)==TM_FS_OK);
+    assert(tm_fs_map_cpu(store,&lease,&view)==TM_FS_OK &&
+           view.size_bytes==I420_BYTES);
+    assert(tm_fs_get_metadata(store,&f.delayed_ref,&meta)==TM_FS_OK &&
+           meta.packet_sequence==f.expected_packet_sequence);
+    assert(tm_fs_release_lease(store,&lease)==TM_FS_OK);
+    assert(tm_fs_release_pin(store,&f.second_delayed_pin)==TM_FS_OK);
+    assert(tm_fs_release_pin(store,&f.second_delayed_pin)==TM_FS_ESTALE);
     assert(tm_fs_get_metadata(store,&f.delayed_ref,&meta)==TM_FS_ESTALE);
 
     /* One numeric timestamp cannot represent two independently decoded
