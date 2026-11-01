@@ -118,7 +118,7 @@ TURBO_MEDIA_API tm_fs_status tm_fs_get_metadata(
     tm_fs_store *store, const tm_fs_frame_ref_v1 *ref,
     tm_fs_frame_metadata_v1 *out_metadata);
 
-TURBO_MEDIA_API tm_fs_status tm_fs_reserve_pin(tm_fs_store,
+TURBO_MEDIA_API tm_fs_status tm_fs_reserve_pin(tm_fs_store *store,
                                                 const tm_fs_frame_ref_v1 *ref,
                                                 tm_fs_pin_v1 *out_pin);
 TURBO_MEDIA_API tm_fs_status tm_fs_acquire_weak(tm_fs_store *store,
