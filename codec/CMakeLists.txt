@@ -31,3 +31,19 @@ target_compile_definitions(
          TURBO_MEDIA_HAS_VPX
          TURBO_MEDIA_HAS_H264
          TURBO_MEDIA_HAS_H265)
+
+
+# Real production Codec Provider, opt-in via TurboMedia::StreamGraphH264.
+# Uses the existing OpenH264 Codec and StreamGraph, no new scheduler/decoder.
+add_library(turbo_media_streamgraph_h264 SHARED
+  ${PROJECT_SOURCE_DIR}/streamgraph/adapters/h264/src/turbo_streamgraph_h264.c)
+turbo_media_configure_component(turbo_media_streamgraph_h264 StreamGraphH264)
+target_include_directories(turbo_media_streamgraph_h264 PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/streamgraph/include>
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/streamgraph/adapters/h264/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(turbo_media_streamgraph_h264 PUBLIC
+  TurboMedia::Codec TurboMedia::StreamGraph)
+install(FILES
+  ${PROJECT_SOURCE_DIR}/streamgraph/adapters/h264/include/turbo_streamgraph_h264.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
