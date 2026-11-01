@@ -10,6 +10,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(_TM_SG_ISOLATED TRUE)
 endif()
 add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c src/turbo_frame_store.c
+  src/turbo_streamgraph_screen_packet.c
   src/turbo_streamgraph_fanout.c src/turbo_streamgraph_executor.c
   src/turbo_streamgraph_handoff.c src/turbo_streamgraph_owner_dispatch.c
   src/turbo_streamgraph_provider_completion.c)
@@ -38,6 +39,7 @@ if(_TM_SG_ISOLATED)
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_handoff.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_owner_dispatch.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_provider_completion.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_screen_packet.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(EXPORT TurboMediaStreamGraphTargets FILE TurboMediaStreamGraphTargets.cmake
           NAMESPACE TurboMedia:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraph)

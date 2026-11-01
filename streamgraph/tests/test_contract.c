@@ -1,4 +1,5 @@
 #include <turbo_streamgraph.h>
+#include <turbo_streamgraph_screen_packet.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -182,10 +183,99 @@ static void test_android_h264_graph_preflight_only(void) {
                          &compiled, &diag) == TM_SG_ETYPE && compiled == NULL);
 }
 
+
+/* M17b actual H264 Annex-B copy/identity/order/credit ingress, not a decoder. */
+static tm_si_stream_v1 screen_stream(void) {
+    tm_si_stream_v1 s=TM_SI_STREAM_V1_INIT;
+    s.device_session_id=1001u;s.session_generation=5u;s.display_id=7u;
+    s.display_generation=3u;s.geometry_generation=8u;
+    s.capture_hi=0xaaa5u;s.capture_lo=0xbbb8u;s.stream_generation=11u;
+    s.width=640u;s.height=480u;return s;
+}
+static tm_si_packet_v1 packet(tm_si_stream_v1 stream, uint32_t kind,
+                               uint64_t sequence, const uint8_t *bytes,size_t n) {
+    tm_si_packet_v1 p=TM_SI_PACKET_V1_INIT;
+    p.stream=stream;p.kind=kind;p.sequence=sequence;p.bytes=bytes;p.byte_count=n;
+    p.pts_us=p.dts_us=(int64_t)(sequence*33000u);
+    return p;
+}
+static void test_screen_packet_ownership_and_provenance(void) {
+    tm_si_config_v1 cfg=TM_SI_CONFIG_V1_INIT;
+    tm_si_owner *o=NULL;
+    tm_si_packet_v1 out=TM_SI_PACKET_V1_INIT,p;
+    const uint8_t config[]={0,0,0,1,0x67,0x42,0x00,0x1f,
+                            0,0,0,1,0x68,0xce,0x06,0xe2};
+    uint8_t key[]={0,0,0,1,0x65,0x80};
+    const uint8_t delta[]={0,0,1,0x41,0x80};
+    cfg.stream=screen_stream();cfg.max_packet_bytes=128u;
+    assert(tm_si_create(&cfg,&o)==TM_SI_OK);
+
+    p=packet(cfg.stream,TM_SI_IDR,1u,key,sizeof(key));
+    assert(tm_si_offer(o,&p)==TM_SI_EFORMAT); /* SPS/PPS required */
+    p=packet(cfg.stream,TM_SI_CONFIG,1u,config,sizeof(config));
+    assert(tm_si_offer(o,&p)==TM_SI_OK);
+    assert(tm_si_offer(o,&p)==TM_SI_EFULL);
+    assert(tm_si_take(o,&out)==TM_SI_OK);
+    assert(out.byte_count==sizeof(config) &&
+           memcmp(out.bytes,config,sizeof(config))==0);
+    assert(tm_si_take(o,&out)==TM_SI_EBUSY);
+    assert(tm_si_destroy(o)==TM_SI_EBUSY);
+    assert(tm_si_settle(o)==TM_SI_OK);
+    assert(tm_si_settle(o)==TM_SI_EBUSY);
+
+    p=packet(cfg.stream,TM_SI_IDR,2u,key,sizeof(key));
+    assert(tm_si_offer(o,&p)==TM_SI_OK);
+    key[5]=0xff; /* input mutation cannot alter owner-copied bytes */
+    assert(tm_si_take(o,&out)==TM_SI_OK && out.bytes[5]==0x80);
+    assert(tm_si_settle(o)==TM_SI_OK);
+
+    p=packet(cfg.stream,TM_SI_DELTA,4u,delta,sizeof(delta));
+    assert(tm_si_offer(o,&p)==TM_SI_ESTALE); /* no silent packet loss */
+    p.sequence=3u;p.pts_us=p.dts_us=1;
+    assert(tm_si_offer(o,&p)==TM_SI_EREORDER);
+    p.pts_us=99000;p.dts_us=98000;
+    assert(tm_si_offer(o,&p)==TM_SI_EREORDER); /* B frame unsupported */
+    p.dts_us=p.pts_us;
+    p.stream.geometry_generation++;
+    assert(tm_si_offer(o,&p)==TM_SI_ESTALE);
+    p.stream=cfg.stream;
+    assert(tm_si_offer(o,&p)==TM_SI_OK);
+    assert(tm_si_take(o,&out)==TM_SI_OK);
+    assert(tm_si_settle(o)==TM_SI_OK);
+
+    p=packet(cfg.stream,TM_SI_EOS,4u,NULL,0u);
+    assert(tm_si_offer(o,&p)==TM_SI_OK);
+    assert(tm_si_take(o,&out)==TM_SI_OK && out.bytes==NULL);
+    assert(tm_si_settle(o)==TM_SI_OK);
+    assert(tm_si_offer(o,&p)==TM_SI_ESHUTDOWN);
+    assert(tm_si_destroy(o)==TM_SI_OK);
+}
+static void test_screen_packet_cancel_preserves_taken_credit(void) {
+    tm_si_config_v1 cfg=TM_SI_CONFIG_V1_INIT;
+    tm_si_owner *o=NULL;
+    tm_si_packet_v1 out=TM_SI_PACKET_V1_INIT,p;
+    uint8_t invalid[]={0,0,1,0xe5,0x80};
+    const uint8_t sps[]={0,0,1,0x67,0x42,0,0x1f};
+    cfg.stream=screen_stream();cfg.max_packet_bytes=64u;
+    assert(tm_si_create(&cfg,&o)==TM_SI_OK);
+    p=packet(cfg.stream,TM_SI_CONFIG,1u,invalid,sizeof(invalid));
+    assert(tm_si_offer(o,&p)==TM_SI_EFORMAT);
+    p.bytes=sps;p.byte_count=sizeof(sps);
+    assert(tm_si_offer(o,&p)==TM_SI_OK);
+    assert(tm_si_take(o,&out)==TM_SI_OK);
+    assert(tm_si_cancel(o)==TM_SI_EBUSY);
+    assert(tm_si_destroy(o)==TM_SI_EBUSY);
+    assert(tm_si_settle(o)==TM_SI_OK);
+    assert(tm_si_offer(o,&p)==TM_SI_ESHUTDOWN);
+    assert(tm_si_destroy(o)==TM_SI_OK);
+}
+
 int main(void) {
     test_immutable_and_negative_contracts();
     test_cycle_and_bounded_fanout();
     test_android_h264_graph_preflight_only();
+    test_screen_packet_ownership_and_provenance();
+    test_screen_packet_cancel_preserves_taken_credit();
     puts("StreamGraph typed contract tests: PASS");
     return 0;
 }
