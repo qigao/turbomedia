@@ -44,7 +44,13 @@ static int scan_nals(const uint8_t *data, size_t bytes,
         if (type==7u) *sps=1u;
         if (type==8u) *pps=1u;
         if (type==5u) *idr=1u;
-        if (type==1u || type==5u) *vcl=1u;
+        if (type==1u || type==5u) {
+            /* Initial Source contract binds exactly one complete VCL NAL
+             * to one packet timestamp. Multiple slices/pictures require
+             * explicit access-unit reconstruction, not guessed PTS. */
+            if (*vcl) return 0;
+            *vcl=1u;
+        }
         next=payload+1u;
         while (next<bytes && !annexb_prefix(data,bytes,next)) next++;
         /* No-B-frame v1 must not trust a fabricated DTS==PTS pair:

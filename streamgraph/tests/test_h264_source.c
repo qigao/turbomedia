@@ -105,6 +105,65 @@ static int m17_preview(void *ctx,const tm_fs_frame_ref_v1 *ref,
     f->preview++;
     return 0;
 }
+
+/* This is a REAL OpenH264 "same decoded byte size, wrong width/height"
+ * regression. A byte-count-only adapter would falsely publish metadata
+ * claiming 64x64 for an actual 128x32 frame. Both are 6144 I420 bytes. */
+static void m17_test_equal_size_wrong_decoder_geometry(void) {
+    turbo_video_codec_config_t ec={0};
+    tm_sgh264_config_v1 sc=TM_SGH264_CONFIG_V1_INIT;
+    tm_sgh264_packet_v1 packet=TM_SGH264_PACKET_V1_INIT;
+    tm_sgh264_source *source=NULL;
+    turbo_codec_t *encoder=NULL, *raw=NULL;
+    turbo_encoded_frame_t encoded_info={0};
+    uint8_t *raw_frame=NULL,*encoded=NULL,*decoded=NULL;
+    size_t compressed=ENCODED_CAP,decoded_size=I420_BYTES;
+    uint32_t width=0u,height=0u;
+    int ready=0;
+
+    ec.width=128;ec.height=32;
+    ec.framerate=30;ec.bitrate=400000;
+    ec.keyframe_interval=1;ec.threads=1;
+    encoder=turbo_codec_create_encoder("h264",&ec);
+    raw=turbo_codec_create_decoder("h264",NULL);
+    assert(encoder!=NULL && raw!=NULL);
+    raw_frame=(uint8_t *)malloc(I420_BYTES);
+    encoded=(uint8_t *)malloc(ENCODED_CAP);
+    decoded=(uint8_t *)malloc(I420_BYTES);
+    assert(raw_frame && encoded && decoded);
+    memset(raw_frame,70,128u*32u);
+    memset(raw_frame+128u*32u,128u,I420_BYTES-128u*32u);
+    turbo_codec_request_keyframe(encoder);
+    assert(turbo_codec_encode(encoder,raw_frame,I420_BYTES,encoded,
+                             &compressed,&encoded_info)==TURBO_CODEC_OK);
+    assert(compressed>0u && encoded_info.is_keyframe);
+    assert(turbo_codec_decode(raw,encoded,compressed,decoded,&decoded_size)==TURBO_CODEC_OK);
+    assert(decoded_size==I420_BYTES);
+    assert(turbo_codec_decoded_video_geometry(raw,&width,&height)==TURBO_CODEC_OK);
+    assert(width==128u && height==32u);
+
+    sc.width=W;sc.height=H;sc.max_packet_bytes=ENCODED_CAP;
+    sc.decoded_format_id=1u;sc.device_session_id=41u;
+    sc.session_generation=7u;sc.display_id=8u;
+    sc.source_session_generation=77u;sc.display_generation=9u;
+    sc.geometry_generation=3u;sc.capture_session_lo=99u;
+    sc.stream_generation=55u;
+    assert(tm_sgh264_create(&sc,&source)==TM_SGH264_OK);
+    packet.framing=TM_SGH264_FRAMING_ANNEX_B;
+    packet.flags=TM_SGH264_PACKET_KEY_FRAME;
+    packet.bytes=encoded;
+    packet.bytes_length=compressed;
+    packet.metadata=m17_metadata(1u,0u,1);
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_ECODEC);
+    assert(tm_sgh264_ready(source,&ready)==TM_SGH264_ESTATE);
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_ESTATE);
+    assert(tm_sgh264_destroy(source)==TM_SGH264_OK);
+
+    turbo_codec_destroy(raw);
+    turbo_codec_destroy(encoder);
+    free(decoded);free(encoded);free(raw_frame);
+}
+
 void test_m17_real_h264_codec_into_graph(void){
     turbo_video_codec_config_t encode_config={0};
     tm_sgh264_config_v1 config=TM_SGH264_CONFIG_V1_INIT;
@@ -265,6 +324,19 @@ void test_m17_real_h264_codec_into_graph(void){
     assert(tm_fs_release_pin(store,&f.delayed_pin)==TM_FS_OK);
     assert(tm_fs_get_metadata(store,&f.delayed_ref,&meta)==TM_FS_ESTALE);
 
+    /* One numeric timestamp cannot represent two independently decoded
+     * pictures. Multiple VCL NALs are a strict v1 protocol error. */
+    {
+        const uint8_t double_vcl[]={
+            0u,0u,0u,1u,0x65u,0x88u,
+            0u,0u,0u,1u,0x65u,0x88u
+        };
+        packet.bytes=double_vcl;packet.bytes_length=sizeof(double_vcl);
+        packet.flags=TM_SGH264_PACKET_KEY_FRAME;
+        packet.metadata=m17_metadata(f.expected_packet_sequence+1u,
+                                      f.expected_pts+33333u,1);
+        assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
+    }
     packet.bytes=NULL;packet.bytes_length=0u;
     packet.flags=TM_SGH264_PACKET_EOS;
     packet.metadata=m17_metadata(f.expected_packet_sequence+1u,
@@ -279,6 +351,7 @@ void test_m17_real_h264_codec_into_graph(void){
     tm_sg_program_destroy(program);
     assert(tm_sgh264_destroy(source)==TM_SGH264_OK);
     turbo_codec_destroy(encoder);
+    m17_test_equal_size_wrong_decoder_geometry();
     turbo_codec_registry_shutdown();
     free(input);
     free(encoded);

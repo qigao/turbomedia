@@ -128,7 +128,13 @@ initial profile requires a complete VCL access unit to yield a frame
 immediately; `NEED_MORE` from a VCL is a sticky failure because a later
 output cannot otherwise be attributed to the correct PTS/DTS. Config-only
 `NEED_MORE` remains valid. A delayed codec profile needs explicit
-per-frame provenance mapping before being enabled.
+per-frame provenance mapping before being enabled. The existing native
+Executor CTest now also generates a **real 128×32 H.264 frame** whose
+decoded I420 byte count exactly equals 64×64; the H.264 Source bound
+to 64×64 rejects it from the actual decoder geometry and enters a
+terminal failed state. Two VCL NALs in one timestamped packet are
+rejected as ambiguous multi-picture input rather than silently
+attributed to one PTS.
 
 The first profile does **not** support AVCC length-prefixed NAL input,
 RTP FU-A/reassembly, GPU/MediaCodec zero-copy, B-frame reordering,
