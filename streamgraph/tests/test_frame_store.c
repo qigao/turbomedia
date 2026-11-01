@@ -81,7 +81,51 @@ static void test_quota_and_destroy(void) {
     assert(tm_fs_destroy(s) == TM_FS_OK);
 }
 
+static void test_m17_frame_metadata_slot_and_aba(void) {
+    tm_fs_store *s=NULL;
+    tm_fs_config_v1 cfg=TM_FS_CONFIG_V1_INIT;
+    tm_fs_frame_ref_v1 ref=TM_FS_FRAME_REF_V1_INIT;
+    tm_fs_frame_ref_v1 next=TM_FS_FRAME_REF_V1_INIT;
+    tm_fs_frame_metadata_v1 m=TM_FS_FRAME_METADATA_V1_INIT;
+    tm_fs_frame_metadata_v1 read=TM_FS_FRAME_METADATA_V1_INIT;
+    uint8_t data[4]={1u,2u,3u,4u};
+    cfg.store_id=871u;cfg.slot_capacity=1u;cfg.max_frame_bytes=16u;
+    cfg.max_pins=2u;cfg.max_leases=2u;cfg.max_retained_bytes=16u;
+    assert(tm_fs_create(&cfg,&s)==TM_FS_OK);
+    m.width=2u;m.height=2u;m.format_id=1u;
+    m.device_session_id=12u;m.session_generation=2u;m.display_id=7u;
+    m.source_session_generation=91u;m.display_generation=3u;
+    m.geometry_generation=4u;m.capture_session_hi=123u;
+    m.stream_generation=8u;m.packet_sequence=11u;
+    m.pts=33000u;m.dts=33000u;m.timebase_num=1u;m.timebase_den=1000000u;
+    assert(tm_fs_publish_cpu_with_metadata(s,data,sizeof(data),91u,3u,
+                                            &m,&ref)==TM_FS_OK);
+    assert(tm_fs_get_metadata(s,&ref,&read)==TM_FS_OK);
+    assert(read.capture_session_hi==123u && read.packet_sequence==11u &&
+           read.pts==33000u && read.geometry_generation==4u);
+    m.packet_sequence=12u;
+    assert(tm_fs_get_metadata(s,&ref,&read)==TM_FS_OK &&
+           read.packet_sequence==11u); /* deep copied, not caller lifetime */
+    assert(tm_fs_publish_cpu_with_metadata(s,data,sizeof(data),91u,3u,
+                                            &m,&next)==TM_FS_EFULL);
+    assert(tm_fs_retire(s,&ref)==TM_FS_OK);
+    assert(tm_fs_get_metadata(s,&ref,&read)==TM_FS_ESTALE);
+    assert(tm_fs_publish_cpu(s,data,sizeof(data),91u,3u,&next)==TM_FS_OK);
+    assert(tm_fs_get_metadata(s,&next,&read)==TM_FS_ENOMETA);
+    assert(tm_fs_get_metadata(s,&ref,&read)==TM_FS_ESTALE);
+    assert(tm_fs_retire(s,&next)==TM_FS_OK);
+    m.source_session_generation=1u;
+    assert(tm_fs_publish_cpu_with_metadata(s,data,sizeof(data),91u,3u,
+                                            &m,&next)==TM_FS_EINVAL);
+    m.source_session_generation=91u;m.version=99u;
+    assert(tm_fs_publish_cpu_with_metadata(s,data,sizeof(data),91u,3u,
+                                            &m,&next)==TM_FS_EVERSION);
+    assert(tm_fs_seal(s)==TM_FS_OK);
+    assert(tm_fs_destroy(s)==TM_FS_OK);
+}
+
 int main(void) {
+    test_m17_frame_metadata_slot_and_aba();
     test_pin_retire_and_aba();
     test_quota_and_destroy();
     puts("FrameStore CPU owner contract tests: PASS");

@@ -169,7 +169,85 @@ static void test_frame_store_full_buffered_source(void){
     assert(tm_ex_discard_ready(o,1u)==TM_EX_OK);
     finish(o,s,p);
 }
+
+typedef struct {
+    unsigned counter, seen;
+    uint64_t source_seq;
+    tm_fs_store *store;
+} meta_fixture;
+
+static tm_ex_source_result meta_source_next(void *v,uint8_t *out,
+                                            size_t cap,size_t *size) {
+    meta_fixture *f=(meta_fixture *)v;
+    if(f->counter==2u)return TM_EX_SOURCE_EOS;
+    assert(cap>=1u);
+    out[0]=(uint8_t)++f->counter;*size=1u;
+    f->source_seq=f->counter;
+    return TM_EX_SOURCE_FRAME;
+}
+static int meta_source_info(void *v,tm_fs_frame_metadata_v1 *m) {
+    meta_fixture *f=(meta_fixture *)v;
+    assert(m->size==sizeof(*m) && m->version==TM_FS_META_ABI_V1);
+    m->width=1u;m->height=1u;m->format_id=1u;
+    m->device_session_id=3u;m->session_generation=2u;m->display_id=7u;
+    m->source_session_generation=22u;m->display_generation=19u;
+    m->geometry_generation=4u;m->capture_session_lo=89u;
+    m->stream_generation=3u;m->packet_sequence=f->source_seq;
+    m->pts=f->source_seq*33000u;m->dts=m->pts;
+    m->timebase_num=1u;m->timebase_den=1000000u;
+    return 0;
+}
+static int meta_sink_visit(void *v,const tm_fs_frame_ref_v1 *ref,
+                           const tm_fs_cpu_view_v1 *view) {
+    meta_fixture *f=(meta_fixture *)v;
+    tm_fs_frame_metadata_v1 m=TM_FS_FRAME_METADATA_V1_INIT;
+    assert(view->size_bytes==1u && *view->data==ref->frame_id);
+    assert(tm_fs_get_metadata(f->store,ref,&m)==TM_FS_OK);
+    assert(m.packet_sequence==ref->frame_id && m.pts==ref->frame_id*33000u);
+    f->seen++;
+    return 0;
+}
+static void test_metadata_survives_pending_frame_backpressure(void) {
+    meta_fixture f={0};
+    tm_sg_program *p=make_program();
+    tm_fs_store *s=make_store(4u);
+    tm_ex_config_v1 cfg=TM_EX_CONFIG_V1_INIT;
+    tm_ex_binding_v1 binds[4];
+    const char *names[4]={"src","proc","record","preview"};
+    tm_ex_owner *owner=NULL;
+    unsigned i;
+    cfg.max_frame_bytes=8u;cfg.source_session_generation=22u;
+    cfg.display_generation=19u;cfg.fanout.branch_count=2u;
+    for(i=0u;i<2u;i++){
+        cfg.fanout.branches[i]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
+        cfg.fanout.branches[i].policy=TM_FO_ORDERED_LOSSLESS;
+        cfg.fanout.branches[i].queue_depth=1u;
+    }
+    f.store=s;
+    for(i=0u;i<4u;i++){
+        binds[i]=(tm_ex_binding_v1)TM_EX_BINDING_V1_INIT;
+        binds[i].node_id=names[i];binds[i].ctx=&f;
+        binds[i].visit=meta_sink_visit;
+    }
+    binds[0].visit=NULL;binds[0].source_next=meta_source_next;
+    assert(tm_ex_create(p,s,&cfg,binds,4u,&owner)==TM_EX_OK);
+    assert(tm_ex_bind_source_metadata(owner,meta_source_info,&f)==TM_EX_OK);
+    assert(tm_ex_pump_source(owner)==TM_EX_OK);
+    assert(tm_ex_pump_source(owner)==TM_EX_EFULL);
+    assert(f.counter==2u);
+    assert(tm_ex_bind_source_metadata(owner,meta_source_info,&f)==TM_EX_ESTATE);
+    assert(tm_ex_pump_sink(owner,0u)==TM_EX_OK);
+    assert(tm_ex_pump_sink(owner,1u)==TM_EX_OK);
+    assert(tm_ex_pump_source(owner)==TM_EX_OK && f.counter==2u);
+    assert(tm_ex_pump_sink(owner,0u)==TM_EX_OK);
+    assert(tm_ex_pump_sink(owner,1u)==TM_EX_OK);
+    assert(tm_ex_pump_source(owner)==TM_EX_EOS);
+    assert(f.seen==6u);
+    finish(owner,s,p);
+}
+
 int main(void){
+    test_metadata_survives_pending_frame_backpressure();
     test_full_lossless_and_eos();
     test_cancel_requires_drain();
     test_provider_failure();

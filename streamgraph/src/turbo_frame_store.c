@@ -13,6 +13,8 @@ typedef struct {
     uint64_t display_generation;
     uint32_t pins;
     uint32_t leases;
+    tm_fs_frame_metadata_v1 metadata;
+    uint32_t has_metadata;
     fs_state state;
 } fs_slot;
 typedef struct { uint64_t token; uint32_t slot; uint32_t generation; } fs_credit;
@@ -62,6 +64,8 @@ static void maybe_retire(fs_slot *slot) {
     if (slot->state == FS_RETIRING && !slot->pins && !slot->leases) {
         slot->state = FS_FREE;
         slot->length = 0u;
+        slot->has_metadata = 0u;
+        memset(&slot->metadata,0,sizeof(slot->metadata));
     }
 }
 
@@ -116,13 +120,37 @@ fail:
     return TM_FS_ENOMEM;
 }
 
-tm_fs_status tm_fs_publish_cpu(tm_fs_store *s, const void *data, size_t size_bytes,
-                                uint64_t session, uint64_t display,
-                                tm_fs_frame_ref_v1 *out) {
+tm_fs_status tm_fs_validate_metadata(const tm_fs_frame_metadata_v1 *m) {
+    if (!m) return TM_FS_EINVAL;
+    if (m->version != TM_FS_META_ABI_V1) return TM_FS_EVERSION;
+    if (m->size != sizeof(*m) || !m->device_session_id ||
+        !m->session_generation || !m->display_id || m->reserved ||
+        !m->source_session_generation || !m->display_generation ||
+        !m->geometry_generation || (!m->capture_session_hi && !m->capture_session_lo) ||
+        !m->stream_generation || !m->packet_sequence ||
+        !m->width || !m->height || !m->format_id ||
+        m->width > 4096u || m->height > 4096u ||
+        (uint64_t)m->width * m->height > 8388608u ||
+        !m->timebase_num || !m->timebase_den ||
+        (m->flags & ~(TM_FS_META_FLAG_KEY_FRAME | TM_FS_META_FLAG_DISCONTINUITY)))
+        return TM_FS_EINVAL;
+    return TM_FS_OK;
+}
+
+tm_fs_status tm_fs_publish_cpu_with_metadata(
+    tm_fs_store *s, const void *data, size_t size_bytes,
+    uint64_t session, uint64_t display,
+    const tm_fs_frame_metadata_v1 *meta, tm_fs_frame_ref_v1 *out) {
     uint32_t step;
     if (!s || !out || !data || !size_bytes || !session || !display ||
         size_bytes > s->config.max_frame_bytes) return TM_FS_EINVAL;
     memset(out, 0, sizeof(*out));
+    if (meta) {
+        tm_fs_status rc = tm_fs_validate_metadata(meta);
+        if (rc != TM_FS_OK) return rc;
+        if (meta->source_session_generation != session ||
+            meta->display_generation != display) return TM_FS_EINVAL;
+    }
     if (s->sealed) return TM_FS_ESHUTDOWN;
     for (step = 0u; step < s->config.slot_capacity; ++step) {
         uint32_t index = (s->cursor + step) % s->config.slot_capacity;
@@ -135,6 +163,9 @@ tm_fs_status tm_fs_publish_cpu(tm_fs_store *s, const void *data, size_t size_byt
         slot->frame_id = ++s->next_frame_id;
         slot->session_generation = session;
         slot->display_generation = display;
+        slot->has_metadata = meta != NULL;
+        if (meta) slot->metadata = *meta;
+        else memset(&slot->metadata, 0, sizeof(slot->metadata));
         slot->state = FS_READY;
         s->cursor = (index + 1u) % s->config.slot_capacity;
         out->size = sizeof(*out);
@@ -149,6 +180,28 @@ tm_fs_status tm_fs_publish_cpu(tm_fs_store *s, const void *data, size_t size_byt
         return TM_FS_OK;
     }
     return TM_FS_EFULL;
+}
+
+tm_fs_status tm_fs_publish_cpu(tm_fs_store *s, const void *data,
+                                size_t size_bytes, uint64_t session,
+                                uint64_t display, tm_fs_frame_ref_v1 *out) {
+    return tm_fs_publish_cpu_with_metadata(s, data, size_bytes,
+                                            session, display, NULL, out);
+}
+
+tm_fs_status tm_fs_get_metadata(tm_fs_store *s,
+                                const tm_fs_frame_ref_v1 *ref,
+                                tm_fs_frame_metadata_v1 *out) {
+    uint32_t idx;
+    tm_fs_status rc;
+    if (!out) return TM_FS_EINVAL;
+    if (out->version != TM_FS_META_ABI_V1) return TM_FS_EVERSION;
+    if (out->size != sizeof(*out)) return TM_FS_EINVAL;
+    rc = ref_index(s, ref, &idx);
+    if (rc != TM_FS_OK) return rc;
+    if (!s->slots[idx].has_metadata) return TM_FS_ENOMETA;
+    *out = s->slots[idx].metadata;
+    return TM_FS_OK;
 }
 
 tm_fs_status tm_fs_reserve_pin(tm_fs_store *s, const tm_fs_frame_ref_v1 *ref,
