@@ -47,6 +47,10 @@ static int scan_nals(const uint8_t *data, size_t bytes,
         if (type==1u || type==5u) *vcl=1u;
         next=payload+1u;
         while (next<bytes && !annexb_prefix(data,bytes,next)) next++;
+        /* No-B-frame v1 must not trust a fabricated DTS==PTS pair:
+         * Main/High profile SPS is outside this Baseline-only provider. */
+        if (type==7u &&
+            (next-payload<4u || data[payload+1u]!=66u)) return 0;
         if (next>=bytes) break;
         off=next;
     }

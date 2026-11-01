@@ -141,6 +141,13 @@ void test_m17_real_h264_codec_into_graph(void){
     config.source_session_generation=77u;config.display_generation=9u;
     config.geometry_generation=3u;config.capture_session_lo=99u;
     config.stream_generation=55u;
+    {
+        tm_sgh264_config_v1 too_large=config;
+        tm_sgh264_source *rejected=NULL;
+        too_large.width=4096u;too_large.height=2048u;
+        assert(tm_sgh264_create(&too_large,&rejected)==TM_SGH264_EUNSUPPORTED);
+        assert(rejected==NULL);
+    }
     assert(tm_sgh264_create(&config,&source)==TM_SGH264_OK);
 
     input=(uint8_t *)malloc(I420_BYTES);
@@ -160,6 +167,23 @@ void test_m17_real_h264_codec_into_graph(void){
     packet.metadata.geometry_generation=4u;
     assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
     packet.metadata.geometry_generation=3u;
+    packet.metadata.packet_sequence=2u;
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
+    packet.metadata.packet_sequence=1u;
+    packet.metadata.dts=1u;
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
+    packet.metadata.dts=0u;
+    packet.metadata.source_session_generation=1u;
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
+    packet.metadata.source_session_generation=77u;
+    encoded[0]=0u;encoded[1]=0u;encoded[2]=0u;encoded[3]=1u;
+    encoded[4]=0x67u;encoded[5]=0x64u;encoded[6]=0u;encoded[7]=0u;
+    packet.bytes_length=8u;
+    packet.flags=TM_SGH264_PACKET_CONFIG;
+    packet.metadata.flags=0u;
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EPROTOCOL);
+    packet.flags=TM_SGH264_PACKET_KEY_FRAME;
+    packet.metadata.flags=TM_FS_META_FLAG_KEY_FRAME;
     packet.framing=2u;
     assert(tm_sgh264_submit(source,&packet)==TM_SGH264_EUNSUPPORTED);
     packet.framing=TM_SGH264_FRAMING_ANNEX_B;
@@ -233,6 +257,7 @@ void test_m17_real_h264_codec_into_graph(void){
     packet.metadata=m17_metadata(f.expected_packet_sequence+1u,
                                   f.expected_pts+33333u,0);
     assert(tm_sgh264_submit(source,&packet)==TM_SGH264_OK);
+    assert(tm_sgh264_submit(source,&packet)==TM_SGH264_ESTATE);
     assert(tm_sgh264_ready(source,&ready)==TM_SGH264_OK && ready==1);
     assert(tm_ex_pump_source(owner)==TM_EX_EOS);
     assert(tm_ex_destroy(owner)==TM_EX_OK);

@@ -115,6 +115,8 @@ are two different **build closures** for the exact same source and
 public callback contracts, not two decoders in one runtime.
 No local H264 test replaces independent full-platform SDK qualification.
 
+The v1 decoder additionally requires a Baseline SPS (profile_idc 66), rejecting Main/High streams rather than assuming the sender's PTS=DTS precludes B slices. Existing CTest includes negative profile, frame-budget, DTS, sequence and source-generation cases.
+
 The first profile does **not** support AVCC length-prefixed NAL input,
 RTP FU-A/reassembly, GPU/MediaCodec zero-copy, B-frame reordering,
 cross-process FrameRef, dynamic geometry or full heterogeneous
