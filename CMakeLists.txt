@@ -178,6 +178,41 @@ add_subdirectory(streamgraph) # Shared platform C11 typed-graph component (no FF
 add_subdirectory(crypto)
 add_subdirectory(speech)
 add_subdirectory(codec)
+
+# M17: real Android/PC H264 CPU Graph Source. This is a production
+# TurboMedia::Codec adapter, not a second Codec implementation or scheduler.
+# It reuses the already-enabled platform H264/OpenH264 Codec and the existing
+# StreamGraph Executor, FrameStore and Fanout. Standalone StreamGraph remains
+# deliberately Codec-independent.
+add_library(turbo_media_streamgraph_h264 SHARED
+  streamgraph/adapters/codec/src/turbo_streamgraph_h264.c)
+turbo_media_configure_component(turbo_media_streamgraph_h264 StreamGraphH264)
+target_include_directories(turbo_media_streamgraph_h264 PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/streamgraph/adapters/codec/include>
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/streamgraph/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(turbo_media_streamgraph_h264 PUBLIC
+  TurboMedia::StreamGraph TurboMedia::Codec)
+# This new product provider follows the LLVM/Clang C11 toolchain policy.
+# No new MSVC/GCC release route or compiler-version detection.
+target_compile_options(turbo_media_streamgraph_h264 PRIVATE
+  -Wall -Wextra -Werror -pedantic)
+install(FILES streamgraph/adapters/codec/include/turbo_streamgraph_h264.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# Reuse the existing native StreamGraph Executor CTest, NOT a new test
+# project/target, installer, consumer app or probe workflow. Platform builds
+# exercise the REAL OpenH264 Codec -> Source -> CPU Store/Fanout integration.
+if(TARGET streamgraph_executor_test)
+  target_sources(streamgraph_executor_test PRIVATE
+    streamgraph/tests/test_h264_source.c)
+  target_compile_definitions(streamgraph_executor_test PRIVATE
+    TM_STREAMGRAPH_REAL_H264_TEST=1)
+  target_include_directories(streamgraph_executor_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/streamgraph/adapters/codec/include)
+  target_link_libraries(streamgraph_executor_test PRIVATE
+    TurboMedia::StreamGraphH264 TurboMedia::Codec)
+endif()
 add_subdirectory(muxer)
 add_subdirectory(demuxer)
 add_subdirectory(network)

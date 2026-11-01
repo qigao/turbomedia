@@ -246,7 +246,13 @@ static void test_metadata_survives_pending_frame_backpressure(void) {
     finish(owner,s,p);
 }
 
+#ifdef TM_STREAMGRAPH_REAL_H264_TEST
+void test_m17_real_h264_codec_into_graph(void);
+#endif
 int main(void){
+#ifdef TM_STREAMGRAPH_REAL_H264_TEST
+    test_m17_real_h264_codec_into_graph();
+#endif
     test_metadata_survives_pending_frame_backpressure();
     test_full_lossless_and_eos();
     test_cancel_requires_drain();

@@ -59,6 +59,55 @@ Observation schema all fail compile. These fixture-local format IDs are
 or runnable Provider factories. Do not call the current CPU Executor on
 that heterogeneous plan and claim it supports H264.
 
+## M17b implemented: immutable metadata in CPU FrameStore
+
+The v1 `tm_fs_frame_ref_v1`, `turbo_codec_ops_t` and
+`tm_ex_binding_v1` layouts are unchanged. The additive
+`tm_fs_frame_metadata_v1` carries exact device/display/session/geometry,
+capture-session and stream incarnations, packet sequence, frame format,
+width/height, timebase and PTS/DTS. The FrameStore now exposes
+`tm_fs_publish_cpu_with_metadata` and exact-Ref
+`tm_fs_get_metadata`. Slot retirement clears metadata; a reused slot
+returns `TM_FS_ESTALE` for old FrameRef, while legacy published frames
+return `TM_FS_ENOMETA`. Reading metadata **does not** retain a frame.
+
+`tm_ex_bind_source_metadata` adds an optional owner-local callback after a
+real Source has produced decoded CPU bytes. The Executor copies both bytes
+and metadata before publication and preserves them together across
+Store/Fanout backpressure, without an extra Codec context or worker. This
+is qualified in existing FrameStore/Executor CTests, not a new target.
+
+**M17c real Codec adapter in this Draft:** production
+`TurboMedia::StreamGraphH264` binds the existing
+`TurboMedia::Codec` OpenH264 decoder, accepting bounded, complete
+Annex-B H264 access units. `tm_sgh264_submit` validates exact
+`tm_fs_frame_metadata_v1`, capture/display/stream incarnation,
+monotonic sequence and PTS=DTS (B-frames explicitly unsupported), codec
+config SPS/PPS, IDR/key flags, EOS and buffer size **before** decoder
+effects. Decoder state is owner-local; no duplicated H264 implementation,
+scheduler or automatic fallback. `tm_sgh264_ready` must be checked
+before the existing Executor pumps a Source; config-only
+`TM_SGH264_NEED_MORE` is not EOS. The output is fixed I420 via
+`tm_sgh264_next_cpu_i420` and `tm_sgh264_source_metadata`,
+then actual FrameStore/fanout ownership.
+
+The **existing** `streamgraph_executor` product CTest is augmented only
+when building the actual top-level TurboMedia Codec product. It creates
+an H264 bitstream with the real TurboMedia Codec encoder, uses the same
+OpenH264 decode path, publishes a decoded I420 FrameRef with source
+metadata, admits two fanout consumers and reserves a separate delayed
+Vision pin before the Processor returns. Nothing is mocked. This
+new top-level Codec acceptance still requires a successful real
+Platform Build; standalone Graph Core checks cover M17b only, not
+the native H264 Codec link. The historical SDK tag/tag-restore 404
+tracked by #225 must not be bypassed or reported as a source test failure.
+
+The first profile does **not** support AVCC length-prefixed NAL input,
+RTP FU-A/reassembly, GPU/MediaCodec zero-copy, B-frame reordering,
+cross-process FrameRef, dynamic geometry or full heterogeneous
+EncodedPacket→Vision DAG execution. Such capabilities must be explicitly
+added as providers, without silently choosing another decoder.
+
 ## Required next additions, not alternative runtimes
 
 **M17b — preserve packet and frame provenance.** Android
