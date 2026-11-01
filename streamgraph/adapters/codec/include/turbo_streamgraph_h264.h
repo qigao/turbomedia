@@ -80,6 +80,23 @@ TURBO_MEDIA_API tm_sgh264_status tm_sgh264_create(
 TURBO_MEDIA_API tm_sgh264_status tm_sgh264_submit(
     tm_sgh264_source *source, const tm_sgh264_packet_v1 *packet);
 
+/* TIHP/v1: strict 116-byte network-byte-order media packet header followed
+ * by a bounded Annex-B access unit. The serialized source fields MUST
+ * match this owner's trusted config. This parser DOES NOT authenticate the
+ * transport; only an authenticated CNet/CHttp session may feed it.
+ *
+ * Synchronously borrows the payload until Codec decode completes; no frame
+ * pointer or reusable remote FrameRef is returned. Android provides PTS
+ * only: DTS=PTS is assigned here for the Baseline-only decoder, which
+ * independently validates SPS/IDR. ReceivedAtNs belongs to Android's
+ * clock domain and is deliberately not used for PC deadlines.
+ * Missing/unknown fields, different generations, malformed lengths or
+ * unsupported framing fail before calling the mutable Codec state.
+ */
+#define TM_SGH264_WIRE_HEADER_BYTES 116u
+TURBO_MEDIA_API tm_sgh264_status tm_sgh264_submit_wire(
+    tm_sgh264_source *source, const void *wire, size_t wire_length);
+
 TURBO_MEDIA_API tm_sgh264_status tm_sgh264_ready(
     tm_sgh264_source *source, int *out_ready);
 

@@ -208,6 +208,76 @@ tm_sgh264_status tm_sgh264_submit(tm_sgh264_source *s,
     return TM_SGH264_FRAME_READY;
 }
 
+/* TIHP/v1 big-endian primitives: never cast network bytes to a
+ * packed native struct, avoiding padding, host-endian and alignment bugs. */
+static uint16_t read_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8u) | p[1]);
+}
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24u) | ((uint32_t)p[1] << 16u) |
+           ((uint32_t)p[2] << 8u) | (uint32_t)p[3];
+}
+static uint64_t read_be64(const uint8_t *p) {
+    return ((uint64_t)read_be32(p) << 32u) | read_be32(p + 4u);
+}
+
+tm_sgh264_status tm_sgh264_submit_wire(tm_sgh264_source *s,
+                                       const void *input, size_t length) {
+    const uint8_t *p=(const uint8_t *)input;
+    tm_sgh264_packet_v1 packet=TM_SGH264_PACKET_V1_INIT;
+    tm_fs_frame_metadata_v1 *m=&packet.metadata;
+    uint32_t flags, payload_bytes, width, height;
+    uint64_t android_received_ns;
+    if (!s || !p) return TM_SGH264_EINVAL;
+    if (length<TM_SGH264_WIRE_HEADER_BYTES) return TM_SGH264_EPROTOCOL;
+    if (memcmp(p,"TIHP",4u)!=0 || read_be16(p+4u)!=1u ||
+        read_be16(p+6u)!=TM_SGH264_WIRE_HEADER_BYTES)
+        return TM_SGH264_EPROTOCOL;
+    flags=read_be32(p+8u);
+    if (flags & ~(TM_SGH264_PACKET_CONFIG | TM_SGH264_PACKET_KEY_FRAME |
+                  TM_SGH264_PACKET_EOS)) return TM_SGH264_EPROTOCOL;
+    if (read_be32(p+12u)!=TM_SGH264_FRAMING_ANNEX_B)
+        return TM_SGH264_EUNSUPPORTED;
+    width=read_be32(p+16u);height=read_be32(p+20u);
+    payload_bytes=read_be32(p+24u);
+    if (payload_bytes > s->config.max_packet_bytes ||
+        (size_t)payload_bytes != length-TM_SGH264_WIRE_HEADER_BYTES ||
+        read_be32(p+48u)!=0u || width!=s->config.width ||
+        height!=s->config.height)
+        return TM_SGH264_EPROTOCOL;
+    android_received_ns=read_be64(p+108u);
+    if (!android_received_ns || android_received_ns>(uint64_t)INT64_MAX ||
+        read_be64(p+100u)>(uint64_t)INT64_MAX)
+        return TM_SGH264_EPROTOCOL;
+    packet.framing=TM_SGH264_FRAMING_ANNEX_B;
+    packet.flags=flags;
+    packet.bytes_length=(size_t)payload_bytes;
+    packet.bytes=payload_bytes ? p+TM_SGH264_WIRE_HEADER_BYTES : NULL;
+
+    m->width=width;m->height=height;
+    /* The local negotiated CPU format and Source lifetime are trusted
+     * host config, never chosen by an arbitrary remote packet. */
+    m->format_id=s->config.decoded_format_id;
+    m->source_session_generation=s->config.source_session_generation;
+    m->device_session_id=read_be64(p+28u);
+    m->session_generation=read_be64(p+36u);
+    m->display_id=read_be32(p+44u);
+    m->display_generation=read_be64(p+52u);
+    m->geometry_generation=read_be64(p+60u);
+    m->capture_session_hi=read_be64(p+68u);
+    m->capture_session_lo=read_be64(p+76u);
+    m->stream_generation=read_be64(p+84u);
+    m->packet_sequence=read_be64(p+92u);
+    m->pts=read_be64(p+100u);
+    /* v1 explicitly refuses reordered H264. The actual Baseline SPS is
+     * independently checked in tm_sgh264_submit, not trusted from wire. */
+    m->dts=m->pts;
+    m->timebase_num=1u;m->timebase_den=1000000u;
+    m->flags=(flags & TM_SGH264_PACKET_KEY_FRAME) ?
+        TM_FS_META_FLAG_KEY_FRAME : 0u;
+    return tm_sgh264_submit(s,&packet);
+}
+
 tm_sgh264_status tm_sgh264_ready(tm_sgh264_source *s,int *ready) {
     if (!s || !ready) return TM_SGH264_EINVAL;
     *ready=(s->ready || s->finished) && !s->failed;
