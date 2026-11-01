@@ -164,6 +164,103 @@ static void m17_test_equal_size_wrong_decoder_geometry(void) {
     free(decoded);free(encoded);free(raw_frame);
 }
 
+
+/* Real encoded H264 bytes are carried by the same fixed, pointer-free
+ * TIHP/v1 header authored by TurboInteract's Android Kotlin serializer.
+ * This is NOT an authenticated network transport or a remote FrameRef. */
+static void m17_put_be16(uint8_t *p,uint16_t v){
+    p[0]=(uint8_t)(v>>8u);p[1]=(uint8_t)v;
+}
+static void m17_put_be32(uint8_t *p,uint32_t v){
+    p[0]=(uint8_t)(v>>24u);p[1]=(uint8_t)(v>>16u);
+    p[2]=(uint8_t)(v>>8u);p[3]=(uint8_t)v;
+}
+static void m17_put_be64(uint8_t *p,uint64_t v){
+    m17_put_be32(p,(uint32_t)(v>>32u));
+    m17_put_be32(p+4u,(uint32_t)v);
+}
+static void m17_real_wire_h264_source(
+    const tm_sgh264_config_v1 *config,
+    const uint8_t *encoded,size_t encoded_size){
+    uint8_t *wire;
+    uint8_t decoded[I420_BYTES];
+    size_t decoded_bytes=0u,wire_bytes=TM_SGH264_WIRE_HEADER_BYTES+encoded_size;
+    tm_fs_frame_metadata_v1 meta=TM_FS_FRAME_METADATA_V1_INIT;
+    tm_sgh264_source *source=NULL;
+    int ready=0;
+    assert(encoded_size>0u && encoded_size<=ENCODED_CAP);
+    wire=(uint8_t *)calloc(wire_bytes,1u);
+    assert(wire!=NULL);
+    memcpy(wire,"TIHP",4u);
+    m17_put_be16(wire+4u,1u);
+    m17_put_be16(wire+6u,TM_SGH264_WIRE_HEADER_BYTES);
+    m17_put_be32(wire+8u,TM_SGH264_PACKET_KEY_FRAME);
+    m17_put_be32(wire+12u,TM_SGH264_FRAMING_ANNEX_B);
+    m17_put_be32(wire+16u,W);m17_put_be32(wire+20u,H);
+    m17_put_be32(wire+24u,(uint32_t)encoded_size);
+    m17_put_be64(wire+28u,config->device_session_id);
+    m17_put_be64(wire+36u,config->session_generation);
+    m17_put_be32(wire+44u,config->display_id);
+    m17_put_be32(wire+48u,0u);
+    m17_put_be64(wire+52u,config->display_generation);
+    m17_put_be64(wire+60u,config->geometry_generation);
+    m17_put_be64(wire+68u,config->capture_session_hi);
+    m17_put_be64(wire+76u,config->capture_session_lo);
+    m17_put_be64(wire+84u,config->stream_generation);
+    m17_put_be64(wire+92u,1u);m17_put_be64(wire+100u,0u);
+    m17_put_be64(wire+108u,1234u);
+    memcpy(wire+TM_SGH264_WIRE_HEADER_BYTES,encoded,encoded_size);
+    assert(tm_sgh264_create(config,&source)==TM_SGH264_OK);
+
+    wire[0]='X';
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    wire[0]='T';
+    m17_put_be16(wire+6u,117u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be16(wire+6u,TM_SGH264_WIRE_HEADER_BYTES);
+    m17_put_be32(wire+8u,8u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be32(wire+8u,TM_SGH264_PACKET_KEY_FRAME);
+    m17_put_be32(wire+12u,2u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EUNSUPPORTED);
+    m17_put_be32(wire+12u,TM_SGH264_FRAMING_ANNEX_B);
+    m17_put_be32(wire+16u,128u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be32(wire+16u,W);
+    m17_put_be32(wire+24u,(uint32_t)encoded_size+1u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be32(wire+24u,(uint32_t)encoded_size);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes-1u)==TM_SGH264_EPROTOCOL);
+    m17_put_be64(wire+52u,config->display_generation+1u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be64(wire+52u,config->display_generation);
+    m17_put_be64(wire+84u,config->stream_generation+1u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be64(wire+84u,config->stream_generation);
+    m17_put_be64(wire+108u,0u);
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_EPROTOCOL);
+    m17_put_be64(wire+108u,1234u);
+
+    assert(tm_sgh264_submit_wire(source,wire,wire_bytes)==TM_SGH264_FRAME_READY);
+    assert(tm_sgh264_ready(source,&ready)==TM_SGH264_OK && ready==1);
+    assert(tm_sgh264_next_cpu_i420(source,decoded,sizeof(decoded),&decoded_bytes)
+           ==TM_EX_SOURCE_FRAME && decoded_bytes==I420_BYTES);
+    assert(tm_sgh264_source_metadata(source,&meta)==0);
+    assert(meta.packet_sequence==1u && meta.pts==0u &&
+           meta.stream_generation==config->stream_generation &&
+           meta.geometry_generation==config->geometry_generation);
+    m17_put_be32(wire+8u,TM_SGH264_PACKET_EOS);
+    m17_put_be32(wire+24u,0u);
+    m17_put_be64(wire+92u,2u);
+    m17_put_be64(wire+100u,33333u);
+    assert(tm_sgh264_submit_wire(source,wire,
+           TM_SGH264_WIRE_HEADER_BYTES)==TM_SGH264_OK);
+    assert(tm_sgh264_next_cpu_i420(source,decoded,sizeof(decoded),&decoded_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(tm_sgh264_destroy(source)==TM_SGH264_OK);
+    free(wire);
+}
+
 void test_m17_real_h264_codec_into_graph(void){
     turbo_video_codec_config_t encode_config={0};
     tm_sgh264_config_v1 config=TM_SGH264_CONFIG_V1_INIT;
@@ -263,6 +360,9 @@ void test_m17_real_h264_codec_into_graph(void){
         assert(result==TM_SGH264_NEED_MORE || result==TM_SGH264_FRAME_READY);
     }
     assert(result==TM_SGH264_FRAME_READY);
+    /* Real OpenH264 picture through the TIHP/v1 network-order parser, with
+     * malformed/wrong-generation frame rejection before decoder mutation. */
+    m17_real_wire_h264_source(&config,encoded,encoded_size);
     f.expected_packet_sequence=packet.metadata.packet_sequence;
     f.expected_pts=packet.metadata.pts;
     assert(tm_sgh264_ready(source,&ready)==TM_SGH264_OK && ready==1);
