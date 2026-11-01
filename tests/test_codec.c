@@ -1,4 +1,5 @@
 #include "turbo_codec.h"
+#include <turbo_streamgraph_h264.h>
 #include <tinytest.h>
 
 #include <stdint.h>
@@ -356,6 +357,216 @@ static void test_video_codec_config_validation(void) {
 #endif
 }
 
+
+/* M17c: actual OpenH264 bytes -> one Codec Provider -> canonical CPU
+ * StreamGraph Source/Executor -> FrameStore -> 2 independent sink credits.
+ * Executed in existing test_codec; no consumer/installer/probe project. */
+static size_t sh_start(const uint8_t *p,size_t n,size_t at) {
+    if(at+3u<=n && !p[at] && !p[at+1u] && p[at+2u]==1u) return 3u;
+    if(at+4u<=n && !p[at] && !p[at+1u] &&
+       !p[at+2u] && p[at+3u]==1u) return 4u;
+    return 0u;
+}
+static int sh_split(const uint8_t *input,size_t len,
+                    uint8_t *config,size_t *config_len,
+                    uint8_t *idr,size_t *idr_len,size_t capacity) {
+    size_t at=0u;
+    unsigned seen=0u;
+    *config_len=0u;*idr_len=0u;
+    while(at<len) {
+        size_t prefix=sh_start(input,len,at),start,end,i;
+        unsigned type;
+        uint8_t *out;
+        size_t *used;
+        if(!prefix) return 0;
+        start=at+prefix;
+        if(start>=len) return 0;
+        type=input[start]&0x1fu;
+        end=len;
+        for(i=start+1u;i<len;i++) if(sh_start(input,len,i)) {end=i;break;}
+        if(type==7u || type==8u || type==5u) {
+            out=(type==5u)?idr:config;
+            used=(type==5u)?idr_len:config_len;
+            if(end-at>capacity-*used) return 0;
+            memcpy(out+*used,input+at,end-at);
+            *used+=end-at;
+            seen|=(type==7u)?1u:(type==8u)?2u:4u;
+        }
+        at=end;
+    }
+    return seen==7u && *config_len && *idr_len;
+}
+typedef struct sh_fixture {
+    tm_sh_decoder *decoder;
+    unsigned processed,recorded,previewed;
+    uint64_t frame_id;
+} sh_fixture;
+static tm_sg_port_v1 sh_port(const char *name,uint32_t direction) {
+    tm_sg_port_v1 p=TM_SG_PORT_V1_INIT;
+    p.name=name;p.direction=direction;p.kind=TM_SG_VIDEO_FRAME;
+    p.memory_domain=TM_SG_MEMORY_CPU;p.format_id=420u;
+    p.timebase_num=1u;p.timebase_den=1000000u;
+    return p;
+}
+static tm_sg_program *sh_program(void) {
+    tm_sg_port_v1 input=sh_port("out",TM_SG_OUTPUT);
+    tm_sg_port_v1 processor[]={
+        sh_port("in",TM_SG_INPUT),sh_port("out",TM_SG_OUTPUT)};
+    tm_sg_port_v1 sink=sh_port("in",TM_SG_INPUT);
+    const char *names[]={"h264_source","inspect","record","preview"};
+    tm_sg_node_v1 nodes[4];
+    tm_sg_edge_v1 edges[3];
+    tm_sg_program *program=NULL;
+    unsigned i;
+    for(i=0;i<4u;i++) {
+        nodes[i]=(tm_sg_node_v1)TM_SG_NODE_V1_INIT;
+        nodes[i].id=names[i];
+        nodes[i].kind=i==0u?TM_SG_SOURCE:
+                      i==1u?TM_SG_PROCESSOR:TM_SG_SINK;
+        nodes[i].ports=i==0u?&input:i==1u?processor:&sink;
+        nodes[i].port_count=i==1u?2u:1u;
+    }
+    for(i=0;i<3u;i++) {
+        edges[i]=(tm_sg_edge_v1)TM_SG_EDGE_V1_INIT;
+        edges[i].source_node=i==0u?"h264_source":"inspect";
+        edges[i].source_port="out";
+        edges[i].target_node=i==0u?"inspect":names[i+1u];
+        edges[i].target_port="in";
+    }
+    if(tm_sg_compile(nodes,4u,edges,3u,NULL,&program,NULL)!=TM_SG_OK)
+        return NULL;
+    return program;
+}
+static int sh_inspect(void *ctx,const tm_fs_frame_ref_v1 *ref,
+                      const tm_fs_cpu_view_v1 *view) {
+    sh_fixture *f=(sh_fixture *)ctx;
+    tm_sh_stamp_v1 stamp=TM_SH_STAMP_V1_INIT;
+    if(tm_sh_last_stamp(f->decoder,&stamp)!=TM_SH_OK ||
+       stamp.packet_sequence!=2u || stamp.pts_us!=33000 ||
+       stamp.stream.display_generation!=ref->display_generation ||
+       stamp.stream.session_generation!=ref->source_session_generation ||
+       stamp.decoded_bytes!=view->size_bytes ||
+       view->size_bytes!=64u*64u*3u/2u) return -1;
+    f->frame_id=ref->frame_id;f->processed++;return 0;
+}
+static int sh_record(void *ctx,const tm_fs_frame_ref_v1 *ref,
+                     const tm_fs_cpu_view_v1 *view) {
+    sh_fixture *f=(sh_fixture *)ctx;
+    if(ref->frame_id!=f->frame_id ||
+       view->size_bytes!=64u*64u*3u/2u) return -1;
+    f->recorded++;return 0;
+}
+static int sh_preview(void *ctx,const tm_fs_frame_ref_v1 *ref,
+                      const tm_fs_cpu_view_v1 *view) {
+    sh_fixture *f=(sh_fixture *)ctx;
+    if(ref->frame_id!=f->frame_id ||
+       view->size_bytes!=64u*64u*3u/2u) return -1;
+    f->previewed++;return 0;
+}
+static void test_real_h264_codec_streamgraph(void) {
+    turbo_video_codec_config_t cfg=video_config();
+    turbo_codec_t *encoder;
+    uint8_t raw[64u*64u*3u/2u],encoded[65536],params[65536],idr[65536];
+    size_t encoded_len=sizeof(encoded),params_len=0u,idr_len=0u;
+    turbo_encoded_frame_t frame={0};
+    tm_sh_config_v1 setup=TM_SH_CONFIG_V1_INIT;
+    tm_sh_decoder *dec=NULL;
+    tm_si_packet_v1 packet=TM_SI_PACKET_V1_INIT;
+    tm_fs_config_v1 fcfg=TM_FS_CONFIG_V1_INIT;
+    tm_fs_store *store=NULL;
+    tm_ex_config_v1 ecfg=TM_EX_CONFIG_V1_INIT;
+    tm_ex_binding_v1 bindings[4];
+    tm_ex_owner *executor=NULL;
+    tm_sg_program *graph=NULL;
+    sh_fixture f={0};
+    int ready=0;
+    unsigned i;
+    cfg.width=64;cfg.height=64;cfg.keyframe_interval=1;
+    turbo_codec_registry_init();
+    encoder=turbo_codec_create_encoder("h264",&cfg);
+    CHECK_TRUE(encoder!=NULL);
+    generate_test_frame(raw,64,64);
+    CHECK_INT(TURBO_CODEC_OK,turbo_codec_encode(
+        encoder,raw,sizeof(raw),encoded,&encoded_len,&frame));
+    CHECK_TRUE(frame.is_keyframe!=0 && encoded_len>0u);
+    CHECK_TRUE(sh_split(encoded,encoded_len,params,&params_len,
+                        idr,&idr_len,sizeof(params)));
+    turbo_codec_destroy(encoder);
+
+    setup.ingress.stream=(tm_si_stream_v1)TM_SI_STREAM_V1_INIT;
+    setup.ingress.stream.device_session_id=1001u;
+    setup.ingress.stream.session_generation=5u;
+    setup.ingress.stream.display_id=7u;
+    setup.ingress.stream.display_generation=3u;
+    setup.ingress.stream.geometry_generation=8u;
+    setup.ingress.stream.capture_hi=0xaaa5u;
+    setup.ingress.stream.capture_lo=0xbbb8u;
+    setup.ingress.stream.stream_generation=11u;
+    setup.ingress.stream.width=64u;setup.ingress.stream.height=64u;
+    setup.ingress.max_packet_bytes=65536u;
+    CHECK_INT(TM_SH_OK,tm_sh_create(&setup,&dec));
+    f.decoder=dec;
+    packet.stream=setup.ingress.stream;
+    packet.kind=TM_SI_CONFIG;packet.sequence=1u;
+    packet.bytes=params;packet.byte_count=params_len;
+    packet.pts_us=packet.dts_us=0;
+    CHECK_INT(TM_SH_OK,tm_sh_offer(dec,&packet));
+    CHECK_INT(TM_SH_AGAIN,tm_sh_pump(dec));
+    CHECK_INT(TM_SH_OK,tm_sh_ready(dec,&ready));
+    CHECK_INT(0,ready);
+    packet.kind=TM_SI_IDR;packet.sequence=2u;
+    packet.bytes=idr;packet.byte_count=idr_len;
+    packet.pts_us=packet.dts_us=33000;
+    CHECK_INT(TM_SH_OK,tm_sh_offer(dec,&packet));
+    CHECK_INT(TM_SH_OK,tm_sh_pump(dec));
+    CHECK_INT(TM_SH_OK,tm_sh_ready(dec,&ready));
+    CHECK_INT(1,ready);
+
+    fcfg.store_id=777u;fcfg.slot_capacity=2u;
+    fcfg.max_frame_bytes=sizeof(raw);fcfg.max_pins=4u;
+    fcfg.max_leases=4u;fcfg.max_retained_bytes=2u*sizeof(raw);
+    CHECK_INT(TM_FS_OK,tm_fs_create(&fcfg,&store));
+    graph=sh_program();CHECK_TRUE(graph!=NULL);
+    ecfg.max_frame_bytes=sizeof(raw);
+    ecfg.source_session_generation=setup.ingress.stream.session_generation;
+    ecfg.display_generation=setup.ingress.stream.display_generation;
+    ecfg.fanout.branch_count=2u;
+    ecfg.fanout.branches[0]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
+    ecfg.fanout.branches[0].policy=TM_FO_ORDERED_LOSSLESS;
+    ecfg.fanout.branches[0].queue_depth=2u;
+    ecfg.fanout.branches[1]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
+    ecfg.fanout.branches[1].policy=TM_FO_LATEST;
+    ecfg.fanout.branches[1].queue_depth=2u;
+    for(i=0u;i<4u;i++) {
+        const char *ids[]={"h264_source","inspect","record","preview"};
+        bindings[i]=(tm_ex_binding_v1)TM_EX_BINDING_V1_INIT;
+        bindings[i].node_id=ids[i];
+        bindings[i].ctx=i==0u?(void *)dec:(void *)&f;
+    }
+    bindings[0].source_next=tm_sh_next_cpu_i420;
+    bindings[1].visit=sh_inspect;
+    bindings[2].visit=sh_record;
+    bindings[3].visit=sh_preview;
+    CHECK_INT(TM_EX_OK,tm_ex_create(graph,store,&ecfg,bindings,4u,&executor));
+    CHECK_INT(TM_EX_OK,tm_ex_pump_source(executor));
+    CHECK_INT(TM_EX_OK,tm_ex_pump_sink(executor,0u));
+    CHECK_INT(TM_EX_OK,tm_ex_pump_sink(executor,1u));
+    CHECK_TRUE(f.processed==1u && f.recorded==1u && f.previewed==1u);
+
+    packet.kind=TM_SI_EOS;packet.sequence=3u;
+    packet.bytes=NULL;packet.byte_count=0u;
+    packet.pts_us=packet.dts_us=66000;
+    CHECK_INT(TM_SH_OK,tm_sh_offer(dec,&packet));
+    CHECK_INT(TM_SH_EOS,tm_sh_pump(dec));
+    CHECK_INT(TM_EX_EOS,tm_ex_pump_source(executor));
+    CHECK_INT(TM_EX_OK,tm_ex_destroy(executor));
+    CHECK_INT(TM_FS_OK,tm_fs_seal(store));
+    CHECK_INT(TM_FS_OK,tm_fs_destroy(store));
+    tm_sg_program_destroy(graph);
+    CHECK_INT(TM_SH_OK,tm_sh_destroy(dec));
+    turbo_codec_registry_shutdown();
+}
+
 suite("turbo_media_codec") {
     group("Codec Registry Management") {
         it("registers and unregisters built-in G.711 codecs") {
@@ -420,6 +631,12 @@ suite("turbo_media_codec") {
     group("Error Handling") {
         it("handles error conditions gracefully") {
             test_codec_error_conditions();
+        }
+    }
+
+    group("H264 into real StreamGraph CPU owner") {
+        it("decodes real H264 and fans out one FrameStore lease per consumer") {
+            test_real_h264_codec_streamgraph();
         }
     }
 

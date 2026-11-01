@@ -488,17 +488,23 @@ static int h264_decode(void *ctx,
         }
     }
     
-    /* Copy decoded frame (I420 format) */
+    /* Validate decoded dimensions/strides before computing bytes or copying
+     * any planes. A malformed SPS must not overflow signed width*height. */
     int width = buf_info.UsrData.sSystemBuffer.iWidth;
     int height = buf_info.UsrData.sSystemBuffer.iHeight;
     int stride[2] = {
         buf_info.UsrData.sSystemBuffer.iStride[0],
         buf_info.UsrData.sSystemBuffer.iStride[1]
     };
-    
-    size_t y_size = width * height;
-    size_t uv_size = y_size / 4;
-    size_t required_size = y_size + uv_size * 2;
+    if (width <= 0 || height <= 0 || width > TURBO_VIDEO_MAX_WIDTH ||
+        height > TURBO_VIDEO_MAX_HEIGHT || (width & 1) || (height & 1) ||
+        stride[0] < width || stride[1] < width / 2 ||
+        !dst[0] || !dst[1] || !dst[2]) {
+        return TURBO_CODEC_ERR_CODEC;
+    }
+    size_t y_size = (size_t)width * (size_t)height;
+    size_t uv_size = y_size / 4u;
+    size_t required_size = y_size + uv_size * 2u;
     
     if (*output_len < required_size) {
         return TURBO_CODEC_ERR_BUFFER;
