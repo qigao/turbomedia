@@ -1,0 +1,77 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_streamer": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "streamer_registry.c",
+          "chttp_upload.c",
+          "hls_streamer.c",
+          "dash_streamer.c",
+          "http_flv_streamer.c",
+          "rtmp_streamer.c",
+          "hls/hls-fmp4.c",
+          "hls/hls-m3u8.c",
+          "dash/dash-adaptation.c",
+          "dash/dash-mpd.c",
+          "dash/dash-representation.c",
+          "dash/dash-segment.c",
+          "dash/xs-duration.c",
+          "rtmp/rtmp-chunk-header.c",
+          "rtmp/rtmp-chunk-read.c",
+          "rtmp/rtmp-chunk-write.c",
+          "rtmp/rtmp-client.c",
+          "rtmp/rtmp-control-handler.c",
+          "rtmp/rtmp-control-message.c",
+          "rtmp/rtmp-event.c",
+          "rtmp/rtmp-handler.c",
+          "rtmp/rtmp-handshake.c",
+          "rtmp/rtmp-invoke-handler.c",
+          "rtmp/rtmp-netconnection.c",
+          "rtmp/rtmp-netstream.c",
+          "rtmp/rtmp-server.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_codec", "turbo_media_muxer", "turbo_media_demuxer", "turbo_media_transport"],
+        "includeDirs": ["../../media/codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_HLS": null,
+          "TURBO_MEDIA_HAS_DASH": null,
+          "TURBO_MEDIA_HAS_RTMP": null,
+          "TURBO_MEDIA_HAS_HTTP_FLV": null
+        }
+      },
+      "private": {
+        "deps": ["salts_core", "salts_crypto", "cmeta_cstl", "chttp_client", "salts_cnet"],
+        "includeDirs": [
+          "hls",
+          "dash",
+          "rtmp",
+          "rtmp/include",
+          "../../media/containers/common/codec_helpers",
+          "../../media/containers/common/mov",
+          "../../media/containers/muxer/flv",
+          "../../media/containers/muxer/include",
+          "../../media/containers/demuxer/include",
+          "../transport/include"
+        ],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_streamer_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_sdp": {
+      "kind": "static",
+      "sources": {
+        "files": ["turbo_sdp.c", "$builddir/sip/sdp/turbo_sdp_parser_gen.c"]
+      },
+      "public": {
+        "includeDirs": ["../../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_core"],
+        "includeDirs": [".", "$builddir/sip/sdp"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "preTasks": [
+        {
+          "name": "sdp_lexer",
+          "tool": "re2c",
+          "inputs": ["turbo_sdp_parser.re"],
+          "outputs": ["$builddir/sip/sdp/turbo_sdp_parser_gen.c"],
+          "args": ["-o", "$builddir/sip/sdp/turbo_sdp_parser_gen.c", "$moduledir/turbo_sdp_parser.re"]
+        }
+      ],
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_sdp.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

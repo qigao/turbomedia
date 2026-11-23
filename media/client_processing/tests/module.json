@@ -1,0 +1,15 @@
+{
+  "targets": {
+    "turbo_media_test_client_processing": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_client_processing.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_client_processing", "vcpkg_ffmpeg"],
+        "includeDirs": ["../../codec/include", "../include"]
+      },
+      "test": {}
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "platforms": {
+    "windows-x64": {
+      "os": "windows",
+      "arch": "x64",
+      "toolchains": [
+        {
+          "id": "llvm-mingw-x64",
+          "vcpkgTriplet": "qigao-x64-windows-llvm-mingw",
+          "vcpkgRoot": "${envPath:VCPKG_INSTALLED_DIR}"
+        }
+      ]
+    }
+  },
+  "toolchains": {
+    "llvm-mingw-x64": {
+      "driver": "llvm-mingw",
+      "hostOs": "windows",
+      "triple": "x86_64-w64-mingw32",
+      "cc": "${envPath:LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang.exe",
+      "cxx": "${envPath:LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang++.exe",
+      "ar": "${envPath:LLVM_MINGW_ROOT}/bin/llvm-ar.exe",
+      "ld": "${envPath:LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang++.exe",
+      "runtimeBins": [
+        "${envPath:LLVM_MINGW_ROOT}/x86_64-w64-mingw32/bin/libc++.dll",
+        "${envPath:LLVM_MINGW_ROOT}/x86_64-w64-mingw32/bin/libunwind.dll"
+      ]
+    }
+  }
+}

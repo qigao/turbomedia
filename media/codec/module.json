@@ -1,0 +1,53 @@
+{
+  "include": ["audio/module.json", "tests/module.json", "video/module.json"],
+  "targets": {
+    "turbo_media_codec": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "codec_registry.c",
+          "audio/g711_codec.c",
+          "audio/opus_codec.c",
+          "video/vpx_codec.c",
+          "video/h264_codec.c",
+          "video/h265_codec.c"
+        ]
+      },
+      "public": {
+        "includeDirs": ["include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_OPUS": null,
+          "TURBO_MEDIA_HAS_VPX": null,
+          "TURBO_MEDIA_HAS_H264": null,
+          "TURBO_MEDIA_HAS_H265": null
+        }
+      },
+      "private": {
+        "deps": ["vcpkg_audiocodec", "vcpkg_videocodec"],
+        "includeDirs": ["$vcpkg/include"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_codec_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_codec.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_codec_types.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

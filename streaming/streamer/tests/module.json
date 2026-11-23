@@ -1,0 +1,89 @@
+{
+  "targets": {
+    "turbo_media_test_dash_local": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_dash_local.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "turbo_media_test_helpers",
+          "turbo_media_codec",
+          "turbo_media_streamer",
+          "salts_core"
+        ],
+        "includeDirs": [
+          "../../../media/tests",
+          "../../../media/codec/include",
+          "../include",
+          "../../../media/containers/muxer/include",
+          "../../../media/containers/demuxer/include",
+          "../../transport/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_hls_local": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_hls_local.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "turbo_media_test_helpers",
+          "turbo_media_player",
+          "turbo_media_streamer",
+          "turbo_media_recognition",
+          "turbo_media_codec",
+          "salts_core"
+        ],
+        "includeDirs": [
+          "../../../media/tests",
+          "../../../media/codec/include",
+          "../../../media/containers/demuxer/include",
+          "../../../media/containers/muxer/include",
+          "../include",
+          "../../transport/include",
+          "../../../media/recognition/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_http_flv_local": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_http_flv_local.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_streamer", "chttp_app"],
+        "includeDirs": [
+          "../../../media/codec/include",
+          "../include",
+          "../../../media/containers/muxer/include",
+          "../../../media/containers/demuxer/include",
+          "../../transport/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_rtmp_metadata": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_rtmp_metadata.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_streamer"],
+        "includeDirs": [
+          "../../../media/codec/include",
+          "../include",
+          "../../../media/containers/muxer/include",
+          "../../../media/containers/demuxer/include",
+          "../../transport/include"
+        ]
+      },
+      "test": {}
+    }
+  }
+}

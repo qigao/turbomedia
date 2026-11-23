@@ -1,0 +1,51 @@
+{
+  "targets": {
+    "turbo_media_test_benchmark": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_benchmark.c"]
+      },
+      "when": {
+        "config": "benchmark"
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_test_helpers", "turbo_media_codec", "salts_media"],
+        "includeDirs": [".", "../codec/include"]
+      },
+      "test": {
+        "labels": ["performance"]
+      }
+    },
+    "turbo_media_test_capture": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_capture.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_media"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_helpers": {
+      "kind": "static",
+      "testOnly": true,
+      "sources": {
+        "files": ["helpers.c"]
+      },
+      "public": {
+        "includeDirs": ["."]
+      }
+    },
+    "turbo_media_test_integration": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_integration.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_codec", "salts_media"],
+        "includeDirs": ["../codec/include"]
+      },
+      "test": {}
+    }
+  }
+}

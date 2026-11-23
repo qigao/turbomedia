@@ -1,0 +1,33 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_player": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["ffmpeg_player.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_codec", "turbo_media_demuxer", "salts_media"],
+        "includeDirs": ["../codec/include"]
+      },
+      "private": {
+        "deps": ["vcpkg_ffmpeg"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_player_EXPORTS": null
+        },
+        "includeDirs": ["../containers/demuxer/include", "../containers/muxer/include"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "$root/media/codec/include/turbo_player.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

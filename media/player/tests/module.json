@@ -1,0 +1,16 @@
+{
+  "forEach": [
+    {
+      "files": ["test_hls_public.c", "test_player_audio.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": ["salts_tinytest", "turbo_media_player"],
+          "includeDirs": ["../../codec/include", "../../containers/demuxer/include", "../../containers/muxer/include"]
+        },
+        "test": {}
+      }
+    }
+  ]
+}

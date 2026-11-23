@@ -1,0 +1,400 @@
+{
+  "targets": {
+    "mingw_threads": {
+      "kind": "header_only",
+      "public": {
+        "libs": ["pthread"]
+      },
+      "runtimeBins": ["${env:LLVM_MINGW_ROOT}/x86_64-w64-mingw32/bin/libwinpthread-1.dll"]
+    },
+    "salts_core": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libsalts.dll.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["mingw_threads"],
+        "defines": {
+          "HAS_ZSTD": "1"
+        }
+      },
+      "runtimeBins": ["${envPath:SALTS_BASE_ROOT}/bin/libsalts.dll"]
+    },
+    "salts_coroutine": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libcoroutine.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core"]
+      }
+    },
+    "salts_nativeio": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libnative_io.a", "ws2_32"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core", "salts_coroutine"]
+      }
+    },
+    "salts_simd": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libsimd.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "salts_asn1": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libasn1.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_simd", "salts_core"]
+      }
+    },
+    "salts_crypto": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_CNET_ROOT}/lib/libsalts_crypto.dll.a", "bcrypt", "ws2_32", "crypt32"],
+        "requiredIncludeDirs": ["${envPath:SALTS_CNET_ROOT}/include"],
+        "deps": ["mingw_threads", "salts_asn1"]
+      },
+      "runtimeBins": ["${envPath:SALTS_CNET_ROOT}/bin/salts_crypto.dll"]
+    },
+    "salts_cnet": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_CNET_ROOT}/lib/libcnet.dll.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_CNET_ROOT}/include"],
+        "deps": ["salts_nativeio", "salts_core", "salts_crypto"]
+      },
+      "runtimeBins": ["${envPath:SALTS_CNET_ROOT}/bin/cnet.dll"]
+    },
+    "cmeta_cmeta": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CMETA_ROOT}/lib/libcmeta_cmeta.a"],
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["salts_core"]
+      }
+    },
+    "saltsnet_ice": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTSNET_ROOT}/lib/libSaltsICE.dll.a"],
+        "requiredIncludeDirs": ["${envPath:SALTSNET_ROOT}/include"],
+        "deps": ["salts_cnet", "cmeta_cmeta", "salts_core", "salts_crypto"]
+      },
+      "runtimeBins": ["${envPath:SALTSNET_ROOT}/bin/libSaltsICE.dll"]
+    },
+    "vcpkg_yuv": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libyuv.dll.a"],
+        "requiredIncludeDirs": ["$vcpkg/include"],
+        "deps": ["vcpkg_jpeg"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libyuv.dll"]
+    },
+    "vcpkg_jpeg": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libjpeg.dll.a"],
+        "requiredIncludeDirs": ["$vcpkg/include"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libjpeg-62.dll"]
+    },
+    "salts_media": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": [
+          "${envPath:SALTS_BASE_ROOT}/lib/libmedia.a",
+          "mfplat",
+          "mf",
+          "mfuuid",
+          "mfreadwrite",
+          "strmiids",
+          "ole32",
+          "oleaut32",
+          "d3d11",
+          "dxgi",
+          "dxguid"
+        ],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core", "vcpkg_yuv", "vcpkg_jpeg"]
+      }
+    },
+    "salts_cserde": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libsaltscore_cserde.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "cmeta_cstl": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CMETA_ROOT}/lib/libcmeta_cstl.a"],
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["cmeta_cmeta"]
+      }
+    },
+    "cmeta_cflow": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CMETA_ROOT}/lib/libcmeta_cflow.a", "ws2_32"],
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["cmeta_cmeta", "salts_nativeio", "salts_core"],
+        "defines": {
+          "CFLOW_MACHINE_MAX_STATES": "65536",
+          "CFLOW_MACHINE_MAX_EVENTS": "65536",
+          "CFLOW_MACHINE_MAX_GUARDS": "65536",
+          "CFLOW_MACHINE_MAX_ACTIONS": "65536",
+          "CFLOW_MACHINE_MAX_TRANSITIONS": "1048576",
+          "CFLOW_STATECHART_MAX_ACTION_REFS": "1048576",
+          "CFLOW_STATECHART_MAX_INSTANCE_BYTES": "67108864"
+        }
+      }
+    },
+    "salts_databind": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_UTILS_ROOT}/lib/libdata_bind.dll.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_UTILS_ROOT}/include"],
+        "deps": ["salts_core", "cmeta_cmeta", "cmeta_cstl", "salts_cserde", "cmeta_cflow"]
+      },
+      "runtimeBins": ["${envPath:SALTS_UTILS_ROOT}/bin/libdata_bind.dll"]
+    },
+    "chttp_client": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CHTTP_ROOT}/lib/libchttp_client.dll.a"],
+        "requiredIncludeDirs": ["${envPath:CHTTP_ROOT}/include"],
+        "deps": ["salts_cnet", "cmeta_cmeta", "salts_cserde", "salts_databind", "salts_core"]
+      },
+      "runtimeBins": ["${envPath:CHTTP_ROOT}/bin/libchttp_client.dll"]
+    },
+    "chttp_server": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CHTTP_ROOT}/lib/libchttp_server.dll.a"],
+        "requiredIncludeDirs": ["${envPath:CHTTP_ROOT}/include"],
+        "deps": ["salts_cnet", "cmeta_cmeta", "salts_cserde", "salts_databind", "salts_core"]
+      },
+      "runtimeBins": ["${envPath:CHTTP_ROOT}/bin/libchttp_server.dll"]
+    },
+    "cmeta_pluginabi": {
+      "kind": "header_only",
+      "public": {
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["cmeta_cmeta"]
+      }
+    },
+    "cmeta_provider": {
+      "kind": "header_only",
+      "public": {
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["cmeta_cmeta", "cmeta_pluginabi"]
+      }
+    },
+    "cmeta_plugin": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CMETA_ROOT}/lib/libcmeta_plugin.a"],
+        "deps": ["cmeta_pluginabi", "salts_core"]
+      }
+    },
+    "cmeta_ace": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CMETA_ROOT}/lib/libcmeta_ace.a"],
+        "requiredIncludeDirs": ["${envPath:CMETA_ROOT}/include"],
+        "deps": ["cmeta_provider", "cmeta_plugin", "salts_core"]
+      }
+    },
+    "salts_databindplugin": {
+      "kind": "header_only",
+      "public": {
+        "requiredIncludeDirs": ["${envPath:SALTS_UTILS_ROOT}/include"],
+        "deps": ["salts_databind", "cmeta_plugin"]
+      }
+    },
+    "salts_jinjacmeta": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_UTILS_ROOT}/lib/libjinja_cmeta.dll.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_UTILS_ROOT}/include", "${envPath:SALTS_UTILS_ROOT}/include/jinja"],
+        "deps": ["cmeta_cmeta", "salts_core"]
+      },
+      "runtimeBins": ["${envPath:SALTS_UTILS_ROOT}/bin/libjinja_cmeta.dll"]
+    },
+    "chttp_app": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:CHTTP_ROOT}/lib/libchttp_app.dll.a"],
+        "requiredIncludeDirs": ["${envPath:CHTTP_ROOT}/include"],
+        "deps": [
+          "chttp_server",
+          "cmeta_ace",
+          "cmeta_cmeta",
+          "salts_databindplugin",
+          "cmeta_cflow",
+          "salts_jinjacmeta",
+          "salts_databind",
+          "salts_core"
+        ]
+      },
+      "runtimeBins": ["${envPath:CHTTP_ROOT}/bin/libchttp_app.dll"]
+    },
+    "salts_tomlparser": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libtoml_parser.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core"]
+      }
+    },
+    "salts_queryvm": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libquery_vm.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "salts_jsonparser": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libjson_parser.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core", "salts_queryvm"]
+      }
+    },
+    "salts_cyaml": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libcyaml.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_core", "salts_queryvm"]
+      }
+    },
+    "salts_datetimeparser": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libdatetime_parser.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "salts_tinytest": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libsaltscore_tinytest.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "vcpkg_audiocodec": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libopus.dll.a"],
+        "deps": ["mingw_threads"],
+        "requiredIncludeDirs": ["$vcpkg/include"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libopus.dll"]
+    },
+    "vcpkg_videocodec": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libvpx.a", "$vcpkgConfig/lib/libx265.dll.a", "$vcpkgConfig/lib/libde265.dll.a"],
+        "deps": ["mingw_threads", "vcpkg_openh264"],
+        "requiredIncludeDirs": ["$vcpkg/include"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libx265.dll", "$vcpkgConfig/bin/libde265.dll"]
+    },
+    "salts_uri": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/liburi_parser.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"]
+      }
+    },
+    "salts_ltvparser": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["${envPath:SALTS_BASE_ROOT}/lib/libltv_parser.a"],
+        "requiredIncludeDirs": ["${envPath:SALTS_BASE_ROOT}/include"],
+        "deps": ["salts_uri"]
+      }
+    },
+    "vcpkg_usrsctp": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libusrsctp.a", "ws2_32", "iphlpapi"],
+        "requiredIncludeDirs": ["$vcpkg/include"]
+      }
+    },
+    "vcpkg_roaring": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libroaring.dll.a"],
+        "requiredIncludeDirs": ["$vcpkg/include"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libroaring.dll"]
+    },
+    "vcpkg_srtp2": {
+      "kind": "prebuilt",
+      "public": {
+        "libs": ["$vcpkgConfig/lib/libsrtp2.dll.a"],
+        "requiredIncludeDirs": ["$vcpkg/include"],
+        "defines": {
+          "_CRT_SECURE_NO_WARNINGS": null
+        }
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libsrtp2.dll"]
+    },
+    "vcpkg_ffmpeg": {
+      "kind": "prebuilt",
+      "public": {
+        "requiredIncludeDirs": ["$vcpkg/include"],
+        "libs": [
+          "$vcpkgConfig/lib/libavdevice.dll.a",
+          "$vcpkgConfig/lib/libavfilter.dll.a",
+          "$vcpkgConfig/lib/libavformat.dll.a",
+          "$vcpkgConfig/lib/libavcodec.dll.a",
+          "$vcpkgConfig/lib/libswresample.dll.a",
+          "$vcpkgConfig/lib/libswscale.dll.a",
+          "$vcpkgConfig/lib/libavutil.dll.a"
+        ],
+        "deps": ["vcpkg_audiocodec", "vcpkg_openh264"]
+      },
+      "runtimeBins": [
+        "$vcpkgConfig/bin/avdevice-62.dll",
+        "$vcpkgConfig/bin/avfilter-11.dll",
+        "$vcpkgConfig/bin/avformat-62.dll",
+        "$vcpkgConfig/bin/avcodec-62.dll",
+        "$vcpkgConfig/bin/avutil-60.dll",
+        "$vcpkgConfig/bin/swresample-6.dll",
+        "$vcpkgConfig/bin/swscale-9.dll",
+        "$vcpkgConfig/bin/libxml2.dll"
+      ],
+      "variants": [
+        {
+          "when": {
+            "config": "debug"
+          },
+          "runtimeBins": ["$vcpkgConfig/bin/libzd.dll"]
+        },
+        {
+          "when": {
+            "config": ["release", "benchmark"]
+          },
+          "runtimeBins": ["$vcpkgConfig/bin/libz.dll"]
+        }
+      ]
+    },
+    "vcpkg_openh264": {
+      "kind": "prebuilt",
+      "public": {
+        "requiredIncludeDirs": ["$vcpkg/include"],
+        "libs": ["$vcpkgConfig/lib/libopenh264.dll.a"]
+      },
+      "runtimeBins": ["$vcpkgConfig/bin/libopenh264-7.dll"]
+    }
+  }
+}

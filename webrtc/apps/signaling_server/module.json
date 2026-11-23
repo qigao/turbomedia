@@ -1,0 +1,30 @@
+{
+  "targets": {
+    "signaling_server": {
+      "kind": "executable",
+      "sources": {
+        "files": ["src/main.c", "src/config.c", "src/server.c", "../../src/signaling/signaling_source_identity.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_webrtc_signaling", "turbo_media_auth", "salts_core", "salts_tomlparser"],
+        "includeDirs": [
+          "include",
+          "../../src/signaling",
+          "../../src/security",
+          "../../../media/codec/include",
+          "../../include",
+          "../../src/auth"
+        ],
+        "flags": ["-Wall", "-Wextra", "-Wpedantic"]
+      },
+      "install": {
+        "assets": [
+          {
+            "from": "config/signaling.toml.example",
+            "to": "etc/turbomedia"
+          }
+        ]
+      }
+    }
+  }
+}

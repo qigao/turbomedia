@@ -1,0 +1,43 @@
+{
+  "targets": {
+    "capture_save_image": {
+      "kind": "executable",
+      "sources": {
+        "files": ["capture_save_image.c"]
+      },
+      "private": {
+        "deps": ["salts_media"]
+      }
+    },
+    "codec_g711_smoke": {
+      "kind": "executable",
+      "sources": {
+        "files": ["codec_g711_smoke.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_codec"],
+        "includeDirs": ["../media/codec/include"]
+      }
+    },
+    "ffmpeg_probe": {
+      "kind": "executable",
+      "sources": {
+        "files": ["ffmpeg_probe.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_player"],
+        "includeDirs": ["../media/codec/include", "../media/containers/demuxer/include", "../media/containers/muxer/include"]
+      }
+    },
+    "turbo_pipeline_run": {
+      "kind": "executable",
+      "sources": {
+        "files": ["pipeline_run.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_pipeline", "salts_core"],
+        "includeDirs": ["../media/codec/include", "../streaming/pipeline/include"]
+      }
+    }
+  }
+}

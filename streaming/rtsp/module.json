@@ -1,0 +1,105 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_rtsp": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "turbo_rtsp.c",
+          "parser/turbo_rtsp_parser.c",
+          "parser/turbo_rtsp_rtp.c",
+          "parser/turbo_rtsp_sdp.c",
+          "$builddir/streaming/rtsp/turbo_rtsp_lexer_gen.c",
+          "$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.c"
+        ]
+      },
+      "public": {
+        "deps": ["salts_cnet", "chttp_client", "chttp_server", "salts_core"],
+        "includeDirs": ["../../media/codec/include", "include", "parser"],
+        "defines": {
+          "TURBO_MEDIA_HAS_RTSP": null
+        }
+      },
+      "private": {
+        "deps": ["turbo_media_cnet_adapter", "chttp_app", "salts_crypto", "mingw_threads"],
+        "libs": ["ws2_32"],
+        "includeDirs": ["$builddir/streaming/rtsp", "../transport/internal"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_rtsp_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "preTasks": [
+        {
+          "name": "rtsp_grammar_source",
+          "builtin": "copy",
+          "inputs": ["parser/rtsp_grammar.y"],
+          "outputs": ["$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.y"]
+        },
+        {
+          "name": "rtsp_parser",
+          "tool": "lemon",
+          "inputs": ["$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.y", "${envPath:LEMON_ROOT}/share/lemon/lempar.c"],
+          "outputs": [
+            "$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.c",
+            "$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.h"
+          ],
+          "args": ["$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.y"]
+        },
+        {
+          "name": "rtsp_lexer",
+          "tool": "re2c",
+          "inputs": ["parser/rtsp_lexer.re", "$builddir/streaming/rtsp/turbo_rtsp_grammar_gen.h"],
+          "outputs": ["$builddir/streaming/rtsp/turbo_rtsp_lexer_gen.c"],
+          "args": ["-o", "$builddir/streaming/rtsp/turbo_rtsp_lexer_gen.c", "$moduledir/parser/rtsp_lexer.re"]
+        }
+      ],
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_rtsp.h",
+            "to": "include"
+          },
+          {
+            "from": "parser/turbo_rtsp_parser.h",
+            "to": "include"
+          },
+          {
+            "from": "parser/turbo_rtsp_message.h",
+            "to": "include"
+          },
+          {
+            "from": "parser/turbo_rtsp_rtp.h",
+            "to": "include"
+          },
+          {
+            "from": "parser/turbo_rtsp_sdp.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_server_rtsp": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["rtsp_server_adapter.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_runtime", "turbo_media_rtsp"],
+        "includeDirs": ["../../media/codec/include"]
+      },
+      "private": {
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_server_rtsp_EXPORTS": null
+        },
+        "includeDirs": ["../../media/runtime/include", "include", "parser"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"],
+        "deps": ["salts_core"]
+      }
+    }
+  }
+}

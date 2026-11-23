@@ -1,0 +1,126 @@
+{
+  "targets": {
+    "browser_interop": {
+      "kind": "executable",
+      "sources": {
+        "files": ["browser_interop.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_webrtc", "salts_core", "turbo_media_datachannel", "saltsnet_ice", "turbo_media_sdp"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../media/runtime/include", "../../sip/sdp/include"]
+      }
+    },
+    "browser_media_interop": {
+      "kind": "executable",
+      "sources": {
+        "files": ["browser_media_interop.c"]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_rtc",
+          "turbo_media_webrtc",
+          "saltsnet_ice",
+          "salts_core",
+          "turbo_media_datachannel",
+          "turbo_media_sdp"
+        ],
+        "includeDirs": [
+          "../../media/codec/include",
+          "../include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include",
+          "../../media/runtime/include"
+        ]
+      }
+    },
+    "dc_benchmark": {
+      "kind": "executable",
+      "sources": {
+        "files": ["benchmark.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_datachannel", "salts_core"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../sip/sdp/include"]
+      }
+    },
+    "dc_file_transfer": {
+      "kind": "executable",
+      "sources": {
+        "files": ["file_transfer.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_datachannel", "salts_core"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../sip/sdp/include"]
+      }
+    },
+    "dc_ice_example": {
+      "kind": "executable",
+      "sources": {
+        "files": ["ice_datachannel.c", "../src/stb_sprintf.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_webrtc", "salts_core", "turbo_media_datachannel"],
+        "includeDirs": [
+          "$vcpkg/include",
+          "../../media/codec/include",
+          "../include",
+          "../../media/runtime/include",
+          "../../sip/sdp/include"
+        ]
+      }
+    },
+    "dc_simple_echo": {
+      "kind": "executable",
+      "sources": {
+        "files": ["simple_echo.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_datachannel", "salts_core"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../sip/sdp/include"]
+      }
+    },
+    "rtc_live_audio": {
+      "kind": "executable",
+      "sources": {
+        "files": ["rtc_live_audio.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_rtc_client", "salts_media", "salts_core"],
+        "includeDirs": ["../../media/codec/include", "../include"]
+      }
+    },
+    "rtc_server": {
+      "kind": "executable",
+      "sources": {
+        "files": ["signaling_server.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_webrtc_signaling", "turbo_media_sdp"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../sip/sdp/include"]
+      }
+    },
+    "rtc_signaled_peer": {
+      "kind": "executable",
+      "sources": {
+        "files": ["signaled_peer.c"]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_webrtc",
+          "turbo_media_sdp",
+          "salts_jsonparser",
+          "chttp_client",
+          "salts_core",
+          "turbo_media_datachannel",
+          "saltsnet_ice"
+        ],
+        "libs": ["ws2_32"],
+        "includeDirs": ["../../media/codec/include", "../include", "../../media/runtime/include", "../../sip/sdp/include"]
+      }
+    }
+  }
+}

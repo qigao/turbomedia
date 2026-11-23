@@ -1,0 +1,45 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_cnet_adapter": {
+      "kind": "static",
+      "sources": {
+        "files": ["internal/turbo_cnet_send_internal.c"]
+      },
+      "public": {
+        "includeDirs": ["internal"]
+      },
+      "private": {
+        "deps": ["salts_cnet", "salts_core"]
+      }
+    },
+    "turbo_media_transport": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["transport_cnet.c", "transport_http.c", "transport_url.c"]
+      },
+      "public": {
+        "deps": ["salts_cnet", "chttp_client"],
+        "includeDirs": ["../../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": ["turbo_media_cnet_adapter", "salts_uri", "salts_core"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_transport_EXPORTS": null
+        },
+        "includeDirs": ["internal"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

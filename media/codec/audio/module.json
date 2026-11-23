@@ -1,0 +1,36 @@
+{
+  "targets": {
+    "turbo_media_audio_codec": {
+      "kind": "static",
+      "sources": {
+        "files": ["audio_codec.c", "g711_codec.c", "opus_codec.c"]
+      },
+      "public": {
+        "includeDirs": ["include", "../include"]
+      },
+      "private": {
+        "deps": ["vcpkg_audiocodec"],
+        "includeDirs": ["$vcpkg/include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_OPUS": null
+        }
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_audio_codec.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_codec_types.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "tools": {
+    "cmake": {"program": "cmake"},
+    "re2c": {"program": "${envPath:TURBOMEDIA_RE2C_ROOT}/bin/re2c${host:exe}"},
+    "lemon": {
+      "program": "${envPath:LEMON_ROOT}/bin/lemon${host:exe}",
+      "args": ["-q", "-T${envPath:LEMON_ROOT}/share/lemon/lempar.c"]
+    },
+    "salts-idlc": {
+      "program": "cmake",
+      "args": [
+        "-E", "env", "--modify", "PATH=path_list_prepend:${envPath:SALTS_BASE_ROOT}/bin",
+        "--", "${envPath:SALTS_UTILS_ROOT}/bin/salts-idlc${host:exe}"
+      ]
+    }
+  }
+}

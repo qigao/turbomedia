@@ -1,0 +1,12 @@
+{
+  "include": [
+    "client_processing/module.json",
+    "codec/module.json",
+    "containers/module.json",
+    "player/module.json",
+    "recognition/module.json",
+    "runtime/module.json",
+    "speech/module.json",
+    "tests/module.json"
+  ]
+}

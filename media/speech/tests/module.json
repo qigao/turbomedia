@@ -1,0 +1,15 @@
+{
+  "targets": {
+    "turbo_media_test_speech": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_speech.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_speech", "salts_tinytest"],
+        "includeDirs": ["../../codec/include", "../include"]
+      },
+      "test": {}
+    }
+  }
+}

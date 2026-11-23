@@ -1,4 +1,5 @@
 #include "turbo_pipeline.h"
+#include "pipeline_compositor_internal.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -182,6 +183,8 @@ struct pipeline_runtime_track {
     void *encoder;
     uint32_t input_timestamp;
     int input_timestamp_valid;
+    int64_t latest_rtp_pts;
+    int rtp_pts_valid;
     uint8_t *packet_buffer;
     size_t packet_capacity;
     uint8_t *access_unit;
@@ -236,6 +239,7 @@ struct turbo_pipeline {
     pipeline_branch_t video;
     turbo_pipeline_video_frame_editor_fn video_editor;
     void *video_editor_context;
+    turbo_pipeline_compositor_t *compositor;
     AVFormatContext *input;
     AVPacket *input_packet;
     AVPacket *output_packet;
@@ -1480,12 +1484,33 @@ static int pipeline_runtime_encoded_packet(void *parameter,
     return TURBO_MEDIA_OK;
 }
 
+static int pipeline_runtime_unwrap_pts(pipeline_runtime_track_t *track,
+                                      uint32_t timestamp, int64_t *pts) {
+    int64_t delta;
+    if (!track->rtp_pts_valid) {
+        track->latest_rtp_pts = timestamp;
+        track->rtp_pts_valid = 1;
+        *pts = timestamp;
+        return 1;
+    }
+    delta = (uint32_t)(timestamp - (uint32_t)track->latest_rtp_pts);
+    if (delta == INT64_C(2147483648)) return 0;
+    if (delta > INT32_MAX) delta -= INT64_C(4294967296);
+    if ((delta > 0 && track->latest_rtp_pts > INT64_MAX - delta) ||
+        (delta < 0 && track->latest_rtp_pts <= INT64_MIN - delta))
+        return 0;
+    *pts = track->latest_rtp_pts + delta;
+    if (delta > 0) track->latest_rtp_pts = *pts;
+    return 1;
+}
+
 static int pipeline_runtime_emit_access_unit(pipeline_runtime_track_t *track,
                                              const uint8_t *data,
                                              size_t size,
                                              uint32_t timestamp) {
     turbo_pipeline_t *pipeline = track->pipeline;
     AVPacket *packet;
+    int64_t pts;
     int rc;
     if (size == 0 || size > INT_MAX) return TURBO_MEDIA_ERR_INVALID;
     if (track->branch->copy) {
@@ -1494,6 +1519,12 @@ static int pipeline_runtime_emit_access_unit(pipeline_runtime_track_t *track,
         rc = rtp_payload_encode_input(track->encoder, data, (int)size,
                                       timestamp);
         return rc == 0 ? TURBO_MEDIA_OK : TURBO_MEDIA_ERR_STATE;
+    }
+    if (!pipeline_runtime_unwrap_pts(track, timestamp, &pts)) {
+        pipeline_error_set(track->processing_error, TURBO_PIPELINE_EINVAL,
+                           pipeline->nodes[pipeline->demux_node].id,
+                           "cannot unwrap Runtime/RTP timestamp");
+        return TURBO_MEDIA_ERR_INVALID;
     }
     packet = av_packet_alloc();
     if (!packet) {
@@ -1511,8 +1542,8 @@ static int pipeline_runtime_emit_access_unit(pipeline_runtime_track_t *track,
         return TURBO_MEDIA_ERR_NOMEM;
     }
     memcpy(packet->data, data, size);
-    packet->pts = timestamp;
-    packet->dts = timestamp;
+    packet->pts = pts;
+    packet->dts = pts;
     rc = pipeline_transcode_packet(pipeline, track->branch, packet,
                                    track->processing_error);
     av_packet_free(&packet);
@@ -1631,10 +1662,11 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
         atomic_load_explicit(&pipeline->stop_requested,
                              memory_order_acquire)) {
         sync_mutex_unlock(&runtime->mutex);
-        return TURBO_MEDIA_ERR_STATE;
+        return TURBO_MEDIA_OK;
     }
     if (frame->size == 0 || frame->size > runtime->max_packet_bytes ||
         runtime->count == runtime->queue_capacity) {
+        runtime->accepting = 0;
         atomic_store_explicit(&runtime->async_status,
                               TURBO_PIPELINE_EBACKPRESSURE,
                               memory_order_release);
@@ -1840,6 +1872,11 @@ static int pipeline_runtime_prepare(turbo_pipeline_t *pipeline,
     }
     sync_mutex_init(&runtime->mutex);
     sync_cond_init(&runtime->available);
+    if (!runtime->mutex || !runtime->available) {
+        pipeline_error_set(error, TURBO_PIPELINE_ENOMEM, source_node->id,
+                           "cannot allocate Runtime input synchronization");
+        return 0;
+    }
     runtime->sync_initialized = 1;
     atomic_init(&runtime->async_status, TURBO_PIPELINE_OK);
     track_count = turbo_media_source_track_count(runtime->input_source);
@@ -1899,6 +1936,14 @@ static int pipeline_runtime_prepare(turbo_pipeline_t *pipeline,
     return 1;
 }
 
+static void pipeline_runtime_seal(pipeline_runtime_rtp_t *runtime) {
+    if (!runtime->sync_initialized) return;
+    sync_mutex_lock(&runtime->mutex);
+    runtime->accepting = 0;
+    sync_cond_broadcast(&runtime->available);
+    sync_mutex_unlock(&runtime->mutex);
+}
+
 static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
     pipeline_runtime_rtp_t *runtime;
     turbo_media_server_runtime_t *server_runtime;
@@ -1906,12 +1951,7 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
     if (!pipeline) return;
     runtime = &pipeline->runtime_rtp;
     server_runtime = runtime->server_runtime;
-    if (runtime->sync_initialized) {
-        sync_mutex_lock(&runtime->mutex);
-        runtime->accepting = 0;
-        sync_cond_broadcast(&runtime->available);
-        sync_mutex_unlock(&runtime->mutex);
-    }
+    pipeline_runtime_seal(runtime);
     if (runtime->subscription_id && runtime->input_source) {
         (void)turbo_media_source_unsubscribe(runtime->input_source,
                                              runtime->subscription_id);
@@ -1929,10 +1969,8 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
         (void)turbo_media_server_runtime_remove_source(
             server_runtime, &runtime->output_key);
     }
-    if (runtime->sync_initialized) {
-        sync_cond_destroy(&runtime->available);
-        sync_mutex_destroy(&runtime->mutex);
-    }
+    sync_cond_destroy(&runtime->available);
+    sync_mutex_destroy(&runtime->mutex);
     free(runtime->entries);
     free(runtime->packet_slots);
     memset(runtime, 0, sizeof(*runtime));
@@ -2176,6 +2214,28 @@ static int pipeline_open_runtime_decoder(
     return 1;
 }
 
+static int pipeline_video_dimensions(const turbo_pipeline_t *pipeline,
+                                     const pipeline_branch_t *branch,
+                                     int input_width, int input_height,
+                                     int *width, int *height,
+                                     turbo_pipeline_error_t *error) {
+    const pipeline_node_t *node = &pipeline->nodes[branch->encoder_node];
+    const pipeline_node_config_t *config = &node->config;
+    if (!pipeline->compositor) {
+        *width = config->width > 0 ? config->width : input_width;
+        *height = config->height > 0 ? config->height : input_height;
+        return 1;
+    }
+    pipeline_compositor_canvas(pipeline->compositor, width, height);
+    if ((config->width > 0 && config->width != *width) ||
+        (config->height > 0 && config->height != *height)) {
+        pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, node->id,
+                           "encoder dimensions differ from the compositor canvas");
+        return 0;
+    }
+    return 1;
+}
+
 static int pipeline_configure_video_encoder(turbo_pipeline_t *pipeline,
                                             pipeline_branch_t *branch,
                                             const AVCodec *encoder,
@@ -2195,10 +2255,20 @@ static int pipeline_configure_video_encoder(turbo_pipeline_t *pipeline,
     if (pipeline->input && branch->input_stream)
         frame_rate =
             av_guess_frame_rate(pipeline->input, branch->input_stream, NULL);
+    else if (branch->runtime_track && branch->runtime_track->input_info.framerate > 0)
+        frame_rate = (AVRational){branch->runtime_track->input_info.framerate, 1};
     if (config->frame_rate > 0) frame_rate = (AVRational){config->frame_rate, 1};
     if (frame_rate.num <= 0 || frame_rate.den <= 0) frame_rate = (AVRational){25, 1};
-    branch->encoder->width = config->width > 0 ? config->width : input_width;
-    branch->encoder->height = config->height > 0 ? config->height : input_height;
+    if (!pipeline_video_dimensions(pipeline, branch, input_width, input_height,
+                                   &branch->encoder->width, &branch->encoder->height, error))
+        return 0;
+    if (pipeline->compositor) {
+        branch->encoder->colorspace = AVCOL_SPC_BT709;
+        branch->encoder->color_range = AVCOL_RANGE_MPEG;
+        branch->encoder->color_primaries = AVCOL_PRI_BT709;
+        branch->encoder->color_trc = AVCOL_TRC_BT709;
+        input_aspect = (AVRational){1, 1};
+    }
     if (branch->encoder->width <= 0 || branch->encoder->height <= 0) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG,
                            pipeline->nodes[branch->encoder_node].id,
@@ -2207,6 +2277,15 @@ static int pipeline_configure_video_encoder(turbo_pipeline_t *pipeline,
     }
     branch->encoder->framerate = frame_rate;
     branch->encoder->time_base = av_inv_q(frame_rate);
+    if (config->frame_rate == 0 && branch->input_time_base.num > 0 &&
+        branch->input_time_base.den > 0) {
+        branch->encoder->time_base = branch->input_time_base;
+        if (encoder->id == AV_CODEC_ID_MPEG4) {
+            /* MPEG-4 Part 2 stores the time-increment resolution in 16 bits. */
+            av_reduce(&branch->encoder->time_base.num, &branch->encoder->time_base.den,
+                      branch->input_time_base.num, branch->input_time_base.den, UINT16_MAX);
+        }
+    }
     branch->encoder->pix_fmt =
         pipeline_choose_pixel_format(
             encoder, pipeline->video_editor ? AV_PIX_FMT_YUV420P : input_format);
@@ -2324,6 +2403,16 @@ static int pipeline_open_encoder(turbo_pipeline_t *pipeline, pipeline_branch_t *
         return 0;
     }
     av_dict_free(&options);
+    if (pipeline->compositor && branch->media_type == AVMEDIA_TYPE_VIDEO &&
+        (branch->encoder->pix_fmt != AV_PIX_FMT_YUV420P ||
+         branch->encoder->colorspace != AVCOL_SPC_BT709 ||
+         branch->encoder->color_range != AVCOL_RANGE_MPEG ||
+         branch->encoder->color_primaries != AVCOL_PRI_BT709 ||
+         branch->encoder->color_trc != AVCOL_TRC_BT709)) {
+        pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, node->id,
+                           "encoder options changed the compositor output format");
+        return 0;
+    }
     return 1;
 }
 
@@ -2387,8 +2476,9 @@ static int pipeline_prepare_runtime_branch(
                                         : 2);
     } else {
         const pipeline_node_config_t *config = &encoder_node->config;
-        if (config->width > 0) output_info->width = config->width;
-        if (config->height > 0) output_info->height = config->height;
+        if (!pipeline_video_dimensions(pipeline, branch, input_info->width, input_info->height,
+                                      &output_info->width, &output_info->height, error))
+            return 0;
         if (config->frame_rate > 0)
             output_info->framerate = config->frame_rate;
     }
@@ -2644,14 +2734,37 @@ turbo_pipeline_status_t turbo_pipeline_set_video_frame_editor(
         return pipeline_error_set(error, TURBO_PIPELINE_EINVAL, NULL,
                                   "pipeline is required");
     if (atomic_load_explicit(&pipeline->state, memory_order_acquire) !=
-        TURBO_PIPELINE_STATE_CREATED)
+        TURBO_PIPELINE_STATE_CREATED || pipeline->compositor)
         return pipeline_error_set(error, TURBO_PIPELINE_ESTATE, NULL,
-                                  "video frame editor binding requires CREATED state");
+                                  "video editor binding requires CREATED state and no compositor");
     if (editor && (!pipeline->video.configured || pipeline->video.copy))
         return pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
                                   "video frame editing requires a video transcode branch");
     pipeline->video_editor = editor;
     pipeline->video_editor_context = editor ? context : NULL;
+    return TURBO_PIPELINE_OK;
+}
+
+turbo_pipeline_status_t turbo_pipeline_bind_compositor(
+    turbo_pipeline_t *pipeline, turbo_pipeline_compositor_t *compositor,
+    turbo_pipeline_error_t *error) {
+    pipeline_error_clear(error);
+    if (!pipeline || !compositor)
+        return pipeline_error_set(error, TURBO_PIPELINE_EINVAL, NULL,
+                                  "pipeline and compositor are required");
+    if (atomic_load_explicit(&pipeline->state, memory_order_acquire) !=
+        TURBO_PIPELINE_STATE_CREATED || pipeline->video_editor)
+        return pipeline_error_set(error, TURBO_PIPELINE_ESTATE, NULL,
+                                  "compositor binding requires CREATED state and a free editor slot");
+    if (!pipeline->video.configured || pipeline->video.copy)
+        return pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
+                                  "compositing requires a video transcode branch");
+    if (!pipeline_compositor_claim(compositor))
+        return pipeline_error_set(error, TURBO_PIPELINE_ESTATE, NULL,
+                                  "compositor is already bound or closed");
+    pipeline->compositor = compositor;
+    pipeline->video_editor = pipeline_compositor_render;
+    pipeline->video_editor_context = compositor;
     return TURBO_PIPELINE_OK;
 }
 
@@ -2737,6 +2850,7 @@ static int pipeline_filter_init(turbo_pipeline_t *pipeline, pipeline_branch_t *b
     }
 
     if (branch->media_type == AVMEDIA_TYPE_VIDEO) {
+        int frame_rate = pipeline->nodes[branch->encoder_node].config.frame_rate;
         const char *pixel_format = av_get_pix_fmt_name(branch->encoder->pix_fmt);
         AVRational aspect = frame->sample_aspect_ratio.num > 0
                                 ? frame->sample_aspect_ratio
@@ -2755,9 +2869,34 @@ static int pipeline_filter_init(turbo_pipeline_t *pipeline, pipeline_branch_t *b
                                "cannot describe video filter input");
             goto fail;
         }
-        result = snprintf(filter_description, sizeof(filter_description), "%s%sformat=%s",
-                          user_filters && user_filters[0] ? user_filters : "null",
-                          user_filters && user_filters[0] ? "," : ",", pixel_format);
+        if (pipeline->compositor) {
+            const char *filters = user_filters && user_filters[0] ? user_filters : "null";
+            int tile_width, tile_height;
+            if (pipeline_compositor_main_tile(pipeline->compositor, &tile_width, &tile_height)) {
+                result = snprintf(filter_description, sizeof(filter_description),
+                    "format=yuv420p,colorspace=all=bt709:range=tv:format=yuv420p,"
+                    "%s,scale=%d:%d:force_original_aspect_ratio=decrease:"
+                    "force_divisible_by=2:reset_sar=1,format=yuv420p,"
+                    "pad=%d:%d:trunc((%d-iw)/4)*2:trunc((%d-ih)/4)*2:color=black,setsar=1",
+                    filters, tile_width, tile_height, branch->encoder->width,
+                    branch->encoder->height, tile_width, tile_height);
+            } else {
+                result = snprintf(filter_description, sizeof(filter_description),
+                    "format=yuv420p,colorspace=all=bt709:range=tv:format=yuv420p,"
+                    "%s,scale=%d:%d,format=yuv420p,setsar=1",
+                    filters, branch->encoder->width, branch->encoder->height);
+            }
+        } else {
+            result = snprintf(filter_description, sizeof(filter_description), "%s,format=%s",
+                              user_filters && user_filters[0] ? user_filters : "null",
+                              pixel_format);
+        }
+        if (frame_rate > 0 && result >= 0 && (size_t)result < sizeof(filter_description)) {
+            int offset = result;
+            result = snprintf(filter_description + offset, sizeof(filter_description) - offset,
+                              ",fps=%d", frame_rate);
+            if (result >= 0) result += offset;
+        }
     } else {
         const AVChannelLayout *layout = frame->ch_layout.nb_channels > 0
                                             ? &frame->ch_layout
@@ -2815,6 +2954,22 @@ static int pipeline_filter_init(turbo_pipeline_t *pipeline, pipeline_branch_t *b
     if (result < 0) {
         pipeline_ffmpeg_error(error, node_id, "create filter source", result);
         goto fail;
+    }
+    if (pipeline->compositor && branch->media_type == AVMEDIA_TYPE_VIDEO) {
+        AVBufferSrcParameters *parameters = av_buffersrc_parameters_alloc();
+        if (!parameters) {
+            pipeline_error_set(error, TURBO_PIPELINE_ENOMEM, node_id,
+                               "cannot allocate video filter color parameters");
+            goto fail;
+        }
+        parameters->color_space = frame->colorspace;
+        parameters->color_range = frame->color_range;
+        result = av_buffersrc_parameters_set(branch->filter_source, parameters);
+        av_free(parameters);
+        if (result < 0) {
+            pipeline_ffmpeg_error(error, node_id, "configure filter color parameters", result);
+            goto fail;
+        }
     }
     result = avfilter_graph_create_filter(&branch->filter_sink, sink_filter, "out", NULL,
                                           NULL, branch->filter_graph);
@@ -2939,6 +3094,13 @@ static int pipeline_receive_encoded(turbo_pipeline_t *pipeline,
             pipeline_ffmpeg_error(error, node_id, "receive encoded packet", result);
             return 0;
         }
+        if (branch->media_type == AVMEDIA_TYPE_VIDEO &&
+            branch->encoded_packet->duration <= 0) {
+            int frame_rate = pipeline->nodes[branch->encoder_node].config.frame_rate;
+            if (frame_rate > 0)
+                branch->encoded_packet->duration =
+                    av_rescale_q(1, (AVRational){1, frame_rate}, branch->encoder->time_base);
+        }
         if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP) {
             pipeline_runtime_track_t *track = branch->runtime_track;
             int64_t rtp_timestamp;
@@ -2988,6 +3150,13 @@ static int pipeline_edit_video_frame(turbo_pipeline_t *pipeline,
         frame->width <= 0 || frame->height <= 0) {
         pipeline_error_set(error, TURBO_PIPELINE_EFFMPEG, node_id,
                            "video editor received an invalid YUV420P frame");
+        return 0;
+    }
+    if (pipeline->compositor &&
+        (frame->colorspace != AVCOL_SPC_BT709 || frame->color_range != AVCOL_RANGE_MPEG ||
+         frame->color_primaries != AVCOL_PRI_BT709 || frame->color_trc != AVCOL_TRC_BT709)) {
+        pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, node_id,
+                           "compositor canvas requires limited-range BT.709");
         return 0;
     }
     result = av_frame_make_writable(frame);
@@ -3057,8 +3226,9 @@ static int pipeline_receive_filtered(turbo_pipeline_t *pipeline,
                               ? pipeline->nodes[branch->filter_node].id
                               : pipeline->nodes[branch->encoder_node].id;
     for (;;) {
-        int result = av_buffersink_get_frame(branch->filter_sink,
-                                             branch->filtered_frame);
+        int result;
+        if (atomic_load_explicit(&pipeline->stop_requested, memory_order_acquire)) return 1;
+        result = av_buffersink_get_frame(branch->filter_sink, branch->filtered_frame);
         if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return 1;
         if (result < 0) {
             pipeline_ffmpeg_error(error, node_id, "receive filtered frame", result);
@@ -3068,6 +3238,10 @@ static int pipeline_receive_filtered(turbo_pipeline_t *pipeline,
             branch->filtered_frame->pts =
                 av_rescale_q(branch->filtered_frame->pts, branch->filter_time_base,
                              branch->encoder->time_base);
+        if (branch->filtered_frame->duration > 0)
+            branch->filtered_frame->duration =
+                av_rescale_q(branch->filtered_frame->duration, branch->filter_time_base,
+                             branch->encoder->time_base);
         if (!pipeline_send_encoded_frame(pipeline, branch, branch->filtered_frame, error)) {
             av_frame_unref(branch->filtered_frame);
             return 0;
@@ -3076,12 +3250,39 @@ static int pipeline_receive_filtered(turbo_pipeline_t *pipeline,
     }
 }
 
+static int pipeline_compositor_input_color(turbo_pipeline_t *pipeline, AVFrame *frame) {
+    turbo_compositor_input_color_t hint = pipeline_compositor_main_color(pipeline->compositor);
+    if (hint != TURBO_COMPOSITOR_COLOR_FROM_FRAME) {
+        int hd = hint == TURBO_COMPOSITOR_COLOR_BT709_LIMITED;
+        enum AVColorSpace matrix = hd ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        enum AVColorPrimaries primaries = hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+        enum AVColorTransferCharacteristic transfer = hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
+        if (frame->colorspace == AVCOL_SPC_UNSPECIFIED) frame->colorspace = matrix;
+        if (frame->color_primaries == AVCOL_PRI_UNSPECIFIED) frame->color_primaries = primaries;
+        if (frame->color_trc == AVCOL_TRC_UNSPECIFIED) frame->color_trc = transfer;
+        if (frame->color_range == AVCOL_RANGE_UNSPECIFIED) frame->color_range = AVCOL_RANGE_MPEG;
+        return frame->colorspace == matrix && frame->color_primaries == primaries &&
+               frame->color_trc == transfer && frame->color_range == AVCOL_RANGE_MPEG;
+    }
+    return (frame->color_range == AVCOL_RANGE_MPEG || frame->color_range == AVCOL_RANGE_JPEG) &&
+           (frame->colorspace == AVCOL_SPC_BT709 || frame->colorspace == AVCOL_SPC_SMPTE170M) &&
+           (frame->color_primaries == AVCOL_PRI_BT709 || frame->color_primaries == AVCOL_PRI_SMPTE170M) &&
+           (frame->color_trc == AVCOL_TRC_BT709 || frame->color_trc == AVCOL_TRC_SMPTE170M);
+}
+
 static int pipeline_process_decoded_frame(turbo_pipeline_t *pipeline,
                                           pipeline_branch_t *branch,
                                           turbo_pipeline_error_t *error) {
     int result;
     if (branch->decoded_frame->best_effort_timestamp != AV_NOPTS_VALUE)
         branch->decoded_frame->pts = branch->decoded_frame->best_effort_timestamp;
+    if (pipeline->compositor && branch->media_type == AVMEDIA_TYPE_VIDEO &&
+        !pipeline_compositor_input_color(pipeline, branch->decoded_frame)) {
+        pipeline_error_set(error, TURBO_PIPELINE_ECONFIG,
+                           pipeline->nodes[branch->decoder_node].id,
+                           "compositor input requires matching SDR BT.709 or BT.601 color metadata");
+        return 0;
+    }
     if (!branch->encoder &&
         !pipeline_open_encoder(pipeline, branch, branch->decoded_frame, error))
         return 0;
@@ -3265,7 +3466,9 @@ static turbo_pipeline_status_t pipeline_run_runtime_rtp(
             break;
         }
     }
-    pipeline_release_runtime(pipeline);
+    /* The Runtime owner removes the subscription after the runner and any
+     * concurrent stop calls have returned. The callback can still be borrowed. */
+    pipeline_runtime_seal(runtime);
     if (stopped) {
         atomic_store_explicit(&pipeline->stop_requested, 0,
                               memory_order_release);
@@ -3308,7 +3511,10 @@ turbo_pipeline_status_t turbo_pipeline_run(turbo_pipeline_t *pipeline,
     atomic_store_explicit(&pipeline->state, TURBO_PIPELINE_STATE_RUNNING,
                           memory_order_release);
     if (atomic_load_explicit(&pipeline->stop_requested, memory_order_acquire)) {
-        pipeline_release_runtime(pipeline);
+        if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP)
+            pipeline_runtime_seal(&pipeline->runtime_rtp);
+        else
+            pipeline_release_runtime(pipeline);
         atomic_store_explicit(&pipeline->state, TURBO_PIPELINE_STATE_STOPPED,
                               memory_order_release);
         return pipeline_error_set(error, TURBO_PIPELINE_ESTOPPED, NULL,
@@ -3418,13 +3624,8 @@ turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeline_t *pipeline) 
         state != TURBO_PIPELINE_STATE_STOPPING)
         return TURBO_PIPELINE_ESTATE;
     atomic_store_explicit(&pipeline->stop_requested, 1, memory_order_release);
-    if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP &&
-        pipeline->runtime_rtp.sync_initialized) {
-        sync_mutex_lock(&pipeline->runtime_rtp.mutex);
-        pipeline->runtime_rtp.accepting = 0;
-        sync_cond_broadcast(&pipeline->runtime_rtp.available);
-        sync_mutex_unlock(&pipeline->runtime_rtp.mutex);
-    }
+    if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP)
+        pipeline_runtime_seal(&pipeline->runtime_rtp);
     if (state == TURBO_PIPELINE_STATE_RUNNING) {
         expected = TURBO_PIPELINE_STATE_RUNNING;
         atomic_compare_exchange_strong_explicit(
@@ -3468,5 +3669,6 @@ void turbo_pipeline_destroy(turbo_pipeline_t *pipeline) {
         return;
     }
     pipeline_release_runtime(pipeline);
+    if (pipeline->compositor) pipeline_compositor_unbind(pipeline->compositor);
     free(pipeline);
 }

@@ -1,4 +1,5 @@
 #include "turbo_pipeline.h"
+#include "turbo_pipeline_compositor.h"
 
 #include <chttp_app/application.h>
 #include <turbo_rtp_packet.h>
@@ -265,6 +266,7 @@ typedef struct pipeline_rtsp_publisher {
     const uint8_t *access_unit;
     size_t access_unit_size;
     int track_id;
+    uint32_t first_timestamp;
     int done;
     int failed;
     int packets_published;
@@ -629,6 +631,15 @@ static int capture_runtime_rtp(turbo_media_source_t *source,
     return TURBO_MEDIA_OK;
 }
 
+static int count_runtime_packets(turbo_media_source_t *source,
+                                 const turbo_media_frame_t *frame, void *context) {
+    unsigned *count = context;
+    (void)source;
+    (void)frame;
+    ++*count;
+    return TURBO_MEDIA_OK;
+}
+
 static int make_rtp_packet(uint8_t *buffer,
                            size_t capacity,
                            uint8_t payload_type,
@@ -703,7 +714,8 @@ static void publish_pipeline_rtsp_video(void *parameter) {
     uint16_t sequence = 1;
     int access_unit;
     for (access_unit = 0; access_unit < MAX_ACCESS_UNITS; ++access_unit) {
-        uint32_t timestamp = PIPELINE_RTSP_CLOCK_RATE +
+        uint32_t timestamp = (publisher->first_timestamp ? publisher->first_timestamp
+                                                         : PIPELINE_RTSP_CLOCK_RATE) +
                              (uint32_t)access_unit *
                                  PIPELINE_RTSP_TIMESTAMP_STEP;
         size_t position = 0;
@@ -2780,7 +2792,110 @@ suite("turbo_media_pipeline") {
             turbo_media_server_runtime_destroy(runtime);
         }
 
-        it("reports bounded queue overflow to publisher and runner") {
+#ifdef TURBO_MEDIA_HAS_RTSP
+        it("encodes across RTP wrap and advertises the compositor canvas") {
+            static const char yaml[] =
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: runtime-composition\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: media.runtime_source, config: { url: default/live/in, options: { queue_capacity: '128' } } }\n"
+                "  - { id: depay, kind: demux, factory: rtp.depacketize }\n"
+                "  - { id: decode, kind: decoder, factory: ffmpeg.decode, config: { media: video } }\n"
+                "  - { id: encode, kind: encoder, factory: ffmpeg.encode, config: { media: video, codec: libopenh264 } }\n"
+                "  - { id: pay, kind: mux, factory: rtp.packetize }\n"
+                "  - { id: sink, kind: sink, factory: media.runtime_sink, config: { url: default/live/out } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: depay.in }\n"
+                "  - { from: depay.video, to: decode.in }\n"
+                "  - { from: decode.out, to: encode.in }\n"
+                "  - { from: encode.out, to: pay.video }\n"
+                "  - { from: pay.out, to: sink.in }\n";
+            const turbo_compositor_source_t aux = {2, 2, 2, 100000, 0};
+            const turbo_compositor_layer_t layers[] = {
+                {.kind = TURBO_COMPOSITOR_MAIN_VIDEO, .rect = {0, 0, 64, 48}, .opacity = 255},
+                {.kind = TURBO_COMPOSITOR_AUX_VIDEO, .rect = {0, 0, 2, 2}, .opacity = 255,
+                 .input.source = 0}
+            };
+            const turbo_compositor_config_t config = {
+                .width = 64, .height = 48, .main_color = TURBO_COMPOSITOR_COLOR_BT709_LIMITED,
+                .layers = layers, .layer_count = 2, .sources = &aux, .source_count = 1,
+                .memory_limit = 1024 * 1024
+            };
+            turbo_media_server_runtime_t *runtime = turbo_media_server_runtime_create(NULL);
+            turbo_pipeline_t *pipeline = NULL;
+            turbo_pipeline_compositor_t *compositor = NULL;
+            turbo_media_source_t *input = NULL, *output = NULL;
+            turbo_media_source_key_t key;
+            turbo_media_track_info_t track = {
+                .track_id = 10, .type = TURBO_MEDIA_TRACK_VIDEO, .codec_name = "H264",
+                .payload_type = 96, .clock_rate = 90000, .width = 16, .height = 16, .framerate = 30
+            };
+            turbo_pipeline_error_t error;
+            turbo_pipeline_stats_t stats = {0};
+            pipeline_run_result_t run_result = {0};
+            sync_thread_t thread = NULL;
+            uint8_t access_unit[2048];
+            size_t access_unit_size = sizeof(access_unit);
+
+            check_not_null(runtime);
+            if (!runtime) goto wrap_cleanup;
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "in"),
+                        TURBO_MEDIA_OK);
+            check_equal(turbo_media_server_runtime_get_or_create_source(runtime, &key, &input),
+                        TURBO_MEDIA_OK);
+            if (!input) goto wrap_cleanup;
+            check_equal(turbo_media_source_add_track(input, &track, NULL), TURBO_MEDIA_OK);
+            pipeline = turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
+            compositor = turbo_pipeline_compositor_create(&config, &error);
+            check_not_null(pipeline);
+            check_not_null(compositor);
+            if (!pipeline || !compositor) goto wrap_cleanup;
+            check_equal(turbo_pipeline_bind_server_runtime(pipeline, runtime, &error),
+                        TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_bind_compositor(pipeline, compositor, &error),
+                        TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED) goto wrap_cleanup;
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "out"),
+                        TURBO_MEDIA_OK);
+            check_equal(turbo_media_server_runtime_find_source(runtime, &key, &output),
+                        TURBO_MEDIA_OK);
+            if (!output) goto wrap_cleanup;
+            check_equal(turbo_media_source_get_track_at(output, 0, &track), TURBO_MEDIA_OK);
+            check_equal(track.width, config.width);
+            check_equal(track.height, config.height);
+            int encoded = encode_test_h264_access_unit(access_unit, &access_unit_size);
+            check_equal(encoded, TURBO_CODEC_OK);
+            if (encoded != TURBO_CODEC_OK) goto wrap_cleanup;
+            pipeline_rtsp_publisher_t publisher = {
+                .source = input, .access_unit = access_unit, .access_unit_size = access_unit_size,
+                .track_id = 10, .first_timestamp = UINT32_MAX - 1000
+            };
+            publish_pipeline_rtsp_video(&publisher);
+            check_equal(publisher.failed, 0);
+            if (publisher.failed) goto wrap_cleanup;
+            run_result.pipeline = pipeline;
+            check_equal(sync_thread_create(&thread, run_pipeline_thread, &run_result), 0);
+            if (!thread) goto wrap_cleanup;
+            for (int wait = 0; wait < 300; ++wait) {
+                (void)turbo_pipeline_stats(pipeline, &stats);
+                if (stats.frames_encoded >= 4 || turbo_pipeline_state(pipeline) == TURBO_PIPELINE_STATE_FAILED)
+                    break;
+                sleep_ms(10);
+            }
+            check_true(stats.frames_encoded >= 4);
+            (void)turbo_pipeline_request_stop(pipeline);
+            check_equal(sync_thread_join(&thread), 0);
+            sync_thread_destroy(&thread);
+            check_equal(run_result.status, TURBO_PIPELINE_ESTOPPED);
+        wrap_cleanup:
+            turbo_pipeline_destroy(pipeline);
+            check_equal(turbo_pipeline_compositor_destroy(compositor), TURBO_PIPELINE_OK);
+            turbo_media_server_runtime_destroy(runtime);
+        }
+#endif
+
+        it("reports overflow and retains input subscription until owner destroys it") {
             static const char yaml[] =
                 "api_version: turbo.media.pipeline/v1\n"
                 "id: rtc-backpressure\n"
@@ -2803,6 +2918,11 @@ suite("turbo_media_pipeline") {
             turbo_pipeline_error_t error;
             uint8_t packet[64];
             int packet_size;
+            uint64_t observer_id = 0;
+            unsigned delivered = 0;
+            turbo_media_source_stats_t source_stats;
+            pipeline_run_result_t run_result = {0};
+            sync_thread_t thread = NULL;
 
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
@@ -2834,6 +2954,8 @@ suite("turbo_media_pipeline") {
                          TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto backpressure_cleanup;
+            check_equal(turbo_media_source_subscribe(input_source, count_runtime_packets,
+                                                      &delivered, 0, &observer_id), TURBO_MEDIA_OK);
             packet_size = make_rtp_packet(
                 packet, sizeof(packet), 111, 1, 48000, 0x11223344u, 1,
                 opus_payload, sizeof(opus_payload));
@@ -2847,13 +2969,27 @@ suite("turbo_media_pipeline") {
             packet[3]++;
             check_equal(turbo_media_source_publish(input_source, &frame),
                          TURBO_MEDIA_ERR_FULL);
-            check_equal(turbo_pipeline_run(pipeline, &error),
-                         TURBO_PIPELINE_EBACKPRESSURE);
+            run_result.pipeline = pipeline;
+            check_equal(sync_thread_create(&thread, run_pipeline_thread, &run_result), 0);
+            if (!thread) goto backpressure_cleanup;
+            packet[3]++;
+            check_equal(turbo_media_source_publish(input_source, &frame), TURBO_MEDIA_OK);
+            check_equal(sync_thread_join(&thread), 0);
+            sync_thread_destroy(&thread);
+            check_equal(run_result.status, TURBO_PIPELINE_EBACKPRESSURE);
             check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_FAILED);
+            check_equal(turbo_media_source_get_stats(input_source, &source_stats), TURBO_MEDIA_OK);
+            check_equal(source_stats.subscriber_count, 2u);
+            check_equal(delivered, 2u);
+            turbo_pipeline_destroy(pipeline);
+            pipeline = NULL;
+            check_equal(turbo_media_source_get_stats(input_source, &source_stats), TURBO_MEDIA_OK);
+            check_equal(source_stats.subscriber_count, 1u);
 
         backpressure_cleanup:
             turbo_pipeline_destroy(pipeline);
+            if (observer_id) (void)turbo_media_source_unsubscribe(input_source, observer_id);
             turbo_media_server_runtime_destroy(runtime);
         }
 

@@ -1,0 +1,58 @@
+{
+  "targets": {
+    "turbo_media_muxer": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "muxer_registry.c",
+          "flv_muxer.c",
+          "mp4_muxer.c",
+          "mkv_muxer.c",
+          "mpeg_muxer.c",
+          "flv/flv_muxer_impl.c",
+          "flv/flv_writer.c",
+          "mov/mov-writer.c",
+          "mov/fmp4-writer.c",
+          "../common/mov/mov-stsd.c",
+          "../common/mov/mov-tx3g.c",
+          "mkv/mkv-writer.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_codec"],
+        "includeDirs": ["../../codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_FLV": null,
+          "TURBO_MEDIA_HAS_MP4": null,
+          "TURBO_MEDIA_HAS_MKV": null,
+          "TURBO_MEDIA_HAS_MPEG": null
+        }
+      },
+      "private": {
+        "deps": ["salts_core", "cmeta_cstl", "vcpkg_ffmpeg", "turbo_media_common_objects"],
+        "includeDirs": [
+          "flv",
+          "mov",
+          "mkv",
+          "../common",
+          "../common/codec_helpers",
+          "../common/flv",
+          "../common/mkv",
+          "../common/mov"
+        ],
+        "defines": {
+          "MOV_WRITER_ONLY": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

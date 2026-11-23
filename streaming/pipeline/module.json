@@ -1,0 +1,34 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_pipeline": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["src/turbo_pipeline.c", "src/turbo_pipeline_compositor.c", "src/pipeline_compositor_gpu.c"]
+      },
+      "public": {
+        "deps": ["salts_core"],
+        "includeDirs": ["../../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_databind", "salts_cyaml", "turbo_media_runtime", "turbo_media_rtp", "vcpkg_ffmpeg"],
+        "libs": ["d3d11", "d3dcompiler", "dxgi", "dxguid"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_pipeline_EXPORTS": null
+        },
+        "includeDirs": ["../../media/runtime/include", "../../sip/rtp/include"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

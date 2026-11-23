@@ -1,0 +1,79 @@
+{
+  "targets": {
+    "test_sfu_node_app": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sfu_node_app.c", "../src/config.c", "../src/http_api.c", "../src/server.c"]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_rtc_apps",
+          "turbo_media_rtc",
+          "chttp_client",
+          "chttp_app",
+          "turbo_media_auth",
+          "turbo_media_tenant_quota",
+          "turbo_media_tenant_quota_wire",
+          "salts_crypto",
+          "salts_core",
+          "salts_jsonparser",
+          "salts_tomlparser",
+          "turbo_media_demuxer",
+          "turbo_media_http_media_client",
+          "chttp_server",
+          "salts_tinytest",
+          "turbo_media_sdp",
+          "turbo_media_rtp"
+        ],
+        "includeDirs": [
+          "../include",
+          "../../../src/recording",
+          "../../../tests",
+          "../../../ivr/src",
+          "../../../../media/codec/include",
+          "../../../include",
+          "../../../../sip/sdp/include",
+          "../../../../sip/rtp/include",
+          "../../../../media/speech/include",
+          "../../../../media/recognition/include",
+          "../../../../media/containers/demuxer/include",
+          "../../../../media/containers/muxer/include",
+          "../../../src/auth",
+          "../../../src/security",
+          "../../../src/http"
+        ],
+        "defines": {
+          "SFU_NODE_TEST_TLS_CERT_PATH": "\"$root/webrtc/tests/fixtures/tls/localhost-cert.pem\"",
+          "SFU_NODE_TEST_TLS_KEY_PATH": "\"$root/webrtc/tests/fixtures/tls/localhost-key.pem\""
+        },
+        "flags": ["-Wall", "-Wextra", "-Wpedantic"]
+      },
+      "test": {
+        "timeout": 120
+      }
+    },
+    "turbo_media_test_sfu_node_config": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sfu_node_config.c", "../src/config.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_auth", "turbo_media_tenant_quota", "salts_tinytest", "salts_core", "salts_tomlparser"],
+        "includeDirs": ["../include", "../../../src/auth", "../../../src/security"],
+        "defines": {
+          "SFU_NODE_CONFIG_EXAMPLE_PATH": "\"$root/webrtc/apps/sfu_node/config/sfu_node.toml.example\""
+        }
+      },
+      "test": {}
+    },
+    "turbo_media_test_sfu_node_dry_run": {
+      "kind": "header_only",
+      "runtimeDeps": ["sfu_node"],
+      "test": {
+        "program": "${artifact:sfu_node}",
+        "timeout": 10,
+        "args": ["--config", "$root/webrtc/apps/sfu_node/config/sfu_node.toml.example", "--dry-run"]
+      }
+    }
+  }
+}

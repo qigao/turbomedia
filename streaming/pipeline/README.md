@@ -166,18 +166,154 @@ static int set_luma(const turbo_pipeline_video_frame_t *frame, void *context) {
 `turbo_pipeline_set_video_frame_editor(pipeline, set_luma, &value, &error)`，
 检查成功后再 `prepare` 和 `run`。`value` 至少保留到 `run` 返回。
 
-水印、图标、画中画和拼屏的模块接口、像素算法及辅路同步见
+## 水印、画中画与拼屏
+
+应用通过 `<turbo_pipeline_compositor.h>` 创建合成器，并在 `prepare` 前调用
+`turbo_pipeline_bind_compositor()`。图层按数组顺序由底至顶绘制。省略主视频图层时，
+Pipeline 的整张视频帧用作背景。为主视频和辅路分别配置目标矩形即可拼屏。
+添加 RGBA 图片层可叠加水印、Logo 或图标，创建时复制并预处理图片。
+
+以下配置在 1920×1080 的主画面右下角添加一路 640×360 的辅路，并在左上角放置 Logo。
+`logo_rgba` 指向应用已解码的 160×64 RGBA8 图片。
+
+```c
+#include <turbo_pipeline_compositor.h>
+
+static turbo_pipeline_compositor_t *bind_pip(
+    turbo_pipeline_t *pipeline, const uint8_t *logo_rgba,
+    turbo_pipeline_error_t *error) {
+    const turbo_compositor_source_t sources[] = {
+        {.width = 640, .height = 360, .slots = 3, .max_age_us = 200000}
+    };
+    const turbo_compositor_layer_t layers[] = {
+        {.kind = TURBO_COMPOSITOR_AUX_VIDEO, .rect = {1264, 696, 640, 360},
+         .opacity = 255, .input.source = 0},
+        {.kind = TURBO_COMPOSITOR_RGBA_IMAGE, .rect = {24, 24, 160, 64},
+         .opacity = 255, .input.image = {160, 64, {logo_rgba, 160 * 64 * 4, 0, 160 * 4}}}
+    };
+    const turbo_compositor_config_t config = {
+        .width = 1920, .height = 1080,
+        .main_color = TURBO_COMPOSITOR_COLOR_FROM_FRAME,
+        .main_anchor_pts = 0, .main_anchor_us = 0,
+        .layers = layers, .layer_count = sizeof(layers) / sizeof(layers[0]),
+        .sources = sources, .source_count = 1, .memory_limit = 8 * 1024 * 1024
+    };
+    turbo_pipeline_compositor_t *compositor = turbo_pipeline_compositor_create(&config, error);
+    if (compositor &&
+        turbo_pipeline_bind_compositor(pipeline, compositor, error) != TURBO_PIPELINE_OK) {
+        turbo_pipeline_compositor_destroy(compositor);
+        return NULL;
+    }
+    return compositor;
+}
+```
+
+推流期间可以更新所有图层的位置。下面把同一组图层中的辅路移到左下角，
+把 Logo 移到右上角。坐标按初始图层顺序提交，以画布左上角为原点，单位为像素。
+
+```c
+const turbo_compositor_position_t positions[] = {{16, 696}, {1736, 24}};
+turbo_pipeline_status_t status =
+    turbo_pipeline_compositor_set_positions(compositor, positions, 2);
+```
+
+位置必须为偶数，移动后的图层须完全位于画布内。合成线程每帧采样一次位置，
+并在同一帧应用整组更新。两帧之间多次提交时，采用最近一次成功提交的位置。
+图层宽高、不透明度和叠放顺序沿用创建时的配置。
+
+应用通过 `turbo_pipeline_compositor_submit()` 提交该路已解码的 I420 平面，提交时间
+使用和主路锚点一致的微秒时间轴。上例以主路编码器 PTS 0 为会话零点。三平面的
+`first_row` 和 `stride` 表示实际存储布局，函数返回后输入缓冲区可复用。
+队列满返回 `TURBO_PIPELINE_EBACKPRESSURE`。超过 200 ms 的辅路帧退出画面，
+该图层显示黑色。若启用 `required`，缺帧会使运行失败。
+
+合成使用 8 位 BT.709 SDR 限幅。主路可以使用带完整色彩元数据的 BT.709 或 BT.601，
+也可为缺少元数据的源明确指定其已知色彩。辅路提交前应转换到 BT.709 限幅。
+关闭时先调用 `turbo_pipeline_compositor_close()`，等待所有调用线程退出，再销毁
+Pipeline 与合成器。主路音轨沿用原转码配置。
+
+### N 路视频合到一个输出
+
+在同一个视频转码 Pipeline 上绑定一个合成器。每个输出帧包含一条主路和
+`source_count` 条辅路。输出画布、每路解码后的尺寸和每个格子的尺寸各自配置。
+
+| 配置 | 含义 |
+| --- | --- |
+| `config.width, config.height` | 一路合成视频的输出分辨率。如 YAML 也指定编码宽高，须与画布一致。 |
+| `sources[i].width, sources[i].height` | 第 `i` 路辅路实际提交的 I420 帧宽高，由解码结果决定。 |
+| `layers[i].rect = {x, y, width, height}` | 图层在输出画布上的位置和区域大小，均用偶数像素。各路区域可独立设置。 |
+
+例如，输出 1920×1080，左边给主路，右边纵向排三条辅路。每个画面等比缩放到自己的
+区域，区域内剩余的部分填黑。按前面的示例创建并绑定合成器，然后把三个解码源的帧
+分别提交到编号 0、1、2，并将各路时间戳映射到同一会话时间轴。
+
+```c
+const turbo_compositor_source_t sources[] = {
+    {.width = 1280, .height = 720, .slots = 3, .max_age_us = 300000},
+    {.width = 1920, .height = 1080, .slots = 3, .max_age_us = 300000},
+    {.width = 720, .height = 1280, .slots = 3, .max_age_us = 300000}
+};
+const turbo_compositor_layer_t layers[] = {
+    {.kind = TURBO_COMPOSITOR_MAIN_VIDEO, .rect = {0, 0, 1280, 1080}, .opacity = 255},
+    {.kind = TURBO_COMPOSITOR_AUX_VIDEO, .rect = {1280, 0, 640, 360}, .opacity = 255,
+     .input.source = 0},
+    {.kind = TURBO_COMPOSITOR_AUX_VIDEO, .rect = {1280, 360, 640, 360}, .opacity = 255,
+     .input.source = 1},
+    {.kind = TURBO_COMPOSITOR_AUX_VIDEO, .rect = {1280, 720, 640, 360}, .opacity = 255,
+     .input.source = 2}
+};
+const turbo_compositor_config_t config = {
+    .width = 1920, .height = 1080,
+    .main_color = TURBO_COMPOSITOR_COLOR_FROM_FRAME,
+    .main_anchor_pts = 0, .main_anchor_us = 0,
+    .layers = layers, .layer_count = sizeof(layers) / sizeof(layers[0]),
+    .sources = sources, .source_count = sizeof(sources) / sizeof(sources[0]),
+    .memory_limit = 32 * 1024 * 1024
+};
+```
+
+像素算法、容量计算与时间轴契约见
 [视频叠加与多路合成设计](docs/video-compositor-design-zh.md)。
+
+### Windows GPU 合成与亮度分析
+
+用下面的构造选项启用 Direct3D 11，然后照常调用
+`turbo_pipeline_bind_compositor()`。`luma_histogram = 1` 会统计每张合成画布的亮度，
+应用可用 `turbo_pipeline_compositor_luma()` 读取最近一次结果、PTS 和时间基。
+256 个桶对应 I420 的原始 Y 样本值，包含黑边和叠加层。关闭分析或尚未产出画布时，
+查询返回 `TURBO_PIPELINE_ESTATE`。
+
+```c
+const turbo_compositor_options_t options = {
+    .size = sizeof(options),
+    .backend = TURBO_COMPOSITOR_D3D11,
+    .luma_histogram = 1
+};
+turbo_pipeline_compositor_t *compositor =
+    turbo_pipeline_compositor_create_ex(&config, &options, &error);
+```
+
+需要 Windows 和支持 Direct3D 11 feature level 11.0 的硬件。显式请求 GPU 时，设备
+不可用或缓冲区超出预算会使创建失败。原构造函数使用 CPU，需要在 CPU 上读取直方图
+时也可以给新构造函数传入 `TURBO_COMPOSITOR_CPU` 和 `luma_histogram = 1`。
+
+GPU 执行图层混合和亮度统计。解码、预缩放、色彩转换和编码仍使用现有路径，每帧
+上传 I420 数据并将合成结果读回给编码器。图层较少时，传输和同步会占用一部分帧时间。
+缓冲区计入 `config.memory_limit`。 [公开接口](include/turbo_pipeline_compositor.h)
+
+本机 Release 实测使用 RTX 4060 Laptop，输入为 48 帧 1920×1080 I420，叠加四层全屏
+半透明 RGBA。开启亮度统计时，三次运行的中位耗时为 CPU 564 ms、GPU 234 ms。
+计时覆盖 `turbo_pipeline_run()`，含读取、上传、读回和 rawvideo 输出到 null muxer，
+初始化在计时前完成。
 
 ## 状态、所有权与失败
 
 - pipeline 独占不可变配置、FFmpeg context、packet 与 frame。
-- Runtime/RTP pipeline 借用 ServerRuntime；Runtime、输入 source 和输出 source
-  必须活得比 pipeline 久，且 prepared/running 期间不得删除或替换这些 source。
-- 当前 ServerRuntime 的订阅表由所属事件循环串行维护；关闭顺序必须是先停止并
-  quiesce WHIP/RTSP 等输入 publisher，再 `request_stop`、join runner，最后关闭
-  WHEP player 和销毁 pipeline。输入仍在 publish 时并发 unsubscribe 不在 v1
-  保证范围内。
+- Runtime/RTP pipeline 借用 ServerRuntime 及输入、输出 source。保持对象有效到
+  pipeline 销毁。订阅表由 Runtime 所属事件循环串行维护，`prepare` 与 `destroy`
+  在该所有者上执行。runner 正常停止或出错时关闭队列接纳，原输入订阅忽略随后收到的包。
+  等待 runner 及状态查询、停止调用退出，确认输入 publisher 已静止后，由 Runtime
+  所有者销毁 pipeline 并退订。
 - Runtime 输入回调只把完整 RTP packet 复制进预分配的有界 ring；执行线程是
   唯一 depay、FFmpeg 与 pay 消费者。`AVPacket`/`AVFrame` 只归该消费者线程
   所有；输出 packet 在同步 publish 返回前有效，不跨回调借用。
@@ -189,6 +325,12 @@ static int set_luma(const turbo_pipeline_video_frame_t *frame, void *context) {
 - 正常 EOF 会 drain decoder、filter 和 encoder，再写 trailer。错误不伪装成成功，也不自动降级为 stream copy。
 - Runtime/RTP 没有输入 EOF；显式 stop 会丢弃 ring 和编解码器中的残留帧，不把
   停止后的延迟帧发布到已关闭的 RTC session。
+- 视频转码的 `frame_rate > 0` 在用户滤镜之后执行固定帧率转换。选帧和补帧发生在
+  逐帧编辑之前。省略或配置为 0 时保留滤镜输出的节奏，编码器采用输入时基。
+  MPEG-4 Part 2 按其 16 位时基上限选取可表示的近似值。
+- Runtime/RTP 转码按轨道延展 32 位输入 RTP 时间戳，首个时间戳沿用原值。轨道重启后
+  创建并准备新的 pipeline 以建立时钟起点。Runtime 输出轨道尺寸和合成画布在 `prepare`
+  期间统一校验，尺寸冲突时撤回该次准备的输出源。
 - stream-copy 显式启用 FFmpeg `AVFMT_FLAG_AUTO_BSF`，由目标 muxer 请求 H.264/AAC 等必要的码流封装转换。现有 `media/containers/common/codec_helpers` 继续服务原有 muxer/demuxer/streamer；v1 不把两套码流状态混在同一分支。
 
 公开 API 使用 opaque pointer；FFmpeg 类型不会越过模块边界。统计值采用原子快照，配置和运行状态分别只有 pipeline 一个事实源。
@@ -230,6 +372,9 @@ Salts Crypto 校验远端证书指纹并导出密钥，libSRTP 保护媒体报�
 逐字节核对写出的像素，并验证 Runtime/RTP 视频路径、回调失败和控制面状态。
 可用 `ctest --test-dir <build-dir> -R '^turbo_media_test_pipeline$' --output-on-failure`
 运行这些用例。
+合成器用例通过 `ctest --test-dir <build-dir> -R '^turbo_media_test_pipeline_compositor$'`
+运行，验证 Alpha、负行跨度、合成像素、辅路选帧、满队列与 H.264 色彩标签。
+有 Direct3D 11 硬件时，还会逐字节比较 CPU 和 GPU 的 I420 输出，并根据输出核对所有亮度桶和时间戳。
 
 单元测试覆盖严格 YAML、重复节点、环、非法端点、受限 filter、完整 fan-out、
 Runtime/RTP 单输出约束、打开失败清理和 prepare 后取消。集成测试覆盖单/双输出

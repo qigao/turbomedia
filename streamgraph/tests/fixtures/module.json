@@ -1,0 +1,32 @@
+{
+  "targets": {
+    "streamgraph_test_provider_n": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "testOnly": true,
+      "sources": {
+        "files": ["native_provider_dso.c"]
+      },
+      "private": {
+        "defines": {
+          "TM_PROVIDER_GENERATION": "101",
+          "streamgraph_test_provider_n_EXPORTS": null
+        }
+      }
+    },
+    "streamgraph_test_provider_n1": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "testOnly": true,
+      "sources": {
+        "files": ["native_provider_dso.c"]
+      },
+      "private": {
+        "defines": {
+          "TM_PROVIDER_GENERATION": "102",
+          "streamgraph_test_provider_n1_EXPORTS": null
+        }
+      }
+    }
+  }
+}

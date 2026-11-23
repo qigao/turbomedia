@@ -1,0 +1,374 @@
+{
+  "include": ["apps/module.json", "examples/module.json", "ivr/module.json", "tests/module.json"],
+  "targets": {
+    "turbo_media_auth": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "src/auth/turbo_media_auth.c",
+          "src/auth/turbo_media_revocation.c",
+          "src/auth/turbo_media_revocation_projection.c",
+          "src/auth/turbo_media_revocation_wire.c",
+          "src/auth/turbo_media_revocation_fanout.c"
+        ]
+      },
+      "public": {
+        "includeDirs": ["src/auth"]
+      },
+      "private": {
+        "deps": ["salts_jsonparser", "salts_crypto", "salts_core"]
+      }
+    },
+    "turbo_media_datachannel": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "src/turbo_datachannel.c",
+          "src/dc_certificate.c",
+          "src/turbo_datachannel_errors.c",
+          "src/turbo_dc_msg.c",
+          "src/dcep_protocol.c",
+          "src/dtls_session.c",
+          "src/sctp_session.c",
+          "src/stb_sprintf.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_sdp", "salts_ltvparser"],
+        "includeDirs": ["../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_cnet_adapter",
+          "salts_cnet",
+          "saltsnet_ice",
+          "salts_core",
+          "cmeta_cstl",
+          "vcpkg_usrsctp",
+          "salts_crypto",
+          "vcpkg_roaring"
+        ],
+        "includeDirs": ["src", "../sip/sdp/include", "../streaming/transport/internal"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_datachannel_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/ice_integration.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_datachannel.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_datachannel_errors.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_dc_msg.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_http_media_client": {
+      "kind": "static",
+      "sources": {
+        "files": ["src/http/turbo_http_media_client.c"]
+      },
+      "public": {
+        "includeDirs": ["src/http"]
+      },
+      "private": {
+        "deps": ["chttp_client", "salts_cnet", "salts_core"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/http_api.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_revocation_https": {
+      "kind": "static",
+      "sources": {
+        "files": ["src/auth/turbo_media_revocation_https.c"]
+      },
+      "public": {
+        "includeDirs": ["src/auth"]
+      },
+      "private": {
+        "deps": ["turbo_media_auth", "turbo_media_transport", "salts_jsonparser"],
+        "includeDirs": ["../media/codec/include", "../streaming/transport/include"]
+      }
+    },
+    "turbo_media_rtc": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "src/salts_ice_owner.c",
+          "src/rtc/rtp/rtcp_packet.c",
+          "src/rtc/rtp/rtp_session.c",
+          "src/rtc/rtp/rtp_history.c",
+          "src/rtc/rtp/twcc.c",
+          "src/rtc/rtp/simulcast.c",
+          "src/rtc/rtp/nack.c",
+          "src/rtc/srtp/srtp_session.c",
+          "src/rtc/media/jitter_buffer.c",
+          "src/rtc/media/turbo_media_engine.c",
+          "src/rtc/media/turbo_peer_connection.c"
+        ]
+      },
+      "public": {
+        "deps": [
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_rtp",
+          "turbo_media_speech",
+          "turbo_media_recognition"
+        ],
+        "includeDirs": ["../media/codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_RTC": null
+        }
+      },
+      "private": {
+        "deps": [
+          "turbo_media_codec",
+          "saltsnet_ice",
+          "salts_cnet",
+          "salts_core",
+          "cmeta_cstl",
+          "vcpkg_srtp2",
+          "salts_media"
+        ],
+        "includeDirs": [
+          "src",
+          "src/rtc/media",
+          "../sip/sdp/include",
+          "../sip/rtp/include",
+          "../media/speech/include",
+          "../media/recognition/include",
+          "../media/containers/demuxer/include",
+          "../media/containers/muxer/include"
+        ],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_rtc_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter", "-fms-extensions"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_media_engine.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_nack.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_peer_connection.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_rtp.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_simulcast.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_srtp.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_srtp_defs.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_rtc_client": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "src/client/turbo_rtc_client.c",
+          "src/client/turbo_rtc_subscriber.c",
+          "src/client/turbo_rtc_playback_sink.c",
+          "src/client/turbo_rtc_capture_source.c"
+        ]
+      },
+      "public": {
+        "deps": ["salts_media"],
+        "includeDirs": ["../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": ["turbo_media_rtc", "turbo_media_http_media_client", "salts_media", "salts_core"],
+        "includeDirs": [
+          "src/http",
+          "../sip/sdp/include",
+          "../sip/rtp/include",
+          "../media/speech/include",
+          "../media/recognition/include",
+          "../media/containers/demuxer/include",
+          "../media/containers/muxer/include"
+        ],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_rtc_client_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_rtc_client.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_rtc_subscriber.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_rtc_playback_sink.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_rtc_capture_source.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_tenant_quota": {
+      "kind": "static",
+      "sources": {
+        "files": ["src/security/turbo_media_tenant_quota.c", "src/security/turbo_media_tenant_quota_allocator.c"]
+      },
+      "public": {
+        "includeDirs": ["src/security"]
+      }
+    },
+    "turbo_media_tenant_quota_wire": {
+      "kind": "static",
+      "sources": {
+        "files": ["src/security/turbo_media_tenant_quota_wire.c"]
+      },
+      "public": {
+        "includeDirs": ["src/security"]
+      },
+      "private": {
+        "deps": ["turbo_media_tenant_quota", "salts_jsonparser"]
+      }
+    },
+    "turbo_media_webrtc": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "adapter/webrtc_adapter.c",
+          "adapter/turbo_peer_backend.c",
+          "adapter/webrtc_session.c",
+          "src/salts_ice_owner.c",
+          "src/ice_integration.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_runtime", "turbo_media_datachannel", "saltsnet_ice"],
+        "includeDirs": ["../media/codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_WEBRTC": null
+        }
+      },
+      "private": {
+        "deps": ["turbo_media_rtc", "turbo_media_sdp", "salts_core"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_webrtc_EXPORTS": null
+        },
+        "includeDirs": [
+          "../media/runtime/include",
+          "../sip/sdp/include",
+          "../sip/rtp/include",
+          "../media/speech/include",
+          "../media/recognition/include",
+          "../media/containers/demuxer/include",
+          "../media/containers/muxer/include"
+        ],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_media_webrtc.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_media_webrtc_backend.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_recorder.h",
+            "to": "include"
+          }
+        ]
+      }
+    },
+    "turbo_media_webrtc_signaling": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "src/signaling/webrtc_signaling.c",
+          "src/signaling/signaling_source_identity.c",
+          "src/signaling/http_api.c"
+        ]
+      },
+      "public": {
+        "deps": ["salts_cnet", "chttp_server"],
+        "includeDirs": ["../media/codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_WEBRTC_SIGNALING": null
+        }
+      },
+      "private": {
+        "deps": [
+          "turbo_media_auth",
+          "turbo_media_tenant_quota",
+          "turbo_media_tenant_quota_wire",
+          "chttp_app",
+          "salts_jsonparser",
+          "salts_core",
+          "cmeta_cstl"
+        ],
+        "includeDirs": ["$vcpkg/include", "src/auth", "src/security"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_webrtc_signaling_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/webrtc_signaling.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

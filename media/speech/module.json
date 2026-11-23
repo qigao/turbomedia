@@ -1,0 +1,31 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_speech": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["turbo_speech.c"]
+      },
+      "public": {
+        "includeDirs": ["../codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_core"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_speech_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "targets": {
+    "test_ivr_control_ws": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_ivr_control_ws.c", "../src/ivr_control_ws.c", "../src/ivr_thread.c"]
+      },
+      "private": {
+        "deps": ["chttp_client", "chttp_app", "salts_cnet", "salts_core", "salts_tinytest", "mingw_threads"],
+        "libs": ["ws2_32"],
+        "includeDirs": ["../src", "../include"]
+      },
+      "test": {}
+    },
+    "test_ivr_openai_provider": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_ivr_openai_provider.c", "../../apps/ivr_worker/ivr_speech_session_factory.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_ivr", "salts_tinytest"],
+        "libs": ["ws2_32"],
+        "includeDirs": [
+          "../src",
+          "../include",
+          "../media/speech/include",
+          "../../tests",
+          "../../apps/ivr_worker",
+          "../../../media/codec/include",
+          "../../../media/speech/include",
+          "$builddir/webrtc/ivr/generated"
+        ],
+        "defines": {
+          "IVR_TEST_SCHEMA_PATH": "\"$root/webrtc/ivr/schema/turbomedia_ivr_v2.schema\""
+        }
+      },
+      "test": {}
+    }
+  },
+  "forEach": [
+    {
+      "files": [
+        "test_ivr_acl.c",
+        "test_ivr_certificate_identity.c",
+        "test_ivr_control_gateway.c",
+        "test_ivr_dtmf_rtp.c",
+        "test_ivr_frame.c",
+        "test_ivr_media_bot.c",
+        "test_ivr_media_reconnect.c",
+        "test_ivr_media_supervisor.c",
+        "test_ivr_protocol.c",
+        "test_ivr_room_bridge.c",
+        "test_ivr_room_bridge_dedup.c",
+        "test_ivr_schema.c",
+        "test_ivr_schema_typed.c",
+        "test_ivr_worker.c"
+      ],
+      "target": {
+        "kind": "executable",
+        "private": {
+          "defines": {
+            "IVR_TEST_SCHEMA_PATH": "\"$root/webrtc/ivr/schema/turbomedia_ivr_v2.schema\""
+          },
+          "deps": ["turbo_media_ivr", "salts_tinytest"],
+          "includeDirs": [
+            "../src",
+            "../include",
+            "../media/speech/include",
+            "../../tests",
+            "../../../media/codec/include",
+            "../../../media/speech/include",
+            "$builddir/webrtc/ivr/generated"
+          ],
+          "libs": ["ws2_32"]
+        },
+        "test": {}
+      }
+    }
+  ]
+}

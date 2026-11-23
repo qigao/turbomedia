@@ -1,0 +1,65 @@
+{
+  "targets": {
+    "turbo_media_demuxer": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "demuxer_registry.c",
+          "flv_demuxer.c",
+          "mp4_demuxer.c",
+          "mkv_demuxer.c",
+          "mpeg_demuxer.c",
+          "flv/flv_demuxer_impl.c",
+          "flv/flv_demuxer_script.c",
+          "flv/flv_reader.c",
+          "flv/flv_parser.c",
+          "mov/mov-reader.c",
+          "mov/fmp4-reader.c",
+          "../common/mov/mov-stsd.c",
+          "../common/mov/mov-tx3g.c",
+          "mkv/mkv-reader.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_codec", "turbo_media_muxer"],
+        "includeDirs": ["../../codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_FLV": null,
+          "TURBO_MEDIA_HAS_MP4": null,
+          "TURBO_MEDIA_HAS_MKV": null,
+          "TURBO_MEDIA_HAS_MPEG": null
+        }
+      },
+      "private": {
+        "deps": ["turbo_media_common_objects", "salts_core", "cmeta_cstl", "vcpkg_ffmpeg"],
+        "includeDirs": [
+          "flv",
+          "mov",
+          "mkv",
+          "../common",
+          "../muxer/include",
+          "../common/flv",
+          "../common/mpeg",
+          "../common/codec_helpers",
+          "../common/mov",
+          "../common/mkv"
+        ],
+        "defines": {
+          "SHARED_CXX": null,
+          "MOV_READER_ONLY": null,
+          "turbo_media_demuxer_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

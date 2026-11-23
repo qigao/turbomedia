@@ -1,0 +1,27 @@
+{
+  "targets": {
+    "turbo_media_rtp_ice": {
+      "kind": "static",
+      "sources": {
+        "files": ["turbo_rtp_ice.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_sdp", "saltsnet_ice"],
+        "includeDirs": ["../../../media/codec/include", "include"]
+      },
+      "private": {
+        "deps": ["turbo_media_rtp", "salts_core"],
+        "includeDirs": ["../../sdp/include", "../include"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_rtp_ice.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

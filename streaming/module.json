@@ -1,0 +1,3 @@
+{
+  "include": ["pipeline/module.json", "rtsp/module.json", "streamer/module.json", "transport/module.json"]
+}

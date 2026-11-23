@@ -1,0 +1,20 @@
+{
+  "targets": {
+    "turbo_media_test_recognition": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_recognition.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_recognition", "salts_tinytest"],
+        "includeDirs": [
+          "../../codec/include",
+          "../include",
+          "../../containers/demuxer/include",
+          "../../containers/muxer/include"
+        ]
+      },
+      "test": {}
+    }
+  }
+}

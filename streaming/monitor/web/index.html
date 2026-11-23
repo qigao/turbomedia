@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视频监控台</title>
+  <link rel="stylesheet" href="/monitor.css">
+  <script src="/monitor.js" defer></script>
+</head>
+<body>
+  <main class="console">
+    <header class="console-header">
+      <h1>视频监控台</h1>
+      <p id="connection" role="status">正在连接监控服务</p>
+    </header>
+    <div class="workspace">
+      <section aria-labelledby="feed-title">
+        <div class="section-heading">
+          <h2 id="feed-title">实时画面</h2>
+          <button id="pause" type="button" aria-pressed="false">暂停预览</button>
+        </div>
+        <div id="feeds" class="feeds"></div>
+      </section>
+      <section class="incident-panel" aria-labelledby="incident-title">
+        <div class="section-heading">
+          <h2 id="incident-title">告警</h2>
+          <span id="incident-count" class="count" role="status"></span>
+        </div>
+        <p id="notice" role="status"></p>
+        <p id="empty">暂无告警</p>
+        <ul id="incidents"></ul>
+      </section>
+    </div>
+    <section id="playback" class="playback" aria-labelledby="playback-title" hidden>
+      <div class="section-heading">
+        <h2 id="playback-title" tabindex="-1">故障前录像</h2>
+        <button id="close-playback" type="button">关闭录像</button>
+      </div>
+      <video id="clip" controls preload="metadata" playsinline></video>
+    </section>
+  </main>
+  <template id="feed-template">
+    <article class="feed">
+      <div class="viewport">
+        <span class="placeholder">等待首帧</span>
+        <img loading="lazy" alt="" hidden>
+      </div>
+      <div class="feed-info">
+        <h3></h3>
+        <span class="signal"></span>
+      </div>
+      <p class="last-frame"></p>
+    </article>
+  </template>
+  <template id="incident-template">
+    <li class="incident">
+      <h3></h3>
+      <p class="description"></p>
+      <p class="archive"></p>
+      <div class="actions">
+        <button class="review" type="button" hidden>打开录像</button>
+        <button class="ack" type="button">确认</button>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_runtime": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["media_source.c", "server_runtime.c"]
+      },
+      "public": {
+        "includeDirs": ["../codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_core", "cmeta_cstl"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_runtime_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          },
+          {
+            "from": "../mobile/turbo_mobile.h",
+            "to": "include"
+          },
+          {
+            "from": "../mobile/turbo_mobile_codec.h",
+            "to": "include"
+          }
+        ],
+        "assets": [
+          {
+            "from": "$root/LICENSE",
+            "to": "share/TurboMedia"
+          },
+          {
+            "from": "$root/NOTICE",
+            "to": "share/TurboMedia"
+          },
+          {
+            "from": "$root/THIRD_PARTY_NOTICES.md",
+            "to": "share/TurboMedia"
+          }
+        ]
+      }
+    }
+  }
+}

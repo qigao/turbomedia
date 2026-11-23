@@ -1,0 +1,105 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_ivr": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "src/ivr_acl.c",
+          "src/ivr_certificate_identity.c",
+          "src/ivr_dtmf_rtp.c",
+          "src/ivr_frame.c",
+          "src/ivr_protocol.c",
+          "src/ivr_media_bot.c",
+          "src/ivr_media_reconnect.c",
+          "src/ivr_media_supervisor.c",
+          "src/ivr_openai_provider.c",
+          "src/ivr_thread.c",
+          "src/ivr_util.c",
+          "src/ivr_worker.c",
+          "src/ivr_control_ws.c",
+          "src/ivr_control_gateway.c",
+          "src/ivr_room_bridge.c"
+        ]
+      },
+      "public": {
+        "deps": [
+          "salts_databind",
+          "salts_core",
+          "turbo_media_speech",
+          "chttp_client",
+          "chttp_server",
+          "turbo_media_ivr_schema"
+        ],
+        "includeDirs": ["include"]
+      },
+      "private": {
+        "deps": ["salts_jsonparser", "mingw_threads", "chttp_app"],
+        "includeDirs": [
+          "src",
+          "media/speech/include",
+          "../../media/codec/include",
+          "../../media/speech/include",
+          "$builddir/webrtc/ivr/generated"
+        ]
+      }
+    },
+    "turbo_media_ivr_rtc": {
+      "kind": "static",
+      "sources": {
+        "files": ["src/ivr_whep_transport.c", "src/ivr_whip_transport.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_ivr", "turbo_media_rtc"],
+        "includeDirs": ["src"]
+      },
+      "private": {
+        "deps": ["turbo_media_http_media_client", "chttp_client"],
+        "includeDirs": [
+          "include",
+          "media/speech/include",
+          "../../media/codec/include",
+          "../../media/speech/include",
+          "$builddir/webrtc/ivr/generated",
+          "../include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include",
+          "../src/http"
+        ]
+      }
+    },
+    "turbo_media_ivr_schema": {
+      "kind": "static",
+      "sources": {
+        "files": ["$builddir/webrtc/ivr/generated/turbomedia_ivr_v2.c"]
+      },
+      "public": {
+        "deps": ["salts_databind", "salts_core"],
+        "includeDirs": ["$builddir/webrtc/ivr/generated"]
+      },
+      "preTasks": [
+        {
+          "name": "ivr_schema",
+          "tool": "salts-idlc",
+          "inputs": ["schema/turbomedia_ivr_v2.schema", "${envPath:SALTS_UTILS_ROOT}/bin/salts-idlc${host:exe}"],
+          "outputs": [
+            "$builddir/webrtc/ivr/generated/turbomedia_ivr_v2.h",
+            "$builddir/webrtc/ivr/generated/turbomedia_ivr_v2.c"
+          ],
+          "args": [
+            "$moduledir/schema/turbomedia_ivr_v2.schema",
+            "--lang",
+            "c",
+            "--output",
+            "$builddir/webrtc/ivr/generated/turbomedia_ivr_v2.h",
+            "--source-output",
+            "$builddir/webrtc/ivr/generated/turbomedia_ivr_v2.c"
+          ]
+        }
+      ]
+    }
+  }
+}

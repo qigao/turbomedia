@@ -1,0 +1,46 @@
+{
+  "targets": {
+    "turbo_media_test_rtsp": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_rtsp.c", "../../../streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_rtsp", "chttp_app", "vcpkg_ffmpeg", "chttp_client"],
+        "includeDirs": [
+          "../../../streamgraph/adapters/ffmpeg/include",
+          "../../../streamgraph/include",
+          "../../../media/codec/include",
+          "../include",
+          "../parser"
+        ],
+        "defines": {
+          "TM_TEST_RTSP_MPEG2_CODEC_GATE": "1"
+        }
+      },
+      "test": {}
+    },
+    "turbo_media_test_rtsp_lib": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_rtsp_lib.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_rtsp"],
+        "includeDirs": ["../../../media/codec/include", "../include", "../parser"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_server_rtsp_adapter": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_server_rtsp_adapter.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_rtsp", "turbo_media_runtime", "turbo_media_server_rtsp", "salts_core"],
+        "includeDirs": ["../../../media/codec/include", "../include", "../parser", "../../../media/runtime/include"]
+      },
+      "test": {}
+    }
+  }
+}

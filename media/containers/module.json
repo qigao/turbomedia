@@ -1,0 +1,3 @@
+{
+  "include": ["common/module.json", "demuxer/module.json", "muxer/module.json", "tests/module.json"]
+}

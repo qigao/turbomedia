@@ -1,0 +1,73 @@
+{
+  "targets": {
+    "turbo_media_sip": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "header/sip-header-contact.c",
+          "header/sip-header-cseq.c",
+          "header/sip-header-event.c",
+          "header/sip-header-param.c",
+          "header/sip-header-route.c",
+          "header/sip-header-substate.c",
+          "header/sip-header-uri.c",
+          "header/sip-header-via.c",
+          "header/sip-header.c",
+          "sip-agent.c",
+          "sip-datagram.c",
+          "sip-dialog.c",
+          "sip-message.c",
+          "sip-reason.c",
+          "sip-subscribe.c",
+          "sip-timer.c",
+          "uac/sip-register-digest.c",
+          "uac/sip-registration.c",
+          "uac/sip-uac-ack.c",
+          "uac/sip-uac-bye.c",
+          "uac/sip-uac-cancel.c",
+          "uac/sip-uac-info.c",
+          "uac/sip-uac-invite.c",
+          "uac/sip-uac-options.c",
+          "uac/sip-uac-register.c",
+          "uac/sip-uac-subscribe.c",
+          "uac/sip-uac-transaction-invite.c",
+          "uac/sip-uac-transaction-noninvite.c",
+          "uac/sip-uac-transaction.c",
+          "uac/sip-uac.c",
+          "uas/sip-uas-bye.c",
+          "uas/sip-uas-cancel.c",
+          "uas/sip-uas-info.c",
+          "uas/sip-uas-options.c",
+          "uas/sip-uas-prack.c",
+          "uas/sip-uas-refer.c",
+          "uas/sip-uas-register.c",
+          "uas/sip-uas-subscribe.c",
+          "uas/sip-uas-transaction-invite.c",
+          "uas/sip-uas-transaction-noninvite.c",
+          "uas/sip-uas-transaction.c",
+          "uas/sip-uas.c"
+        ]
+      },
+      "public": {
+        "deps": ["salts_core", "cmeta_cstl"],
+        "includeDirs": ["include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_SIP": null
+        }
+      },
+      "private": {
+        "deps": ["salts_crypto", "mingw_threads"],
+        "includeDirs": ["."],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include/turbo_media/sip"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "targets": {
+    "test_ivr_worker_control": {
+      "kind": "executable",
+      "sources": {
+        "files": ["../test_ivr_worker_control.c", "../ivr_worker_control.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core"],
+        "includeDirs": ["..", "../../../tests"]
+      },
+      "test": {}
+    },
+    "test_ivr_worker_health": {
+      "kind": "executable",
+      "sources": {
+        "files": ["../test_ivr_worker_health.c", "../ivr_worker_health.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core"],
+        "includeDirs": ["..", "../../../tests"]
+      },
+      "test": {}
+    },
+    "test_ivr_worker_http": {
+      "kind": "executable",
+      "sources": {
+        "files": [
+          "../test_ivr_worker_http.c",
+          "../ivr_worker_health.c",
+          "../ivr_worker_metrics.c",
+          "../ivr_worker_http.c"
+        ]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_http_media_client",
+          "salts_tinytest",
+          "salts_core",
+          "chttp_client",
+          "chttp_app",
+          "salts_cnet"
+        ],
+        "includeDirs": ["..", "../../../ivr/src", "../../../tests", "../../../src/http"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_ivr_worker_dry_run": {
+      "kind": "header_only",
+      "runtimeDeps": ["ivr_worker"],
+      "test": {
+        "program": "${artifact:ivr_worker}",
+        "timeout": 30,
+        "args": ["--dry-run", "--assign", "session-42,dialog-42,room-42,call-42"]
+      }
+    },
+    "turbo_media_test_ivr_worker_media_input_timeout_max": {
+      "kind": "header_only",
+      "runtimeDeps": ["ivr_worker"],
+      "test": {
+        "program": "${artifact:ivr_worker}",
+        "timeout": 30,
+        "environment": ["IVR_MEDIA_INPUT_INACTIVITY_TIMEOUT_MS=3600000"],
+        "args": ["--dry-run"]
+      }
+    },
+    "turbo_media_test_ivr_worker_rejects_media_input_timeout_over_max": {
+      "kind": "header_only",
+      "runtimeDeps": ["ivr_worker"],
+      "test": {
+        "timeout": 30,
+        "tool": "cmake",
+        "environment": ["IVR_MEDIA_INPUT_INACTIVITY_TIMEOUT_MS=3600001"],
+        "args": [
+          "-DEXPECT_FAILURE=ON",
+          "-P",
+          "$root/cmake/RunSlateCheck.cmake",
+          "--",
+          "${artifact:ivr_worker}",
+          "--dry-run"
+        ]
+      }
+    },
+    "turbo_media_test_ivr_worker_rejects_active_plaintext": {
+      "kind": "header_only",
+      "runtimeDeps": ["ivr_worker"],
+      "test": {
+        "timeout": 30,
+        "tool": "cmake",
+        "args": [
+          "-DPROGRAM=$builddir/bin/ivr_worker${host:exe}",
+          "-P",
+          "$root/webrtc/apps/ivr_worker/tests/assert_active_plaintext_rejected.cmake"
+        ]
+      }
+    },
+    "turbo_media_test_ivr_worker_log_redaction": {
+      "kind": "header_only",
+      "runtimeDeps": ["ivr_worker"],
+      "test": {
+        "timeout": 30,
+        "tool": "cmake",
+        "environment": [
+          "IVR_OPENAI_BASE_URL=https://user:ivr-log-secret@example.invalid/v1?token=ivr-url-secret",
+          "OPENAI_API_KEY=ivr-api-key-secret"
+        ],
+        "args": [
+          "-DREJECT_OUTPUT=ivr-log-secret|ivr-url-secret|ivr-api-key-secret",
+          "-P",
+          "$root/cmake/RunSlateCheck.cmake",
+          "--",
+          "${artifact:ivr_worker}",
+          "--dry-run"
+        ]
+      }
+    }
+  }
+}

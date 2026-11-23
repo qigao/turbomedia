@@ -1,0 +1,54 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "ivr_worker": {
+      "kind": "executable",
+      "sources": {
+        "files": [
+          "ivr_worker_control.c",
+          "ivr_worker_health.c",
+          "ivr_worker_metrics.c",
+          "ivr_worker_http.c",
+          "ivr_speech_session_factory.c",
+          "main.c"
+        ]
+      },
+      "private": {
+        "deps": [
+          "turbo_media_ivr",
+          "turbo_media_ivr_rtc",
+          "turbo_media_http_media_client",
+          "turbo_media_rtc",
+          "chttp_client",
+          "chttp_server",
+          "chttp_app",
+          "salts_tomlparser",
+          "turbo_media_rtp"
+        ],
+        "includeDirs": [
+          "../../ivr/src",
+          "../../ivr/include",
+          "../../../media/codec/include",
+          "../../../media/speech/include",
+          "$builddir/webrtc/ivr/generated",
+          "../../include",
+          "../../../sip/sdp/include",
+          "../../../sip/rtp/include",
+          "../../../media/recognition/include",
+          "../../../media/containers/demuxer/include",
+          "../../../media/containers/muxer/include",
+          "../../src/http"
+        ],
+        "flags": ["-Wall", "-Wextra", "-Wpedantic"]
+      },
+      "install": {
+        "assets": [
+          {
+            "from": "config/ivr_worker.toml.example",
+            "to": "etc/turbomedia"
+          }
+        ]
+      }
+    }
+  }
+}

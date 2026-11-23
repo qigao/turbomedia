@@ -1,0 +1,15 @@
+{
+  "targets": {
+    "turbo_media_test_sdp_parser": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sdp_parser.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "turbo_media_sdp"],
+        "includeDirs": ["../../../media/codec/include", "../include"]
+      },
+      "test": {}
+    }
+  }
+}

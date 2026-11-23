@@ -90,10 +90,10 @@ TURBO_MEDIA_API turbo_pipeline_t *turbo_pipeline_create_from_yaml(
  * Bind the ServerRuntime used by media.runtime_source/runtime_sink nodes.
  *
  * The runtime is borrowed and must outlive the pipeline. Binding is accepted
- * only in CREATED state. Runtime sources referenced by the graph must not be
- * removed while the pipeline is prepared or running. Because ServerRuntime
- * source subscription mutation is event-loop owned, quiesce the input
- * publisher before requesting stop and destroying a Runtime/RTP pipeline.
+ * only in CREATED state. Keep the referenced Runtime sources alive through
+ * destruction. Serialize prepare and destroy with the Runtime owner that
+ * manages source subscriptions. The input publisher may continue while run()
+ * stops or fails. Quiesce it before destruction.
  */
 TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_bind_server_runtime(
     turbo_pipeline_t *pipeline,
@@ -133,6 +133,8 @@ TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_prepare(
  * turbo_pipeline_state() and turbo_pipeline_stats() may be called concurrently
  * with this function. A Runtime/RTP graph copies incoming RTP packets into a
  * bounded queue; a full queue is reported to both publisher and runner.
+ * Runtime exit seals the input queue. The input subscription remains attached
+ * until destroy() and ignores subsequent packets.
  *
  * @return TURBO_PIPELINE_OK at EOF, TURBO_PIPELINE_ESTOPPED after cooperative
  *         cancellation, or a fatal processing error.
@@ -161,9 +163,10 @@ TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_stats(
 /**
  * Release a non-running pipeline and all resources.
  *
- * A running pipeline must first be stopped and its turbo_pipeline_run() call
- * allowed to return. Calling destroy while it is running requests stop but
- * deliberately does not free memory still owned by the running thread.
+ * Wait for run() and concurrent stop/state/stat calls to return before freeing
+ * the pipeline. Calling destroy while it is running requests stop but does not
+ * free it. In Runtime/RTP mode, destroy from the Runtime owner after quiescing
+ * the input publisher. Destruction removes the input subscription.
  */
 TURBO_MEDIA_API void turbo_pipeline_destroy(turbo_pipeline_t *pipeline);
 

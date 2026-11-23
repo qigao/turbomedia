@@ -1,0 +1,115 @@
+{
+  "modules": ["ice"],
+  "targets": {
+    "turbo_media_rtp": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "rtcp-app.c",
+          "rtcp-bye.c",
+          "rtcp-interval.c",
+          "rtcp-psfb.c",
+          "rtcp-rr.c",
+          "rtcp-rtpfb.c",
+          "rtcp-sdec.c",
+          "rtcp-sr.c",
+          "rtcp-xr.c",
+          "rtcp.c",
+          "rtp-demuxer.c",
+          "rtp-member-list.c",
+          "rtp-member.c",
+          "rtp-packet.c",
+          "rtp-profile.c",
+          "rtp-queue.c",
+          "rtp-ssrc.c",
+          "rtp-time.c",
+          "rtp.c",
+          "rtpext/rtp-ext-abs-send-time.c",
+          "rtpext/rtp-ext-absolute-capture-time.c",
+          "rtpext/rtp-ext-color-space.c",
+          "rtpext/rtp-ext-csrc-audio-level.c",
+          "rtpext/rtp-ext-frame-marking.c",
+          "rtpext/rtp-ext-inband-cn.c",
+          "rtpext/rtp-ext-playout-delay.c",
+          "rtpext/rtp-ext-sdes.c",
+          "rtpext/rtp-ext-ssrc-audio-level.c",
+          "rtpext/rtp-ext-toffset.c",
+          "rtpext/rtp-ext-transport-wide-cc.c",
+          "rtpext/rtp-ext-video-content-type.c",
+          "rtpext/rtp-ext-video-frame-tracking-id.c",
+          "rtpext/rtp-ext-video-layers-allocation.c",
+          "rtpext/rtp-ext-video-orientation.c",
+          "rtpext/rtp-ext-video-timing.c",
+          "rtpext/rtp-ext.c",
+          "payload/rtp-av1-pack.c",
+          "payload/rtp-av1-unpack.c",
+          "payload/rtp-h264-bitstream.c",
+          "payload/rtp-h264-pack.c",
+          "payload/rtp-h264-unpack.c",
+          "payload/rtp-h265-pack.c",
+          "payload/rtp-h265-unpack.c",
+          "payload/rtp-h266-pack.c",
+          "payload/rtp-h266-unpack.c",
+          "payload/rtp-mp4a-latm-pack.c",
+          "payload/rtp-mp4a-latm-unpack.c",
+          "payload/rtp-mp4v-es-pack.c",
+          "payload/rtp-mp4v-es-unpack.c",
+          "payload/rtp-mpeg1or2es-pack.c",
+          "payload/rtp-mpeg1or2es-unpack.c",
+          "payload/rtp-mpeg4-generic-pack.c",
+          "payload/rtp-mpeg4-generic-unpack.c",
+          "payload/rtp-pack.c",
+          "payload/rtp-payload-helper.c",
+          "payload/rtp-payload.c",
+          "payload/rtp-ps-unpack.c",
+          "payload/rtp-ts-pack.c",
+          "payload/rtp-ts-unpack.c",
+          "payload/rtp-unpack.c",
+          "payload/rtp-vp8-pack.c",
+          "payload/rtp-vp8-unpack.c",
+          "payload/rtp-vp9-pack.c",
+          "payload/rtp-vp9-unpack.c"
+        ]
+      },
+      "public": {
+        "includeDirs": ["../../media/codec/include", "include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_RTP": null
+        }
+      },
+      "private": {
+        "deps": ["salts_core"],
+        "includeDirs": [".", "rtpext", "payload"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/rtcp-header.h",
+            "to": "include"
+          },
+          {
+            "from": "include/turbo_rtp_packet.h",
+            "to": "include"
+          },
+          {
+            "from": "include/rtp-payload.h",
+            "to": "include"
+          },
+          {
+            "from": "include/rtp.h",
+            "to": "include"
+          },
+          {
+            "from": "include/rtp-demuxer.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

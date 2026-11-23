@@ -1,0 +1,124 @@
+{
+  "include": ["fixtures/module.json"],
+  "targets": {
+    "streamgraph_contract_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_contract.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_contract"
+      }
+    },
+    "streamgraph_executor_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_executor.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_executor"
+      }
+    },
+    "streamgraph_fanout_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_fanout.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_fanout"
+      }
+    },
+    "streamgraph_frame_store_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_frame_store.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_frame_store"
+      }
+    },
+    "streamgraph_handoff_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_handoff.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph", "mingw_threads"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_handoff"
+      }
+    },
+    "streamgraph_multi_processor_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_multi_processor.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_multi_processor"
+      }
+    },
+    "streamgraph_native_provider_dso_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_native_provider_dso.c"]
+      },
+      "runtimeDeps": ["streamgraph_test_provider_n", "streamgraph_test_provider_n1"],
+      "private": {
+        "deps": ["turbo_media_streamgraph", "mingw_threads"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_native_provider_dso",
+        "args": ["${artifact:streamgraph_test_provider_n}", "${artifact:streamgraph_test_provider_n1}"]
+      }
+    },
+    "streamgraph_owner_dispatch_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_owner_dispatch.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph", "mingw_threads"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_owner_dispatch"
+      }
+    },
+    "streamgraph_provider_completion_test": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_provider_completion.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_streamgraph", "mingw_threads"],
+        "includeDirs": ["../include", "../../media/codec/include"]
+      },
+      "test": {
+        "name": "streamgraph_provider_completion"
+      }
+    }
+  }
+}

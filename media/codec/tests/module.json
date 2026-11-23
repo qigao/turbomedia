@@ -1,0 +1,30 @@
+{
+  "targets": {
+    "turbo_media_test_codec": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_codec.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_codec"],
+        "includeDirs": ["../include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_codec_components": {
+      "kind": "executable",
+      "sources": {
+        "files": ["codec_package_consumer/codec_smoke.c"]
+      },
+      "private": {
+        "deps": ["turbo_media_audio_codec", "turbo_media_video_codec"],
+        "defines": {
+          "TEST_AudioCodec": null,
+          "TEST_VideoCodec": null
+        },
+        "includeDirs": ["../audio/include", "../include", "../video/include"]
+      },
+      "test": {}
+    }
+  }
+}

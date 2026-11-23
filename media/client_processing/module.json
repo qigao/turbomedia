@@ -1,0 +1,38 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_client_processing": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": [
+          "client_processing.c",
+          "core/client_processing_queues.c",
+          "adapters/client_processing_salts.c",
+          "ffmpeg/client_processing_ffmpeg.c"
+        ]
+      },
+      "public": {
+        "deps": ["salts_media"],
+        "includeDirs": ["../codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_core", "vcpkg_ffmpeg"],
+        "includeDirs": ["."],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_client_processing_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

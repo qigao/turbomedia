@@ -1,0 +1,69 @@
+{
+  "targets": {
+    "turbo_media_test_sip_client": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sip_client.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_sip_client", "turbo_media_sip", "salts_core"],
+        "defines": {
+          "TURBO_SIP_CLIENT_SHARED": null
+        },
+        "includeDirs": ["../../media/codec/include", "../client/include", "../signaling/include", "../sdp/include"]
+      },
+      "test": {
+        "timeout": 15
+      }
+    },
+    "turbo_media_test_sip_uac": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sip_uac.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_sip", "turbo_media_rtp", "turbo_media_sdp"],
+        "includeDirs": [
+          "../signaling",
+          "../signaling/uac",
+          "../signaling/include",
+          "../../media/codec/include",
+          "../rtp/include",
+          "../sdp/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_sip_uac_e2e": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_sip_uac_e2e.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "turbo_media_sip",
+          "turbo_media_rtp",
+          "turbo_media_sdp",
+          "salts_cnet",
+          "salts_crypto",
+          "turbo_media_audio_codec",
+          "turbo_media_rtp_ice"
+        ],
+        "includeDirs": [
+          "../signaling",
+          "../signaling/uac",
+          "../signaling/include",
+          "../../media/codec/include",
+          "../rtp/include",
+          "../sdp/include",
+          "../../media/codec/audio/include",
+          "../rtp/ice/include"
+        ]
+      },
+      "test": {
+        "timeout": 35
+      }
+    }
+  }
+}

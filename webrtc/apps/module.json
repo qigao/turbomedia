@@ -1,0 +1,55 @@
+{
+  "include": [
+    "ivr_worker/module.json",
+    "room_service/module.json",
+    "sfu_node/module.json",
+    "signaling_server/module.json"
+  ],
+  "targets": {
+    "turbo_media_rtc_apps": {
+      "kind": "static",
+      "sources": {
+        "files": [
+          "../src/conference/turbo_room_service.c",
+          "../src/conference/turbo_sfu_node.c",
+          "../src/sfu/turbo_sfu.c",
+          "../src/recording/turbo_recorder.c"
+        ]
+      },
+      "public": {
+        "deps": ["turbo_media_rtc", "salts_core"],
+        "includeDirs": ["../../media/codec/include"]
+      },
+      "private": {
+        "deps": ["turbo_media_muxer", "salts_crypto", "cmeta_cstl"],
+        "includeDirs": [
+          "../src/recording",
+          "../include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "$root/webrtc/include/turbo_room_service.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/webrtc/include/turbo_sfu.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/webrtc/include/turbo_sfu_node.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

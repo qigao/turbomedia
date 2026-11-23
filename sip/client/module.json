@@ -1,0 +1,44 @@
+{
+  "targets": {
+    "turbo_media_sip_client": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["turbo_sip_client.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_sip", "turbo_media_sdp"],
+        "includeDirs": ["../../media/codec/include", "include"],
+        "defines": {
+          "TURBO_SIP_CLIENT_SHARED": null
+        }
+      },
+      "private": {
+        "deps": ["turbo_media_rtp", "turbo_media_audio_codec", "salts_crypto"],
+        "includeDirs": [
+          "../signaling",
+          "../signaling/include",
+          "../sdp/include",
+          "../rtp/include",
+          "../../media/codec/audio/include"
+        ],
+        "defines": {
+          "TURBO_SIP_CLIENT_EXPORTS": null
+        },
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_sip_client.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

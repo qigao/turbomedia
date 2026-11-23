@@ -1,0 +1,45 @@
+{
+  "targets": {
+    "turbo_media_test_pipeline": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_pipeline.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "turbo_media_pipeline",
+          "turbo_media_runtime",
+          "turbo_media_rtsp",
+          "turbo_media_server_rtsp",
+          "turbo_media_rtp",
+          "turbo_media_codec",
+          "chttp_client",
+          "chttp_app",
+          "salts_core"
+        ],
+        "libs": ["ws2_32"],
+        "includeDirs": [
+          "../../../media/codec/include",
+          "../include",
+          "../../../media/runtime/include",
+          "../../rtsp/include",
+          "../../rtsp/parser",
+          "../../../sip/rtp/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_pipeline_compositor": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_compositor.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_pipeline", "vcpkg_ffmpeg", "salts_core"],
+        "includeDirs": ["../../../media/codec/include", "../include"]
+      },
+      "test": {}
+    }
+  }
+}

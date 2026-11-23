@@ -1,0 +1,38 @@
+{
+  "targets": {
+    "turbo_media_video_codec": {
+      "kind": "static",
+      "sources": {
+        "files": ["video_codec.c", "vpx_codec.c", "h264_codec.c", "h265_codec.c"]
+      },
+      "public": {
+        "includeDirs": ["include", "../include"]
+      },
+      "private": {
+        "deps": ["vcpkg_videocodec"],
+        "includeDirs": ["$vcpkg/include"],
+        "defines": {
+          "TURBO_MEDIA_HAS_VPX": null,
+          "TURBO_MEDIA_HAS_H264": null,
+          "TURBO_MEDIA_HAS_H265": null
+        }
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/turbo_video_codec.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_codec_types.h",
+            "to": "include"
+          },
+          {
+            "from": "$root/media/codec/include/turbo_export.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

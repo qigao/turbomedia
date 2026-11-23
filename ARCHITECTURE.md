@@ -277,6 +277,10 @@ shared codec/container/transport graph.
 
 `TurboMedia::Pipeline` executes bounded YAML graphs.
 
+The [monitoring console design](docs/design/monitoring-console-zh.md) describes
+an application that uses Pipeline for program video and manages source health,
+operator alerts, and recording independently.
+
 ```mermaid
 flowchart TB
   YAML["pipeline/v1 YAML"]

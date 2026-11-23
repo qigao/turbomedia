@@ -1,0 +1,570 @@
+{
+  "targets": {
+    "turbo_media_test_datachannel": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_datachannel.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "turbo_media_datachannel", "turbo_media_sdp"],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../../media/codec/include", "../../sip/sdp/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_datachannel_peer_destroy_drain": {
+      "kind": "executable",
+      "sources": {
+        "files": [
+          "test_datachannel_peer_destroy_drain.c",
+          "../src/turbo_datachannel.c",
+          "../src/dc_certificate.c",
+          "../src/turbo_datachannel_errors.c",
+          "../src/turbo_dc_msg.c",
+          "../src/dcep_protocol.c",
+          "../src/dtls_session.c",
+          "../src/sctp_session.c",
+          "../src/stb_sprintf.c"
+        ]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_sdp",
+          "salts_ltvparser",
+          "turbo_media_cnet_adapter",
+          "salts_cnet",
+          "saltsnet_ice",
+          "vcpkg_usrsctp",
+          "salts_crypto",
+          "vcpkg_roaring"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../streaming/transport/internal"
+        ],
+        "defines": {
+          "TURBO_MEDIA_TEST_DCEP_SENDV": "1",
+          "TURBO_MEDIA_TEST_CHANNEL_SENDV": "1"
+        }
+      },
+      "test": {
+        "timeout": 30
+      }
+    },
+    "turbo_media_test_dc_msg": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_dc_msg.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "salts_ltvparser"
+        ],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../../media/codec/include", "../../sip/sdp/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_dcep_ack_fault": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_dcep_ack_fault.c", "../src/turbo_datachannel_errors.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "salts_cnet",
+          "salts_crypto",
+          "vcpkg_usrsctp",
+          "vcpkg_roaring"
+        ],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../../media/codec/include", "../../sip/sdp/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_ice_integration": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_ice_integration.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_webrtc",
+          "saltsnet_ice"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../media/runtime/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_recognition_integration": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_recognition_integration.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_rtc",
+          "turbo_media_recognition"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../src/rtc/media",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_revocation_fanout": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_revocation_fanout.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "turbo_media_auth"],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../src/auth"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_revocation_https": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_revocation_https.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "turbo_media_revocation_https", "chttp_client"],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../src/auth"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_salts_ice_owner": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_salts_ice_owner.c", "../src/salts_ice_owner.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "saltsnet_ice"],
+        "includeDirs": ["../include", "../src", "$vcpkg/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_signaling_config": {
+      "kind": "executable",
+      "sources": {
+        "files": [
+          "test_signaling_config.c",
+          "../apps/signaling_server/src/config.c",
+          "../src/signaling/signaling_source_identity.c"
+        ]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_auth",
+          "turbo_media_tenant_quota",
+          "salts_tomlparser",
+          "salts_cnet"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../apps/signaling_server/include",
+          "../src/signaling",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../src/auth",
+          "../src/security"
+        ],
+        "defines": {
+          "SIGNALING_CONFIG_EXAMPLE_PATH": "\"$root/webrtc/tests/../apps/signaling_server/config/signaling.toml.example\""
+        }
+      },
+      "test": {}
+    },
+    "turbo_media_test_signaling_internals": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_signaling_internals.c", "../src/signaling/signaling_source_identity.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "salts_cnet",
+          "chttp_client",
+          "chttp_app",
+          "turbo_media_auth",
+          "turbo_media_tenant_quota",
+          "turbo_media_tenant_quota_wire",
+          "salts_jsonparser",
+          "salts_crypto"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../src/security",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../src/auth"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_signaling_json": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_signaling_json.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "salts_jsonparser"
+        ],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../../media/codec/include", "../../sip/sdp/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_signaling_lifecycle": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_signaling_lifecycle.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_webrtc_signaling",
+          "turbo_media_transport",
+          "chttp_client",
+          "chttp_server",
+          "turbo_media_auth",
+          "turbo_media_tenant_quota"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../streaming/transport/include",
+          "../src/auth",
+          "../src/security"
+        ],
+        "defines": {
+          "TURBO_MEDIA_TEST_TLS_CERT_PATH": "\"$root/webrtc/tests/fixtures/tls/localhost-cert.pem\"",
+          "TURBO_MEDIA_TEST_TLS_KEY_PATH": "\"$root/webrtc/tests/fixtures/tls/localhost-key.pem\""
+        }
+      },
+      "test": {}
+    },
+    "turbo_media_test_signaling_source_identity": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_signaling_source_identity.c", "../src/signaling/signaling_source_identity.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "salts_cnet"],
+        "includeDirs": ["../include", "../src", "$vcpkg/include"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_simulcast": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_simulcast.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_rtc",
+          "turbo_media_codec",
+          "turbo_media_rtp"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../src/rtc/media",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_speech_integration": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_speech_integration.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_rtc",
+          "turbo_media_speech"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../src/rtc/media",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_tenant_quota_wire": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_tenant_quota_wire.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_tenant_quota_wire",
+          "turbo_media_tenant_quota"
+        ],
+        "includeDirs": ["../include", "../src", "$vcpkg/include", "../src/security"]
+      },
+      "test": {}
+    },
+    "turbo_media_test_webrtc": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_webrtc.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "turbo_media_webrtc",
+          "turbo_media_runtime",
+          "turbo_media_pipeline",
+          "turbo_media_transport",
+          "salts_core",
+          "turbo_media_rtc"
+        ],
+        "includeDirs": [
+          "../../media/codec/include",
+          "../include",
+          "../../media/runtime/include",
+          "../../sip/sdp/include",
+          "../../streaming/pipeline/include",
+          "../../streaming/transport/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ]
+      },
+      "test": {}
+    },
+    "turbo_media_test_webrtc_e2e": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_e2e_connection.c"]
+      },
+      "private": {
+        "deps": [
+          "salts_tinytest",
+          "salts_core",
+          "cmeta_cstl",
+          "turbo_media_datachannel",
+          "turbo_media_sdp",
+          "turbo_media_webrtc",
+          "turbo_media_rtc",
+          "saltsnet_ice"
+        ],
+        "includeDirs": [
+          "../include",
+          "../src",
+          "$vcpkg/include",
+          "../../media/codec/include",
+          "../../sip/sdp/include",
+          "../../media/runtime/include",
+          "../../sip/rtp/include",
+          "../../media/speech/include",
+          "../../media/recognition/include",
+          "../../media/containers/demuxer/include",
+          "../../media/containers/muxer/include"
+        ]
+      },
+      "test": {}
+    }
+  },
+  "forEach": [
+    {
+      "files": ["test_auth_token.c", "test_revocation_projection.c", "test_revocation_state.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "turbo_media_auth", "salts_crypto"],
+          "includeDirs": ["../include", "../src", "$vcpkg/include", "../src/auth"]
+        },
+        "test": {}
+      }
+    },
+    {
+      "files": ["test_jitter_buffer.c", "test_media_engine.c", "test_nack.c", "test_twcc.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": [
+            "salts_tinytest",
+            "salts_core",
+            "cmeta_cstl",
+            "turbo_media_datachannel",
+            "turbo_media_sdp",
+            "turbo_media_rtc"
+          ],
+          "includeDirs": [
+            "../include",
+            "../src",
+            "$vcpkg/include",
+            "../src/rtc/media",
+            "../../media/codec/include",
+            "../../sip/sdp/include",
+            "../../sip/rtp/include",
+            "../../media/speech/include",
+            "../../media/recognition/include",
+            "../../media/containers/demuxer/include",
+            "../../media/containers/muxer/include"
+          ]
+        },
+        "test": {}
+      }
+    },
+    {
+      "files": ["test_rtc_capture_source.c", "test_rtc_client.c", "test_rtc_playback_sink.c", "test_rtc_subscriber.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": ["salts_tinytest", "turbo_media_rtc_client"],
+          "includeDirs": ["../../media/codec/include", "../include"]
+        },
+        "test": {}
+      }
+    },
+    {
+      "files": ["test_rtp.c", "test_srtp.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": [
+            "salts_tinytest",
+            "salts_core",
+            "cmeta_cstl",
+            "turbo_media_datachannel",
+            "turbo_media_sdp",
+            "turbo_media_rtc",
+            "turbo_media_rtp"
+          ],
+          "includeDirs": [
+            "../include",
+            "../src",
+            "$vcpkg/include",
+            "../src/rtc/media",
+            "../../media/codec/include",
+            "../../sip/sdp/include",
+            "../../sip/rtp/include",
+            "../../media/speech/include",
+            "../../media/recognition/include",
+            "../../media/containers/demuxer/include",
+            "../../media/containers/muxer/include"
+          ]
+        },
+        "test": {}
+      }
+    },
+    {
+      "files": ["test_tenant_quota.c", "test_tenant_quota_allocator.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": ["salts_tinytest", "salts_core", "cmeta_cstl", "turbo_media_tenant_quota"],
+          "includeDirs": ["../include", "../src", "$vcpkg/include", "../src/security"]
+        },
+        "test": {}
+      }
+    }
+  ]
+}

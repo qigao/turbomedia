@@ -1,0 +1,33 @@
+{
+  "include": ["tests/module.json"],
+  "targets": {
+    "turbo_media_recognition": {
+      "kind": "shared",
+      "outputPrefix": "lib",
+      "sources": {
+        "files": ["turbo_recognition.c"]
+      },
+      "public": {
+        "deps": ["turbo_media_player"],
+        "includeDirs": ["../codec/include", "include"]
+      },
+      "private": {
+        "deps": ["salts_core"],
+        "defines": {
+          "SHARED_CXX": null,
+          "turbo_media_recognition_EXPORTS": null
+        },
+        "includeDirs": ["../containers/demuxer/include", "../containers/muxer/include"],
+        "flags": ["-Wall", "-Wextra", "-Wno-unused-parameter"]
+      },
+      "install": {
+        "headers": [
+          {
+            "from": "include/*.h",
+            "to": "include"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "targets": {
+    "turbo_media_test_containers": {
+      "kind": "executable",
+      "sources": {
+        "files": ["test_containers.c"]
+      },
+      "private": {
+        "deps": ["salts_tinytest", "turbo_media_muxer", "turbo_media_demuxer"],
+        "includeDirs": ["../../codec/include", "../muxer/include", "../demuxer/include"]
+      },
+      "test": {}
+    }
+  }
+}

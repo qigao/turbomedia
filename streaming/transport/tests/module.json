@@ -1,0 +1,16 @@
+{
+  "forEach": [
+    {
+      "files": ["test_transport_http.c", "test_transport_url.c"],
+      "namePrefix": "turbo_media_",
+      "target": {
+        "kind": "executable",
+        "private": {
+          "deps": ["salts_tinytest", "turbo_media_transport", "chttp_client", "chttp_app"],
+          "includeDirs": ["../../../media/codec/include", "../include"]
+        },
+        "test": {}
+      }
+    }
+  ]
+}

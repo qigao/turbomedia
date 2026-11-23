@@ -34,6 +34,33 @@ FFmpeg 图式流水线以及 WebRTC/RTC 媒体处理。项目默认 fail fast：
 
 ## 构建
 
+### Slate 和 Ninja
+
+Windows x64 LLVM-MinGW 使用根目录的 `slate.json`，需要支持在 `module.json` 中声明
+`modules` 的 Slate。将拆分 SDK、TurboMedia 的 vcpkg 安装根和宿主工具路径填入 `.env`。
+`VCPKG_INSTALLED_DIR` 的下一层应为
+`qigao-x64-windows-llvm-mingw`。`TURBOMEDIA_RE2C_ROOT` 和 `LEMON_ROOT` 指向各自宿主包的
+`tools/windows-x64` 目录。IVR schema 使用 `SALTS_UTILS_ROOT` 中的 `salts-idlc` 生成。
+`cmake` 命令用于启动 `salts-idlc` 和运行部分测试断言。
+[Slate 配置](slate.json) · [环境变量示例](.env.example)
+
+```powershell
+slate doctor --preset release
+slate build --preset release
+slate build --preset debug
+slate test --preset tests --list
+slate test --preset tests
+slate test --preset benchmark --label performance
+slate run --preset release --target codec_g711_smoke
+slate install --preset release --components runtime,dev --prefix out/slate-stage
+```
+
+Slate 可构建 StreamGraph、媒体、SIP、流媒体、WebRTC 和桌面应用。普通测试使用
+`tests` 或 `debug-tests`，性能测试使用 `benchmark`。Slate 安装目录包含本机产物、
+运行时依赖、公开头文件和服务配置示例。跨平台 SDK 组件和 `find_package` 元数据由 CMake 提供。
+
+### CMake
+
 TurboMedia 只有一套构建图，不要求调用方选择产品 profile。平台决定可用能力：
 
 | 平台 | 正常构建能力 |
