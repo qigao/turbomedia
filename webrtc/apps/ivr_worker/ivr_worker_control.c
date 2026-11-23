@@ -1,6 +1,6 @@
 #include "ivr_worker_control.h"
 
-#include "disruptor.h"
+#include "queue/disruptor.h"
 
 #include <limits.h>
 #include <stdatomic.h>

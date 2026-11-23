@@ -9,7 +9,7 @@
 struct turbo_rtc_playback_sink_s {
     turbo_rtc_playback_sink_state_t state;
 
-    salts_playback_device_t device;
+    playback_device_t device;
     int has_device;
 
     uint32_t sample_rate;
@@ -17,7 +17,7 @@ struct turbo_rtc_playback_sink_s {
     uint32_t buffer_duration_ms;
     uint32_t drain_timeout_ms;
 
-    salts_playback_t *playback;
+    playback_t *playback;
 
     uint64_t frames_written;
     uint64_t bytes_written;
@@ -105,7 +105,7 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_create(
 
 turbo_rtc_client_status_t turbo_rtc_playback_sink_prepare(
     turbo_rtc_playback_sink_t *sink) {
-    salts_playback_config_t config;
+    playback_config_t config;
 
     if (!sink) {
         return TURBO_RTC_CLIENT_EINVAL;
@@ -121,7 +121,7 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_prepare(
     config.format = SALTS_PLAYBACK_FORMAT_S16;
     config.buffer_duration_ms = sink->buffer_duration_ms;
 
-    if (salts_playback_create(
+    if (playback_create(
             sink->has_device ? &sink->device : NULL,
             &config,
             &sink->playback) != SALTS_PLAYBACK_OK) {
@@ -144,7 +144,7 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_start(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    if (salts_playback_start(sink->playback) != SALTS_PLAYBACK_OK) {
+    if (playback_start(sink->playback) != SALTS_PLAYBACK_OK) {
         sink->state = TURBO_RTC_PLAYBACK_SINK_FAILED;
         return TURBO_RTC_CLIENT_EIO;
     }
@@ -182,19 +182,19 @@ int turbo_rtc_playback_sink_on_audio(
 
     alignment = (size_t)channels * sizeof(int16_t);
     if (alignment == 0u || (bytes % alignment) != 0u ||
-        salts_playback_get_state(sink->playback) ==
+        playback_get_state(sink->playback) ==
             SALTS_PLAYBACK_STATE_ERROR) {
         sink->write_failures++;
         sink->state = TURBO_RTC_PLAYBACK_SINK_FAILED;
         return TURBO_RTC_SUBSCRIBER_AUDIO_FATAL;
     }
 
-    if (salts_playback_get_available(sink->playback) < bytes) {
+    if (playback_get_available(sink->playback) < bytes) {
         sink->backpressure_events++;
         return TURBO_RTC_SUBSCRIBER_AUDIO_RETRY;
     }
 
-    result = salts_playback_write(
+    result = playback_write(
         sink->playback, pcm, bytes, &written);
     if (result != SALTS_PLAYBACK_OK || written != bytes) {
         sink->write_failures++;
@@ -220,9 +220,9 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_stop(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    drain_result = salts_playback_drain(
+    drain_result = playback_drain(
         sink->playback, sink->drain_timeout_ms);
-    stop_result = salts_playback_stop(sink->playback);
+    stop_result = playback_stop(sink->playback);
     if (stop_result != SALTS_PLAYBACK_OK) {
         sink->state = TURBO_RTC_PLAYBACK_SINK_FAILED;
         return TURBO_RTC_CLIENT_EIO;
@@ -233,7 +233,7 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_stop(
      * required to be quiescent before this owner call, so clear any remainder
      * after stop to prevent a timed-out drain from leaking audio into restart.
      */
-    if (salts_playback_clear(sink->playback) != SALTS_PLAYBACK_OK) {
+    if (playback_clear(sink->playback) != SALTS_PLAYBACK_OK) {
         sink->state = TURBO_RTC_PLAYBACK_SINK_FAILED;
         return TURBO_RTC_CLIENT_EIO;
     }
@@ -263,11 +263,11 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_snapshot(
     snapshot->write_failures = sink->write_failures;
     if (sink->playback) {
         snapshot->playback_state =
-            salts_playback_get_state(sink->playback);
+            playback_get_state(sink->playback);
         snapshot->buffered_bytes =
-            salts_playback_get_buffered(sink->playback);
+            playback_get_buffered(sink->playback);
         snapshot->available_bytes =
-            salts_playback_get_available(sink->playback);
+            playback_get_available(sink->playback);
     } else {
         snapshot->playback_state = SALTS_PLAYBACK_STATE_STOPPED;
         snapshot->buffered_bytes = 0u;
@@ -286,7 +286,7 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_destroy(
     }
 
     if (sink->playback) {
-        salts_playback_destroy(sink->playback);
+        playback_destroy(sink->playback);
         sink->playback = NULL;
     }
     free(sink);

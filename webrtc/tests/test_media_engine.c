@@ -3,7 +3,7 @@
 #include "turbo_media_engine.h"
 #include "turbo_peer_connection.h"
 #include "turbo_rtp.h"
-#include <cmeta_thread.h>
+#include <threads/threads.h>
 
 enum {
   TEST_TOO_MANY_ICE_SERVERS = 5,
@@ -443,7 +443,7 @@ static turbo_peer_connection_t *create_test_peer(void) {
 static void pump_test_peer(turbo_peer_connection_t *peer) {
   for (int i = 0; i < TEST_PEER_PUMP_ITERATIONS; ++i) {
     turbo_peer_connection_poll(peer);
-    cmeta_sleep_ms(TEST_PEER_PUMP_INTERVAL_MS);
+    sleep_ms(TEST_PEER_PUMP_INTERVAL_MS);
   }
 }
 

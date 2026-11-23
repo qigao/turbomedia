@@ -5,7 +5,7 @@
 #include "turbo_http_media_client.h"
 #include "turbo_media_auth.h"
 #include "turbo_recorder_internal.h"
-#include <salts/crypto.h>
+#include <crypto/sha256.h>
 #include "turbo_demuxer.h"
 #include <json_parser.h>
 #include "turbo_peer_connection.h"

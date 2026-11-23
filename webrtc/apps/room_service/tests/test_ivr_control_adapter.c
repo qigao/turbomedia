@@ -11,7 +11,7 @@
 #include "ivr_control_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_thread.h"
-#include "platform.h"
+#include "core/platform.h"
 #include "turbomedia_ivr_v2.h"
 #include "tinytest.h"
 #include <stdatomic.h>
@@ -587,7 +587,7 @@ static ivr_worker_inventory_envelope_t g_last_inventory_page;
 
 static uint64_t live_now_ms(void *context) {
     (void)context;
-    return cmeta_monotonic_ms() +
+    return monotonic_ms() +
            atomic_load(&g_live_clock_offset_ms);
 }
 

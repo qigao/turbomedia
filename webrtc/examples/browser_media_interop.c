@@ -11,7 +11,7 @@
 #include "ice_integration.h"
 #include "turbo_sdp.h"
 #include "turbo_media_engine.h"
-#include <cmeta_thread.h>
+#include <threads/threads.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -804,7 +804,7 @@ int main(int argc, char **argv) {
 
     printf("[ICE] Waiting for candidate gathering to complete...\n");
     while (g_running && !ice_integration_is_gathering_complete(g_ice)) {
-        cmeta_sleep_ms(50u);
+        sleep_ms(50u);
         ice_integration_poll(g_ice);
     }
 
@@ -909,9 +909,9 @@ int main(int argc, char **argv) {
     printf("[Status] Waiting for browser connection...\n");
 
     while (g_running) {
-        uint64_t now_ms = cmeta_monotonic_ms();
+        uint64_t now_ms = monotonic_ms();
 
-        cmeta_sleep_ms(10u);
+        sleep_ms(10u);
         ice_integration_poll(g_ice);
         try_start_media();
         if (g_media) {

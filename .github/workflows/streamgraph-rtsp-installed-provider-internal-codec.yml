@@ -10,8 +10,8 @@ name: M15d installed RTSP DSO inside libavcodec
       - 'streamgraph/tests/installed_salts/**'
       - 'streamgraph/adapters/ffmpeg/**'
       - 'streamgraph/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
   pull_request:
     paths:
@@ -22,8 +22,8 @@ name: M15d installed RTSP DSO inside libavcodec
       - 'streamgraph/tests/installed_salts/**'
       - 'streamgraph/adapters/ffmpeg/**'
       - 'streamgraph/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
   workflow_dispatch:
 permissions:
@@ -210,7 +210,7 @@ jobs:
           import json, sys
           files = [
               (sys.argv[1], (
-                  "/media/rtsp/turbo_rtsp.c",
+                  "/streaming/rtsp/turbo_rtsp.c",
                   "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
               )),
               (sys.argv[2], (

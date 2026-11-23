@@ -1,7 +1,7 @@
 #include "turbo_http_media_client.h"
 
 #include <http_client/http.h>
-#include <salts/error_codes.h>
+#include <core/error_codes.h>
 
 #include <ctype.h>
 #include <stdio.h>

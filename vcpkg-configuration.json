@@ -1,8 +1,13 @@
 {
-  "overlay-ports": [
-    "./vcpkg-overlays"
-  ],
-  "overlay-triplets": [
-    "./vcpkg-triplets"
+  "overlay-ports": ["./vcpkg-overlays"],
+  "overlay-triplets": ["./vcpkg-triplets"],
+  "registries": [
+    {
+      "kind": "git",
+      "repository": "https://github.com/qigao/vcpkg-cache",
+      "reference": "v0.1.8",
+      "baseline": "46980b67893391cd4e43d193d00c14631adc7372",
+      "packages": ["gmssl", "zstd"]
+    }
   ]
 }

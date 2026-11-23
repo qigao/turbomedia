@@ -1,12 +1,10 @@
 #include "turbo_media_auth.h"
 
-#include <openssl/base64.h>
-#include <openssl/crypto.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
+#include <core/base64.h>
+#include <crypto/sha256.h>
+#include <crypto/symmetric.h>
 #include <json_parser.h>
 
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,28 +27,19 @@
 static int auth_sha256(
     const void *data, size_t data_size,
     uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES]) {
-    unsigned int digest_size = 0U;
-
-    if ((!data && data_size != 0U) ||
-        EVP_Digest(data, data_size, digest, &digest_size,
-                   EVP_sha256(), NULL) != 1 ||
-        digest_size != TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES) {
-        return -1;
-    }
-    return 0;
+    return salts_crypto_sha256(data, data_size, digest) == SALTS_CRYPTO_OK
+        ? 0 : -1;
 }
 
 static int auth_hmac_sha256(
     const void *key, size_t key_size,
     const void *data, size_t data_size,
     uint8_t digest[AUTH_SIGNATURE_BYTES]) {
-    unsigned int digest_size = 0U;
+    size_t digest_size = 0U;
 
-    if ((!key && key_size != 0U) || (!data && data_size != 0U) ||
-        key_size > (size_t)INT_MAX ||
-        HMAC(EVP_sha256(), key, (int)key_size,
-             (const unsigned char *)data, data_size,
-             digest, &digest_size) == NULL ||
+    if (salts_crypto_hmac(SALTS_CRYPTO_SHA256, key, key_size, data, data_size,
+                         digest, AUTH_SIGNATURE_BYTES, &digest_size) !=
+            SALTS_CRYPTO_OK ||
         digest_size != AUTH_SIGNATURE_BYTES) {
         return -1;
     }
@@ -59,10 +48,7 @@ static int auth_hmac_sha256(
 
 static int auth_bytes_equal(
     const void *left, const void *right, size_t size) {
-    if ((!left || !right) && size != 0U) {
-        return 0;
-    }
-    return CRYPTO_memcmp(left, right, size) == 0;
+    return salts_crypto_equal(left, right, size) == SALTS_CRYPTO_OK;
 }
 
 static int auth_string_present(const char *value) {
@@ -264,19 +250,12 @@ int turbo_media_auth_config_validate(const turbo_media_auth_config_t *config) {
 }
 
 static char *auth_base64url_encode(const uint8_t *input, size_t input_length) {
-    uint8_t *encoded;
-    size_t capacity;
-    size_t length;
-
-    if ((!input && input_length != 0U) ||
-        !EVP_EncodedLength(&capacity, input_length)) {
+    tn_base64_string_result_t result = tn_base64_encode_ex(input, input_length);
+    if (!result.ok) {
         return NULL;
     }
-    encoded = (uint8_t *)malloc(capacity);
-    if (!encoded) {
-        return NULL;
-    }
-    length = EVP_EncodeBlock(encoded, input, input_length);
+    char *encoded = result.value;
+    size_t length = strlen(encoded);
     while (length > 0U && encoded[length - 1U] == '=') {
         --length;
     }
@@ -288,16 +267,15 @@ static char *auth_base64url_encode(const uint8_t *input, size_t input_length) {
         }
     }
     encoded[length] = '\0';
-    return (char *)encoded;
+    return encoded;
 }
 
 static int auth_base64url_decode(const char *input, size_t input_length,
                                  size_t maximum_output, uint8_t **output,
                                  size_t *output_length) {
-    uint8_t *normalized = NULL;
+    char *normalized = NULL;
     uint8_t *decoded = NULL;
     size_t normalized_length;
-    size_t decoded_capacity;
     size_t decoded_length = 0U;
     size_t padding;
     int result = -1;
@@ -313,7 +291,7 @@ static int auth_base64url_decode(const char *input, size_t input_length,
         return -1;
     }
     normalized_length = input_length + padding;
-    normalized = (uint8_t *)malloc(normalized_length);
+    normalized = (char *)malloc(normalized_length);
     if (!normalized) {
         return -1;
     }
@@ -333,16 +311,15 @@ static int auth_base64url_decode(const char *input, size_t input_length,
     for (size_t index = input_length; index < normalized_length; ++index) {
         normalized[index] = '=';
     }
-    if (maximum_output > SIZE_MAX - 2U ||
-        !EVP_DecodedLength(&decoded_capacity, normalized_length) ||
-        decoded_capacity > maximum_output + 2U) {
+    if (tn_base64_decode_buf_ex(normalized, normalized_length, NULL, 0,
+                               &decoded_length) != TN_BASE64_OK ||
+        decoded_length > maximum_output) {
         goto cleanup;
     }
-    decoded = (uint8_t *)malloc(decoded_capacity + 1U);
+    decoded = (uint8_t *)malloc(decoded_length + 1U);
     if (!decoded ||
-        !EVP_DecodeBase64(decoded, &decoded_length, decoded_capacity,
-                          normalized, normalized_length) ||
-        decoded_length > maximum_output) {
+        tn_base64_decode_buf_ex(normalized, normalized_length, decoded,
+                               decoded_length, &decoded_length) != TN_BASE64_OK) {
         goto cleanup;
     }
     decoded[decoded_length] = '\0';

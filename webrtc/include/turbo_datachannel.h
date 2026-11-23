@@ -8,7 +8,7 @@
  *       ↓
  *   SCTP (usrsctp) - reliable/unreliable messaging
  *       ↓
- *   DTLS (BoringSSL) - encryption
+ *   DTLS (Salts::Crypto) - encryption
  *       ↓
  *   Transport: CNet (UDP/TCP/KCP) or SaltsNet ICE (NAT traversal)
  *
@@ -44,6 +44,14 @@ typedef struct turbo_dc_channel_s turbo_dc_channel_t;
 typedef void (*turbo_dc_transport_send_cb)(void *transport,
                                            const void *data,
                                            size_t len);
+typedef void (*turbo_dc_transport_send_done_cb)(void *operation, int status);
+/* Copy or synchronously send the bytes before returning. Return 0 only when
+ * accepted, and report the local terminal exactly once through done, inline
+ * or later. A rejected send must never invoke done. The operation token is
+ * valid until done returns, including after transport detach or peer close. */
+typedef int (*turbo_dc_transport_send_async_cb)(void *transport,
+    const void *data, size_t len, turbo_dc_transport_send_done_cb done,
+    void *operation);
 typedef void (*turbo_dc_transport_data_cb)(void *user_data,
                                            const uint8_t *data,
                                            size_t len);
@@ -81,7 +89,7 @@ typedef struct {
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
     uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */
-    uint16_t dtls_mtu;        /* DTLS MTU (0 = default 1280) */
+    uint16_t dtls_mtu;        /* DTLS datagram limit, 576..2048 (0 = 1280) */
     int disable_sctp;         /* TRUE for DTLS-only transport without SCTP/DataChannel */
 } turbo_dc_config_t;
 
@@ -252,6 +260,11 @@ TURBO_MEDIA_API int turbo_dc_peer_set_external_transport(
     turbo_dc_peer_t *peer,
     void *transport,
     turbo_dc_transport_send_cb send_cb);
+/* A queued transport must attach this sender together with its raw RTP/RTCP
+ * sender. The legacy attachment is a synchronous DTLS handoff. */
+TURBO_MEDIA_API int turbo_dc_peer_set_external_transport_async(
+    turbo_dc_peer_t *, void *transport, turbo_dc_transport_send_cb,
+    turbo_dc_transport_send_async_cb);
 
 TURBO_MEDIA_API void turbo_dc_peer_feed_transport_data(
     turbo_dc_peer_t *peer,

@@ -1,9 +1,9 @@
 #include "ivr_control_adapter.h"
 #include "ivr/ivr_acl.h"
 #include "ivr_thread.h"
-#include "platform.h"
-#include "cmeta_uuid.h"
-#include <salts/clock.h>
+#include "core/platform.h"
+#include "core/uuid.h"
+#include <core/clock.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -671,7 +671,7 @@ static void ivr_control_seq_rollback(ivr_control_adapter_t *a,
 
 static uint64_t ivr_control_now_ms(const ivr_control_adapter_t *a) {
     return a->clock.now_ms ? a->clock.now_ms(a->clock.context)
-                           : cmeta_monotonic_ms();
+                           : monotonic_ms();
 }
 
 static ivr_control_worker_entry_t *ivr_control_worker_find_locked(
@@ -2561,7 +2561,7 @@ static void ivr_control_dialog_recover_worker_loss(
     ivr_control_adapter_t *adapter, uint32_t index, uint64_t now_ms) {
     ivr_control_dialog_route_t snapshot;
     ivr_control_worker_entry_t *worker;
-    cmeta_uuid_t event_uuid;
+    uuid_t event_uuid;
     char new_event_id[128];
     uint64_t occurred_at_ms = 0;
     int worker_available;
@@ -2598,10 +2598,10 @@ static void ivr_control_dialog_recover_worker_loss(
         return;
     }
     if (snapshot.state != IVR_CONTROL_DIALOG_WORKER_LOST) {
-        occurred_at_ms = cmeta_realtime_ms();
+        occurred_at_ms = realtime_ms();
         if (occurred_at_ms == 0 ||
-            cmeta_uuid_v4_generate(&event_uuid) != SALTS_OK ||
-            cmeta_uuid_format(&event_uuid, new_event_id,
+            uuid_v4_generate(event_uuid) != SALTS_OK ||
+            uuid_format(event_uuid, new_event_id,
                               sizeof(new_event_id)) != SALTS_OK) {
             return;
         }

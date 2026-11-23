@@ -1,0 +1,7 @@
+add_subdirectory(signaling)
+add_subdirectory(client)
+add_subdirectory(sdp)
+add_subdirectory(rtp)
+if(NOT ANDROID)
+  add_subdirectory(tests)
+endif()

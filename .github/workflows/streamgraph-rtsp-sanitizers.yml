@@ -6,26 +6,22 @@ name: M15d RTSP released-SDK sanitizers and TSan evidence
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
-      - 'tests/**'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'tools/lemon/**'
       - 'streamgraph/**'
       - 'CMakeLists.txt'
-      - 'tests/CMakeLists.txt'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
-      - 'tests/**'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'tools/lemon/**'
       - 'streamgraph/**'
       - 'CMakeLists.txt'
-      - 'tests/CMakeLists.txt'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
@@ -123,9 +119,9 @@ jobs:
               entries = json.load(f)
           sanitizer = "-fsanitize=" + ("address,undefined" if os.environ["SAN_MODE"] == "asan-ubsan" else "thread")
           required = (
-              "/tests/test_rtsp.c",
-              "/media/rtsp/turbo_rtsp.c",
-              "/network/transport_cnet.c",
+              "/streaming/rtsp/tests/test_rtsp.c",
+              "/streaming/rtsp/turbo_rtsp.c",
+              "/streaming/transport/transport_cnet.c",
               "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
               "/streamgraph/tests/installed_salts/real_component_provider.c",
           )

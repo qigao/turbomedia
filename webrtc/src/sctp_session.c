@@ -6,20 +6,20 @@
  */
 
 #include "turbo_datachannel_internal.h"
-#include <platform.h>
+#include <core/platform.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
-#include "tlog.h"
+#include "core/tlog.h"
 
 /* ============================================================================
  * Global SCTP State (thread-safe)
  * ============================================================================ */
 
 static atomic_int g_context_count = 0;
-static cmeta_once_t g_sctp_once = SALTS_ONCE_INIT;
+static sync_once_t g_sctp_once = SALTS_ONCE_INIT;
 static int g_sctp_init_result = -1;
 
 static void sctp_global_init_once(void) {
@@ -78,7 +78,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
-    cmeta_once(&g_sctp_once, sctp_global_init_once);
+    sync_once(&g_sctp_once, sctp_global_init_once);
     if (g_sctp_init_result != 0) {
         atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
         return -1;
@@ -115,29 +115,14 @@ typedef struct sctp_outbound_owner_command_s {
 static void sctp_outbound_owner_task(void *arg1, void *arg2) {
     sctp_outbound_owner_command_t *command =
         (sctp_outbound_owner_command_t *)arg1;
-    turbo_dc_peer_t *peer;
-    int written;
     (void)arg2;
 
     if (!command || !command->peer || !command->packet ||
         command->length == 0 || command->length > INT_MAX) {
         return;
     }
-    peer = command->peer;
-    command->result = -1;
-    if (!peer->dtls.ssl || !peer->dtls.handshake_done) {
-        return;
-    }
-
-    written = SSL_write(peer->dtls.ssl, command->packet, (int)command->length);
-    if (written != (int)command->length) {
-        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
-                    command->length, written, errno);
-        return;
-    }
-
-    dtls_send_output(peer);
-    command->result = 0;
+    command->result = dtls_write_application_data(command->peer, command->packet,
+                                                   command->length);
 }
 
 int sctp_outbound_packet_cb(void *addr, void *data, size_t length,
@@ -155,7 +140,7 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length,
     }
 
     /* usrsctp may emit packets from its timer pump as well as sendv(). Copy
-     * callback-owned bytes before synchronously dispatching SSL/BIO work to
+     * callback-owned bytes before synchronously dispatching DTLS work to
      * the Peer owner. The packet is bounded to one SCTP wire packet. */
     command.packet = (uint8_t *)malloc(length);
     if (!command.packet) {
@@ -195,9 +180,9 @@ static void sctp_reassembly_clear_all_locked(turbo_dc_peer_t *peer) {
 
 static void sctp_reassembly_clear_all(turbo_dc_peer_t *peer) {
     if (!peer || !peer->operation_sync_initialized) return;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     sctp_reassembly_clear_all_locked(peer);
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 }
 
 static void sctp_reassembly_clear_identity(turbo_dc_peer_t *peer,
@@ -205,7 +190,7 @@ static void sctp_reassembly_clear_identity(turbo_dc_peer_t *peer,
                                            uint16_t stream_id,
                                            uint16_t stream_sequence) {
     size_t i;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     for (i = 0; i < SCTP_REASSEMBLY_SLOTS; ++i) {
         sctp_reassembly_slot_t *slot = &peer->sctp.reassembly[i];
         if (slot->used && slot->association_id == association_id &&
@@ -213,21 +198,21 @@ static void sctp_reassembly_clear_identity(turbo_dc_peer_t *peer,
             slot->stream_sequence == stream_sequence)
             sctp_reassembly_clear_slot(slot);
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 }
 
 static void sctp_reassembly_clear_stream(turbo_dc_peer_t *peer,
                                          sctp_assoc_t association_id,
                                          uint16_t stream_id) {
     size_t i;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     for (i = 0; i < SCTP_REASSEMBLY_SLOTS; ++i) {
         sctp_reassembly_slot_t *slot = &peer->sctp.reassembly[i];
         if (slot->used && slot->association_id == association_id &&
             slot->stream_id == stream_id)
             sctp_reassembly_clear_slot(slot);
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 }
 
 static sctp_reassembly_result_t sctp_reassemble_message(
@@ -244,9 +229,9 @@ static sctp_reassembly_result_t sctp_reassemble_message(
     *assembled = NULL;
     *assembled_length = 0u;
     *detail = NULL;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->sctp.reassembly_blocked) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *detail = "SCTP receive reassembly is blocked until association reset";
         return SCTP_REASSEMBLY_REJECTED;
     }
@@ -287,7 +272,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
                 free_slot->used = 1u;
             }
         }
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *detail = "invalid or oversized SCTP receive fragment";
         return SCTP_REASSEMBLY_REJECTED;
     }
@@ -296,18 +281,18 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         sctp_reassembly_clear_slot(slot);
         if ((flags & MSG_EOR) == 0)
             peer->sctp.reassembly_blocked = 1;
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *detail = "SCTP fragment metadata changed before EOR";
         return SCTP_REASSEMBLY_REJECTED;
     }
     if (slot && slot->discarding) {
         if (flags & MSG_EOR) sctp_reassembly_clear_slot(slot);
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *detail = "discarding rejected SCTP partial delivery until EOR";
         return SCTP_REASSEMBLY_REJECTED;
     }
     if (!slot && (flags & MSG_EOR)) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *assembled_length = length;
         return SCTP_REASSEMBLY_READY;
     }
@@ -315,7 +300,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         if (!free_slot) {
             sctp_reassembly_clear_all_locked(peer);
             peer->sctp.reassembly_blocked = 1;
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             *detail = "too many simultaneous SCTP partial deliveries";
             return SCTP_REASSEMBLY_REJECTED;
         }
@@ -330,7 +315,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         slot = free_slot;
         if (!slot->data) {
             slot->discarding = 1u;
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             *detail = "SCTP receive reassembly allocation failed";
             return SCTP_REASSEMBLY_REJECTED;
         }
@@ -341,7 +326,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
         slot->length = 0u;
         slot->discarding = 1u;
         if (flags & MSG_EOR) sctp_reassembly_clear_slot(slot);
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         *detail = "SCTP message exceeds the 24 KiB receive limit";
         return SCTP_REASSEMBLY_REJECTED;
     }
@@ -349,7 +334,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
     memcpy(slot->data + slot->length, bytes, length);
     slot->length += length;
     if ((flags & MSG_EOR) == 0) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         return SCTP_REASSEMBLY_PENDING;
     }
 
@@ -357,7 +342,7 @@ static sctp_reassembly_result_t sctp_reassemble_message(
     *assembled_length = slot->length;
     slot->data = NULL;
     memset(slot, 0, sizeof(*slot));
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return SCTP_REASSEMBLY_READY;
 }
 
@@ -485,9 +470,9 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
     }
     if (reassembly == SCTP_REASSEMBLY_REJECTED) {
         int blocked;
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         blocked = peer->sctp.reassembly_blocked;
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         if (blocked)
             dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
                          reassembly_detail);
@@ -549,11 +534,11 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         if (channel) {
             turbo_dc_message_cb callback = NULL;
             void *callback_data;
-            cmeta_mutex_lock(&peer->operation_mutex);
+            sync_mutex_lock(&peer->operation_mutex);
             if (!channel->closing && channel->is_open && !peer->destroying)
                 callback = channel->on_message;
             callback_data = channel->user_data;
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             if (callback)
                 callback(channel, message_data, logical_length, is_binary,
                          callback_data);
@@ -571,7 +556,7 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
  * SCTP Socket Configuration
  * ============================================================================ */
 
-static int configure_sctp_socket(struct socket *sock) {
+static int configure_sctp_socket(const turbo_dc_peer_t *peer, struct socket *sock) {
     struct linger linger_opt = { .l_onoff = 1, .l_linger = 0 };
     if (usrsctp_setsockopt(sock, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt)) != 0) {
         return -1;
@@ -623,7 +608,8 @@ static int configure_sctp_socket(struct socket *sock) {
         memset(&params, 0, sizeof(params));
         params.spp_assoc_id = 0;
         params.spp_flags = SPP_PMTUD_DISABLE;
-        params.spp_pathmtu = SCTP_MTU_DEFAULT;
+        const uint16_t max_packet = peer->ctx->dtls_mtu - DTLS_RECORD_OVERHEAD;
+        params.spp_pathmtu = peer->ctx->sctp_mtu < max_packet ? peer->ctx->sctp_mtu : max_packet;
         if (usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_PEER_ADDR_PARAMS,
                                &params, sizeof(params)) != 0) {
             return -1;
@@ -674,7 +660,7 @@ int sctp_session_init(turbo_dc_peer_t *peer) {
     usrsctp_register_address(peer);
     peer->sctp_address_registered = 1;
 
-    if (configure_sctp_socket(sock) != 0) {
+    if (configure_sctp_socket(peer, sock) != 0) {
         if (peer->sctp_address_registered) {
             usrsctp_deregister_address(peer);
             peer->sctp_address_registered = 0;

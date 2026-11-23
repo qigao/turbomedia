@@ -1,6 +1,6 @@
 #include "salts_ice_owner.h"
 
-#include <salts/thread.h>
+#include <threads/threads.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,15 +50,17 @@ typedef struct turbo_ice_command_args_s {
 typedef struct turbo_ice_send_slot_s {
     size_t size;
     uint8_t data[TURBO_ICE_OWNER_MAX_DATAGRAM_BYTES];
+    void (*done)(void *, int);
+    void *operation;
 } turbo_ice_send_slot_t;
 
 struct turbo_ice_owner_s {
     ice_config_t config;
     ice_callbacks_t callbacks;
     salts_ice_agent_t *agent;
-    cmeta_thread_t thread;
-    cmeta_mutex_t mutex;
-    cmeta_cond_t cond;
+    sync_thread_t thread;
+    sync_mutex_t mutex;
+    sync_cond_t cond;
     int sync_initialized;
     int thread_started;
     int ready;
@@ -91,11 +93,11 @@ static void turbo_ice_owner_on_state_change(
     if (!owner) {
         return;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     owner->cached_state = new_state;
     callback = owner->callbacks.on_state_change;
     callback_user_data = owner->callbacks.user_data;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     if (callback) {
         callback(agent, old_state, new_state, callback_user_data);
     }
@@ -110,11 +112,11 @@ static void turbo_ice_owner_on_gathering_change(
     if (!owner) {
         return;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     owner->cached_gathering_state = state;
     callback = owner->callbacks.on_gathering_change;
     callback_user_data = owner->callbacks.user_data;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     if (callback) {
         callback(agent, state, callback_user_data);
     }
@@ -130,13 +132,13 @@ static void turbo_ice_owner_on_candidate(
     if (!owner || !candidate) {
         return;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     if (owner->local_candidate_count < ICE_MAX_CANDIDATES) {
         owner->local_candidates[owner->local_candidate_count++] = *candidate;
     }
     callback = owner->callbacks.on_candidate;
     callback_user_data = owner->callbacks.user_data;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     if (callback) {
         callback(agent, candidate, callback_user_data);
     }
@@ -214,24 +216,24 @@ static int turbo_ice_owner_submit(
         return turbo_ice_owner_execute(owner, command, args);
     }
 
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     while (!owner->stopping && owner->phase != TURBO_ICE_COMMAND_IDLE) {
-        cmeta_cond_wait(&owner->cond, &owner->mutex);
+        sync_cond_wait(&owner->cond, &owner->mutex);
     }
     if (owner->stopping || !owner->agent) {
-        cmeta_mutex_unlock(&owner->mutex);
+        sync_mutex_unlock(&owner->mutex);
         return ICE_AGENT_ERROR_CLOSED;
     }
 
     owner->command = command;
     owner->args = *args;
     owner->phase = TURBO_ICE_COMMAND_REQUESTED;
-    cmeta_cond_broadcast(&owner->cond);
+    sync_cond_broadcast(&owner->cond);
     while (!owner->stopping && owner->phase != TURBO_ICE_COMMAND_DONE) {
-        cmeta_cond_wait(&owner->cond, &owner->mutex);
+        sync_cond_wait(&owner->cond, &owner->mutex);
     }
     if (owner->phase != TURBO_ICE_COMMAND_DONE) {
-        cmeta_mutex_unlock(&owner->mutex);
+        sync_mutex_unlock(&owner->mutex);
         return ICE_AGENT_ERROR_CLOSED;
     }
 
@@ -239,8 +241,8 @@ static int turbo_ice_owner_submit(
     owner->phase = TURBO_ICE_COMMAND_IDLE;
     owner->command = TURBO_ICE_COMMAND_NONE;
     memset(&owner->args, 0, sizeof(owner->args));
-    cmeta_cond_broadcast(&owner->cond);
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_cond_broadcast(&owner->cond);
+    sync_mutex_unlock(&owner->mutex);
     return result;
 }
 
@@ -263,11 +265,11 @@ static void turbo_ice_owner_main(void *argument) {
         ice_agent_set_callbacks(owner->agent, &owner_callbacks);
     }
 
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     owner->create_failed = owner->agent == NULL;
     owner->ready = 1;
-    cmeta_cond_broadcast(&owner->cond);
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_cond_broadcast(&owner->cond);
+    sync_mutex_unlock(&owner->mutex);
 
     if (!owner->agent) {
         turbo_current_ice_owner = NULL;
@@ -278,11 +280,13 @@ static void turbo_ice_owner_main(void *argument) {
         turbo_ice_command_t command = TURBO_ICE_COMMAND_NONE;
         turbo_ice_command_args_t args = {0};
         int async_send = 0;
+        void (*done)(void *, int) = NULL;
+        void *operation = NULL;
 
-        cmeta_mutex_lock(&owner->mutex);
+        sync_mutex_lock(&owner->mutex);
         if (!owner->stopping && owner->phase != TURBO_ICE_COMMAND_REQUESTED &&
             owner->send_count == 0) {
-            (void)cmeta_cond_timedwait(
+            (void)sync_cond_timedwait(
                 &owner->cond, &owner->mutex,
                 TURBO_ICE_OWNER_POLL_INTERVAL_NS);
         }
@@ -294,29 +298,32 @@ static void turbo_ice_owner_main(void *argument) {
                 &owner->send_slots[owner->send_head];
             args.data = slot->data;
             args.data_len = slot->size;
+            done = slot->done;
+            operation = slot->operation;
             command = TURBO_ICE_COMMAND_SEND;
             async_send = 1;
         } else if (owner->stopping) {
-            cmeta_mutex_unlock(&owner->mutex);
+            sync_mutex_unlock(&owner->mutex);
             break;
         }
-        cmeta_mutex_unlock(&owner->mutex);
+        sync_mutex_unlock(&owner->mutex);
 
         if (command != TURBO_ICE_COMMAND_NONE) {
             int result = turbo_ice_owner_execute(owner, command, &args);
-            cmeta_mutex_lock(&owner->mutex);
+            sync_mutex_lock(&owner->mutex);
             if (!async_send) {
                 owner->result = result;
                 owner->phase = TURBO_ICE_COMMAND_DONE;
-                cmeta_cond_broadcast(&owner->cond);
+                sync_cond_broadcast(&owner->cond);
             } else {
                 owner->send_slots[owner->send_head].size = 0;
                 owner->send_head =
                     (owner->send_head + 1) % TURBO_ICE_OWNER_SEND_CAPACITY;
                 owner->send_count--;
-                cmeta_cond_broadcast(&owner->cond);
+                sync_cond_broadcast(&owner->cond);
             }
-            cmeta_mutex_unlock(&owner->mutex);
+            sync_mutex_unlock(&owner->mutex);
+            if (done) done(operation, result);
         } else {
             ice_state_t state = ice_agent_get_state(owner->agent);
             if (state == ICE_STATE_CONNECTED || state == ICE_STATE_COMPLETED) {
@@ -346,23 +353,23 @@ turbo_ice_owner_t *turbo_ice_owner_create(
     if (callbacks) {
         owner->callbacks = *callbacks;
     }
-    cmeta_mutex_init(&owner->mutex);
-    cmeta_cond_init(&owner->cond);
+    sync_mutex_init(&owner->mutex);
+    sync_cond_init(&owner->cond);
     owner->sync_initialized = 1;
 
-    if (cmeta_thread_create(&owner->thread, turbo_ice_owner_main, owner) != 0) {
-        cmeta_cond_destroy(&owner->cond);
-        cmeta_mutex_destroy(&owner->mutex);
+    if (sync_thread_create(&owner->thread, turbo_ice_owner_main, owner) != 0) {
+        sync_cond_destroy(&owner->cond);
+        sync_mutex_destroy(&owner->mutex);
         free(owner);
         return NULL;
     }
     owner->thread_started = 1;
 
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     while (!owner->ready) {
-        cmeta_cond_wait(&owner->cond, &owner->mutex);
+        sync_cond_wait(&owner->cond, &owner->mutex);
     }
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     if (owner->create_failed) {
         turbo_ice_owner_destroy(owner);
         return NULL;
@@ -381,17 +388,17 @@ void turbo_ice_owner_destroy(turbo_ice_owner_t *owner) {
         (void)turbo_ice_owner_submit(
             owner, TURBO_ICE_COMMAND_DETACH_CALLBACKS, &args);
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     owner->stopping = 1;
-    cmeta_cond_broadcast(&owner->cond);
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_cond_broadcast(&owner->cond);
+    sync_mutex_unlock(&owner->mutex);
     if (owner->thread_started) {
-        (void)cmeta_thread_join(&owner->thread);
-        cmeta_thread_destroy(&owner->thread);
+        (void)sync_thread_join(&owner->thread);
+        sync_thread_destroy(&owner->thread);
     }
     if (owner->sync_initialized) {
-        cmeta_cond_destroy(&owner->cond);
-        cmeta_mutex_destroy(&owner->mutex);
+        sync_cond_destroy(&owner->cond);
+        sync_mutex_destroy(&owner->mutex);
     }
     free(owner);
 }
@@ -402,10 +409,10 @@ void turbo_ice_owner_close(turbo_ice_owner_t *owner) {
     if (!owner || !owner->sync_initialized) {
         return;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     owner->close_requested = 1;
     agent = owner->agent;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     if (agent) {
         ice_agent_close(agent);
     }
@@ -479,6 +486,12 @@ int turbo_ice_owner_send(
 
 int turbo_ice_owner_send_async(
     turbo_ice_owner_t *owner, const void *data, size_t len) {
+    return turbo_ice_owner_send_tracked(owner, data, len, NULL, NULL);
+}
+
+int turbo_ice_owner_send_tracked(void *transport, const void *data, size_t len,
+                                 void (*done)(void *, int), void *operation) {
+    turbo_ice_owner_t *owner = transport;
     turbo_ice_send_slot_t *slot;
 
     if (!owner || !owner->sync_initialized || !data || len == 0 ||
@@ -486,23 +499,28 @@ int turbo_ice_owner_send_async(
         return -1;
     }
     if (turbo_current_ice_owner == owner) {
-        return turbo_ice_owner_send(owner, data, len);
+        int status = turbo_ice_owner_send(owner, data, len);
+        if (!done) return status;
+        done(operation, status);
+        return 0;
     }
 
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     if (owner->stopping || owner->close_requested || !owner->agent ||
         owner->send_count == TURBO_ICE_OWNER_SEND_CAPACITY) {
-        cmeta_mutex_unlock(&owner->mutex);
+        sync_mutex_unlock(&owner->mutex);
         return -1;
     }
     slot = &owner->send_slots[owner->send_tail];
     memcpy(slot->data, data, len);
     slot->size = len;
+    slot->done = done;
+    slot->operation = operation;
     owner->send_tail =
         (owner->send_tail + 1) % TURBO_ICE_OWNER_SEND_CAPACITY;
     owner->send_count++;
-    cmeta_cond_signal(&owner->cond);
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_cond_signal(&owner->cond);
+    sync_mutex_unlock(&owner->mutex);
     return 0;
 }
 
@@ -512,9 +530,9 @@ ice_state_t turbo_ice_owner_get_state(turbo_ice_owner_t *owner) {
     if (!owner || !owner->sync_initialized) {
         return ICE_STATE_CLOSED;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     state = owner->cached_state;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     return state;
 }
 
@@ -525,9 +543,9 @@ ice_gathering_state_t turbo_ice_owner_get_gathering_state(
     if (!owner || !owner->sync_initialized) {
         return ICE_GATHERING_NEW;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     state = owner->cached_gathering_state;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     return state;
 }
 
@@ -537,9 +555,9 @@ int turbo_ice_owner_get_local_candidate_count(turbo_ice_owner_t *owner) {
     if (!owner || !owner->sync_initialized) {
         return -1;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     count = owner->local_candidate_count;
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     return count;
 }
 
@@ -548,13 +566,13 @@ int turbo_ice_owner_get_local_candidate(
     if (!owner || !owner->sync_initialized || index < 0 || !candidate) {
         return -1;
     }
-    cmeta_mutex_lock(&owner->mutex);
+    sync_mutex_lock(&owner->mutex);
     if (index >= owner->local_candidate_count) {
-        cmeta_mutex_unlock(&owner->mutex);
+        sync_mutex_unlock(&owner->mutex);
         return -1;
     }
     *candidate = owner->local_candidates[index];
-    cmeta_mutex_unlock(&owner->mutex);
+    sync_mutex_unlock(&owner->mutex);
     return 0;
 }
 

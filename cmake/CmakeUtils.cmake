@@ -49,6 +49,47 @@ function(cmake_config_target target_name)
 
 endfunction()
 
+function(turbo_media_configure_component target_name export_name)
+  cmake_parse_arguments(ARG "STANDALONE;NO_MEDIA_HEADERS;EXPLICIT_EXPORTS" "" "" ${ARGN})
+  cmake_config_target(
+    ${target_name}
+    ALIAS TurboMedia::${export_name}
+    EXPORT_NAME ${export_name}
+    FOLDER "turbomedia/components")
+  if(NOT ARG_NO_MEDIA_HEADERS)
+    target_include_directories(${target_name}
+      PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/media/codec/include>
+             $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+  endif()
+  get_target_property(_turbo_media_target_type ${target_name} TYPE)
+  if(NOT ARG_EXPLICIT_EXPORTS AND
+     (_turbo_media_target_type STREQUAL "SHARED_LIBRARY" OR
+      _turbo_media_target_type STREQUAL "MODULE_LIBRARY"))
+    target_compile_definitions(${target_name} PRIVATE SHARED_CXX)
+  endif()
+  unset(_turbo_media_target_type)
+  if(MSVC)
+    target_compile_options(${target_name} PRIVATE /W4 /wd4100 /wd4996)
+  else()
+    target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  endif()
+  if(ARG_STANDALONE)
+    install(TARGETS ${target_name} EXPORT TurboMedia${export_name}Targets
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT ${export_name}
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT ${export_name}
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ${export_name})
+    install(EXPORT TurboMedia${export_name}Targets NAMESPACE TurboMedia::
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMedia COMPONENT ${export_name})
+  else()
+    install(
+      TARGETS ${target_name}
+      EXPORT TurboMediaTargets
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
+endfunction()
+
 function(cmake_add_grammar TARGET_NAME)
   set(options LEXER_DEPENDS_ON_GRAMMAR)
   set(oneValueArgs LEXER_RE GRAMMAR_Y FOLDER LEXER_OUTPUT)
@@ -88,7 +129,7 @@ function(cmake_add_grammar TARGET_NAME)
     add_custom_command(
       OUTPUT ${LEXER_GEN}
       COMMAND ${RE2C_EXECUTABLE} -o ${LEXER_GEN} ${ARG_LEXER_RE}
-      DEPENDS ${lexer_depends}
+      DEPENDS ${lexer_depends} "${RE2C_EXECUTABLE}"
       COMMENT "Generating ${TARGET_NAME} lexer with re2c"
       VERBATIM)
     set(LEXER_TARGET "${TARGET_NAME}_lexer_codegen")
@@ -106,8 +147,8 @@ function(cmake_add_grammar TARGET_NAME)
     add_custom_command(
       OUTPUT ${GRAMMAR_GEN} ${GRAMMAR_H}
       COMMAND ${CMAKE_COMMAND} -E copy ${ARG_GRAMMAR_Y} ${GRAMMAR_Y_GEN}
-      COMMAND $<TARGET_FILE:lemon> -T${LEMPAR} ${GRAMMAR_Y_GEN}
-      DEPENDS ${ARG_GRAMMAR_Y} lemon
+      COMMAND "${LEMON_EXECUTABLE}" "-T${LEMPAR}" "${GRAMMAR_Y_GEN}"
+      DEPENDS ${ARG_GRAMMAR_Y} "${LEMON_EXECUTABLE}" "${LEMPAR}"
       COMMENT "Generating ${TARGET_NAME} parser with lemon"
       VERBATIM)
     set(GRAMMAR_TARGET "${TARGET_NAME}_grammar_codegen")
@@ -233,4 +274,18 @@ function(cmake_add_benchmark target_name)
     target_include_directories(${target_name} PRIVATE ${ARG_INCLUDES})
   endif()
   cmake_config_target(${target_name} FOLDER "${ARG_FOLDER}")
+endfunction()
+
+function(turbo_media_add_module_test target source)
+  cmake_add_executable(${target} SOURCES ${source}
+    LIBS Salts::TinyTest ${ARGN} FOLDER "turbomedia/tests")
+  if(UNIX)
+    target_link_libraries(${target} PRIVATE m)
+  endif()
+  # Android test executables run on-device.
+  if(NOT ANDROID)
+    add_test(NAME ${target} COMMAND ${target})
+    set_tests_properties(${target} PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  endif()
 endfunction()

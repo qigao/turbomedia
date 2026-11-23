@@ -3,11 +3,11 @@
 #include "room_service_media.h"
 #endif
 #include "turbo_media_auth.h"
-#include <http_server/http.h>
-#include <platform.h>
+#include <chttp_app/application.h>
+#include <core/platform.h>
 #include <json_parser.h>
-#include <salts/error_codes.h>
-#include <cmeta_thread.h>
+#include <core/error_codes.h>
+#include <threads/threads.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,11 +49,32 @@ enum {
 
 struct room_service_http_api_s {
     room_service_app_server_t *server;
-    cmeta_mutex_t lifecycle_mutex;
-    chttp_server http;
-    int http_initialized;
+    sync_mutex_t lifecycle_mutex;
+    chttp_application http;
+    salts_configurator_provider_binding http_provider;
+    salts_configurator_deployment http_deployment;
+    chttp_controller http_controller;
+    chttp_action http_actions[ROOM_SERVICE_HTTP_ROUTE_CAPACITY];
     int state;
 };
+
+cmeta_reflect_data(room_service_http_api_t, "turbomedia.room.HttpHost",
+                   cmeta_field(int, state));
+cmeta_component_empty(TurboRoomHttp);
+
+static cmeta_status room_service_http_provider_create(
+    void *user, const cmeta_data_desc *data, const void *config,
+    const salts_configurator_dependency *dependencies, size_t count,
+    cmeta_object_ref *out) {
+    (void)data;
+    (void)config;
+    (void)dependencies;
+    if (count != 0u) {
+        return CMETA_INVALID_ARGUMENT;
+    }
+    return cmeta_object_borrow(out, user, cmeta_reflected_data(room_service_http_api_t),
+                               NULL);
+}
 
 typedef enum room_service_http_state_e {
     ROOM_SERVICE_HTTP_STOPPED = 0,
@@ -80,7 +101,7 @@ typedef struct Req {
 
 typedef struct Res {
     room_service_http_api_t *api;
-    chttp_server_response *response;
+    const chttp_invocation *invocation;
     int status;
 } Res;
 
@@ -214,19 +235,19 @@ static const char *get_query(const Req *req, const char *name) {
 static int room_service_http_add_cors_headers(Res *res) {
     int status;
 
-    if (!res || !res->response) {
+    if (!res || !res->invocation) {
         return SALTS_EINVAL;
     }
-    status = chttp_server_response_set_header(
-        res->response, "Access-Control-Allow-Origin", "*");
+    status = chttp_invocation_set_header(
+        res->invocation, "Access-Control-Allow-Origin", "*");
     if (status == SALTS_OK) {
-        status = chttp_server_response_set_header(
-            res->response, "Access-Control-Allow-Methods",
+        status = chttp_invocation_set_header(
+            res->invocation, "Access-Control-Allow-Methods",
             "GET, POST, OPTIONS");
     }
     if (status == SALTS_OK) {
-        status = chttp_server_response_set_header(
-            res->response, "Access-Control-Allow-Headers",
+        status = chttp_invocation_set_header(
+            res->invocation, "Access-Control-Allow-Headers",
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
             "Content-Type, Authorization, Idempotency-Key");
 #else
@@ -240,7 +261,7 @@ static void set_header(Res *res, const char *name, const char *value) {
     if (!res || res->status != SALTS_OK) {
         return;
     }
-    res->status = chttp_server_response_set_header(res->response, name,
+    res->status = chttp_invocation_set_header(res->invocation, name,
                                                     value);
 }
 
@@ -252,7 +273,7 @@ static void room_service_http_reply(Res *res, unsigned int status,
     }
     res->status = room_service_http_add_cors_headers(res);
     if (res->status == SALTS_OK) {
-        res->status = chttp_server_reply(res->response, status,
+        res->status = chttp_invocation_respond(res->invocation, status,
                                          content_type, body, body_size);
     }
 }
@@ -5418,16 +5439,17 @@ static void handle_command(Req *req, Res *res) {
 typedef void (*room_service_http_handler_fn)(Req *req, Res *res);
 
 static int room_service_http_dispatch(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *response, room_service_http_handler_fn handler) {
+    void *user, const chttp_invocation *invocation,
+    room_service_http_handler_fn handler) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     room_service_http_api_t *api = (room_service_http_api_t *)user;
     Req req = {.request = request,
                .path = request ? request->path : NULL,
                .body = request ? request->body : NULL,
                .body_len = request ? request->body_size : 0u};
-    Res res = {.api = api, .response = response, .status = SALTS_OK};
+    Res res = {.api = api, .invocation = invocation, .status = SALTS_OK};
 
-    if (!api || !request || !response || !handler) {
+    if (!api || !request || !handler) {
         return SALTS_EINVAL;
     }
     if (room_service_http_parse_query(&req) != 0) {
@@ -5439,11 +5461,10 @@ static int room_service_http_dispatch(
     return res.status;
 }
 
-#define ROOM_SERVICE_HTTP_ROUTE_ADAPTER(name)                               \
-    static int name##_route(void *user,                                     \
-                            const chttp_server_request_view *request,        \
-                            chttp_server_response *response) {               \
-        return room_service_http_dispatch(user, request, response, name);   \
+#define ROOM_SERVICE_HTTP_ROUTE_ADAPTER(name)                                         \
+    CHTTP_ACTION(room_service_##name##_route);                                       \
+    int room_service_##name##_route(void *user, const chttp_invocation *invocation) { \
+        return room_service_http_dispatch(user, invocation, name);                   \
     }
 
 ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_health)
@@ -5463,13 +5484,11 @@ ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_subscription)
 ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_subscription_diagnostic)
 ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_command)
 
-static int handle_options_route(void *user,
-                                const chttp_server_request_view *request,
-                                chttp_server_response *response) {
+CHTTP_ACTION(room_service_handle_options_route);
+int room_service_handle_options_route(void *user, const chttp_invocation *invocation) {
     Res res = {.api = (room_service_http_api_t *)user,
-               .response = response,
+               .invocation = invocation,
                .status = SALTS_OK};
-    (void)request;
     room_service_http_reply(&res, 204, NULL, NULL, 0u);
     return res.status;
 }
@@ -5530,54 +5549,86 @@ static chttp_server_config room_service_http_config(
     return config;
 }
 
-typedef struct room_service_http_route_s {
-    chttp_method method;
-    const char *path;
-    chttp_server_handler_fn handler;
-} room_service_http_route_t;
+static int room_service_http_init(room_service_http_api_t *api, const char *host,
+                                  uint16_t port, const cnet_tls_server_config *tls) {
+    static const chttp_action routes[] = {
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/health",
+                      room_service_handle_health_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/metrics",
+                      room_service_handle_metrics_route),
+        CHTTP_MAPPING(CHTTP_METHOD_POST, "/api/v1/join",
+                      room_service_handle_join_route),
+        CHTTP_MAPPING(CHTTP_METHOD_POST, "/api/v1/publish",
+                      room_service_handle_publish_route),
+        CHTTP_MAPPING(CHTTP_METHOD_POST, "/api/v1/subscribe",
+                      room_service_handle_subscribe_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id",
+                      room_service_handle_get_room_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/room_state",
+                      room_service_handle_get_room_state_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/state",
+                      room_service_handle_get_room_state_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/call_center_events",
+                      room_service_handle_get_call_center_events_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/call_center_events",
+                      room_service_handle_get_call_center_events_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/participant",
+                      room_service_handle_get_participant_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/room_diagnostic",
+                      room_service_handle_get_room_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_diagnostic",
+                      room_service_handle_get_room_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/room_sync_diagnostic",
+                      room_service_handle_get_room_sync_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_sync_diagnostic",
+                      room_service_handle_get_room_sync_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/participant_bandwidth_diagnostic",
+                      room_service_handle_get_participant_bandwidth_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/participant_bandwidth_diagnostic/:participant_id",
+                      room_service_handle_get_participant_bandwidth_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/track",
+                      room_service_handle_get_track_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/subscription",
+                      room_service_handle_get_subscription_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/subscription_diagnostic",
+                      room_service_handle_get_subscription_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_participant_id/:track_id",
+                      room_service_handle_get_subscription_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_id/:track",
+                      room_service_handle_get_subscription_diagnostic_route),
+        CHTTP_MAPPING(CHTTP_METHOD_POST, "/api/v1/commands",
+                      room_service_handle_command_route),
+    };
+    chttp_application_config app = chttp_application_config_default();
+    const size_t count = sizeof(routes) / sizeof(routes[0]);
 
-static int room_service_http_register_routes(room_service_http_api_t *api) {
-    static const room_service_http_route_t routes[] = {
-        {CHTTP_METHOD_GET, "/health", handle_health_route},
-        {CHTTP_METHOD_GET, "/metrics", handle_metrics_route},
-        {CHTTP_METHOD_POST, "/api/v1/join", handle_join_route},
-        {CHTTP_METHOD_POST, "/api/v1/publish", handle_publish_route},
-        {CHTTP_METHOD_POST, "/api/v1/subscribe", handle_subscribe_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id", handle_get_room_route},
-        {CHTTP_METHOD_GET, "/api/v1/room_state", handle_get_room_state_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/state", handle_get_room_state_route},
-        {CHTTP_METHOD_GET, "/api/v1/call_center_events", handle_get_call_center_events_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/call_center_events", handle_get_call_center_events_route},
-        {CHTTP_METHOD_GET, "/api/v1/participant", handle_get_participant_route},
-        {CHTTP_METHOD_GET, "/api/v1/room_diagnostic", handle_get_room_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_diagnostic", handle_get_room_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/room_sync_diagnostic", handle_get_room_sync_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_sync_diagnostic", handle_get_room_sync_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/participant_bandwidth_diagnostic", handle_get_participant_bandwidth_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/participant_bandwidth_diagnostic/:participant_id", handle_get_participant_bandwidth_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/track", handle_get_track_route},
-        {CHTTP_METHOD_GET, "/api/v1/subscription", handle_get_subscription_route},
-        {CHTTP_METHOD_GET, "/api/v1/subscription_diagnostic", handle_get_subscription_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_participant_id/:track_id", handle_get_subscription_diagnostic_route},
-        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_id/:track", handle_get_subscription_diagnostic_route},
-        {CHTTP_METHOD_POST, "/api/v1/commands", handle_command_route}};
-    int status = SALTS_OK;
-    size_t index;
-
-    for (index = 0u;
-         status == SALTS_OK && index < sizeof(routes) / sizeof(routes[0]);
-         ++index) {
-        status = chttp_server_route(&api->http, routes[index].method,
-                                    routes[index].path,
-                                    routes[index].handler, api);
+    for (size_t index = 0u; index < count; ++index) {
+        api->http_actions[index] = routes[index];
+        api->http_actions[count + index] = (chttp_action)CHTTP_MAPPING(
+            CHTTP_METHOD_OPTIONS, routes[index].path, room_service_handle_options_route);
     }
-    for (index = 0u;
-         status == SALTS_OK && index < sizeof(routes) / sizeof(routes[0]);
-         ++index) {
-        status = chttp_server_options(&api->http, routes[index].path,
-                                      handle_options_route, api);
-    }
-    return status;
+    api->http_provider = (salts_configurator_provider_binding){
+        sizeof(api->http_provider), SALTS_CONFIGURATOR_PROVIDER_BINDING_ABI_VERSION,
+        cmeta_component_meta(TurboRoomHttp), api, NULL,
+        room_service_http_provider_create, NULL, NULL};
+    api->http_deployment = (salts_configurator_deployment){&api->http_provider, NULL, NULL};
+    api->http_controller = (chttp_controller){
+        .component_id = "TurboRoomHttp",
+        .receiver = cmeta_reflected_data(room_service_http_api_t),
+        .actions = api->http_actions, .action_count = 2u * count};
+    app.http = room_service_http_config(host, port, tls);
+    app.workers = (chttp_worker_config){
+        .workers = 1u, .capacity = ROOM_SERVICE_HTTP_CONNECTION_CAPACITY,
+        .retained_bytes = ROOM_SERVICE_HTTP_BUFFER_CAPACITY_BYTES,
+        .reply_bytes = ROOM_SERVICE_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .header_capacity = ROOM_SERVICE_HTTP_MAX_HEADER_COUNT,
+        .header_bytes = ROOM_SERVICE_HTTP_MAX_HEADER_BYTES};
+    app.components = &api->http_deployment;
+    app.component_count = 1u;
+    app.dependency_capacity = 1u;
+    app.controllers = &api->http_controller;
+    app.controller_count = 1u;
+    return chttp_application_init(&api->http, &app);
 }
 
 room_service_http_api_t *room_service_http_api_create(room_service_app_server_t *server) {
@@ -5592,7 +5643,7 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
         return NULL;
     }
 
-    cmeta_mutex_init(&api->lifecycle_mutex);
+    sync_mutex_init(&api->lifecycle_mutex);
     api->server = server;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
 
@@ -5607,7 +5658,6 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
 int room_service_http_api_start(room_service_http_api_t *api, const char *host, int port) {
     const room_service_app_config_t *app_config;
     cnet_tls_server_config tls;
-    chttp_server_config config;
     const char *stage = "initialize";
     int status;
 
@@ -5615,9 +5665,9 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         return -1;
     }
 
-    cmeta_mutex_lock(&api->lifecycle_mutex);
-    if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->http_initialized) {
-        cmeta_mutex_unlock(&api->lifecycle_mutex);
+    sync_mutex_lock(&api->lifecycle_mutex);
+    if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->http.impl) {
+        sync_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->state = ROOM_SERVICE_HTTP_STARTING;
@@ -5629,40 +5679,25 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         tls.key_file = app_config->tls_key_file;
         tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
     }
-    config = room_service_http_config(
-        host, (uint16_t)port,
-        app_config && app_config->use_tls ? &tls : NULL);
-    status = chttp_server_init(&api->http, &config);
-    if (status == SALTS_OK) {
-        api->http_initialized = 1;
-        stage = "register routes";
-        status = room_service_http_register_routes(api);
-    }
+    status = room_service_http_init(
+        api, host, (uint16_t)port, app_config && app_config->use_tls ? &tls : NULL);
     if (status == SALTS_OK) {
         stage = "start listener";
-        status = chttp_server_start(&api->http);
+        status = chttp_application_start(&api->http);
     }
     if (status != SALTS_OK) {
-        int destroy_status = SALTS_OK;
         fprintf(stderr,
                 "RoomService HTTP failed to %s on %s:%d (status=%d)\n",
                 stage, host, port, status);
-        if (api->http_initialized) {
-            destroy_status = chttp_server_destroy(&api->http);
+        if (api->http.impl) {
+            (void)chttp_application_close(&api->http, ROOM_SERVICE_HTTP_TIMEOUT_MS);
         }
-        if (destroy_status != SALTS_OK) {
-            api->state = ROOM_SERVICE_HTTP_STOPPING;
-            cmeta_mutex_unlock(&api->lifecycle_mutex);
-            return -1;
-        }
-        memset(&api->http, 0, sizeof(api->http));
-        api->http_initialized = 0;
-        api->state = ROOM_SERVICE_HTTP_STOPPED;
-        cmeta_mutex_unlock(&api->lifecycle_mutex);
+        api->state = api->http.impl ? ROOM_SERVICE_HTTP_STOPPING : ROOM_SERVICE_HTTP_STOPPED;
+        sync_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->state = ROOM_SERVICE_HTTP_RUNNING;
-    cmeta_mutex_unlock(&api->lifecycle_mutex);
+    sync_mutex_unlock(&api->lifecycle_mutex);
     return 0;
 }
 
@@ -5672,28 +5707,21 @@ int room_service_http_api_stop(room_service_http_api_t *api) {
         return 0;
     }
 
-    cmeta_mutex_lock(&api->lifecycle_mutex);
+    sync_mutex_lock(&api->lifecycle_mutex);
     if (api->state == ROOM_SERVICE_HTTP_STOPPED) {
-        cmeta_mutex_unlock(&api->lifecycle_mutex);
+        sync_mutex_unlock(&api->lifecycle_mutex);
         return 0;
     }
     api->state = ROOM_SERVICE_HTTP_STOPPING;
-    if (api->http_initialized) {
-        stop_status = chttp_server_stop(&api->http,
-                                        ROOM_SERVICE_HTTP_TIMEOUT_MS);
-        if (stop_status == SALTS_ETIMEDOUT || stop_status == SALTS_EBUSY) {
-            cmeta_mutex_unlock(&api->lifecycle_mutex);
+    if (api->http.impl) {
+        stop_status = chttp_application_close(&api->http, ROOM_SERVICE_HTTP_TIMEOUT_MS);
+        if (api->http.impl) {
+            sync_mutex_unlock(&api->lifecycle_mutex);
             return -1;
         }
-        if (chttp_server_destroy(&api->http) != SALTS_OK) {
-            cmeta_mutex_unlock(&api->lifecycle_mutex);
-            return -1;
-        }
-        memset(&api->http, 0, sizeof(api->http));
     }
-    api->http_initialized = 0;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
-    cmeta_mutex_unlock(&api->lifecycle_mutex);
+    sync_mutex_unlock(&api->lifecycle_mutex);
     return stop_status == SALTS_OK || stop_status == SALTS_EALREADY ? 0 : -1;
 }
 
@@ -5711,7 +5739,7 @@ int room_service_http_api_destroy(room_service_http_api_t *api) {
     if (g_room_service_server == api->server) {
         g_room_service_server = NULL;
     }
-    cmeta_mutex_destroy(&api->lifecycle_mutex);
+    sync_mutex_destroy(&api->lifecycle_mutex);
     free(api);
     return 0;
 }

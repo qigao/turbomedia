@@ -148,7 +148,7 @@ Path(sys.argv[1]).write_text('must not reach another build')
                     manifest_root = Path(next(str(a).split("=", 1)[1] for a in args
                                               if str(a).startswith("--x-manifest-root=")))
                     self.assertEqual(set(json.loads((manifest_root / "vcpkg.json").read_text())["dependencies"]),
-                                     {"boringssl", "gmssl", "llhttp"})
+                                     {"gmssl", "llhttp"})
                 plan = Path(next(a.split("=", 1)[1] for a in args if str(a).startswith("--x-write-nuget-packages-config=")))
                 plan.write_text(f'<packages><package id="{self.package_id}" version="{self.version}" /></packages>')
             else:
@@ -180,7 +180,7 @@ Path(sys.argv[1]).write_text('must not reach another build')
         config = json.loads((gp.REPO / "vcpkg-configuration.json").read_text())
         root = gp.media_manifest("rtsp-iocp", self.root / "manifest")
         focused = json.loads((root / "vcpkg.json").read_text())
-        self.assertEqual(set(focused["dependencies"]), {"boringssl", "gmssl", "llhttp"})
+        self.assertEqual(set(focused["dependencies"]), {"gmssl", "llhttp"})
         self.assertEqual({k: v for k, v in focused.items() if k != "dependencies"},
                          {k: v for k, v in product.items() if k != "dependencies"})
         resolved = json.loads((root / "vcpkg-configuration.json").read_text())

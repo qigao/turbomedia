@@ -32,7 +32,7 @@ TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data commun
 │  - Encryption/Decryption            │
 │  - Certificate Validation           │
 │  - Handshake                        │
-│  (BoringSSL)                        │
+│  (Salts::Crypto)                    │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴────────┬─────────┬──────────┐
@@ -239,6 +239,29 @@ dtls_session_t *dtls = dtls_session_create(
 3. Client validates certificate (fingerprint in SDP for ICE mode)
 4. Keys established
 5. Application data can flow
+
+WebRTC uses the Salts Crypto DTLS-SRTP API for RFC 5764 profile negotiation,
+authentication by SDP SHA-256 certificate fingerprint, and key export. The
+DataChannel owner advances the handshake and passes authenticated SCTP records
+to usrsctp. CNet stream and datagram callbacks settle each prepared DTLS send.
+The ICE worker returns the result of sending through the selected candidate
+pair. A queued external sender uses `turbo_dc_peer_set_external_transport_async`
+and publishes each admitted send's result exactly once. The send token owns the
+provider lifetime through completion, even after peer close.
+
+Build and deploy TurboMedia with a SaltsCNet SDK that exports the DTLS-SRTP APIs
+and a SaltsNet ICE SDK that drains admitted sends to native completion on
+timeout or cancellation. The shared cache can supply the media dependencies.
+To roll back a deployment,
+restore the previous TurboMedia and its matching SDK and runtime libraries as a
+unit. The DTLS association is negotiated again when a peer reconnects.
+
+The libSRTP overlay uses the shared GmSSL package for AES-CM, AES-GCM and
+HMAC-SHA1. libSRTP owns key derivation and replay protection. Its GmSSL adapter
+owns the current packet's copied AAD until IV reset or teardown. To qualify
+an update, run the upstream libSRTP tests and TurboMedia's SRTP regression
+against the installed package, covering both DTLS roles and RTP/SRTCP. To
+roll back, restore the previous libSRTP recipe and matching binary together.
 
 ### Data Callbacks
 

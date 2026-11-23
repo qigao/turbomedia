@@ -112,10 +112,10 @@ spec("DCEP native ACK admission") {
 
         dcep_handle_message(peer, 0, open, sizeof(open));
 
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         int retained = peer_get_channel(peer, 0) != NULL;
         int id_reserved = roaring_bitmap_contains(peer->channel_ids, 0);
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         turbo_dc_error_t reported = turbo_dc_peer_get_error(peer);
 
         turbo_dc_peer_destroy(peer);

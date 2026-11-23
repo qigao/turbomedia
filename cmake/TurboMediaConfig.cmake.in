@@ -2,12 +2,105 @@
 
 include(CMakeFindDependencyMacro)
 
-foreach(_TurboMedia_package IN ITEMS Salts SaltsUtils)
-  if(_TurboMedia_package STREQUAL "Salts")
-    set(_TurboMedia_root SALTS_ROOT)
-  else()
-    set(_TurboMedia_root SALTS_UTILS_ROOT)
+set(_TurboMedia_other_components ${TurboMedia_FIND_COMPONENTS})
+set(_TurboMedia_requested_components ${TurboMedia_FIND_COMPONENTS})
+if("SIPClient" IN_LIST _TurboMedia_requested_components)
+  set(_TurboMedia_sip_client_dependencies SIP SDP)
+  if(NOT WIN32)
+    list(APPEND _TurboMedia_sip_client_dependencies RTP AudioCodec)
   endif()
+  list(APPEND _TurboMedia_requested_components ${_TurboMedia_sip_client_dependencies})
+endif()
+foreach(_TurboMedia_codec IN ITEMS AudioCodec VideoCodec)
+  if(NOT _TurboMedia_codec IN_LIST _TurboMedia_requested_components)
+    continue()
+  endif()
+  list(REMOVE_ITEM _TurboMedia_other_components "${_TurboMedia_codec}")
+  set(_TurboMedia_codec_export "${CMAKE_CURRENT_LIST_DIR}/TurboMedia${_TurboMedia_codec}Targets.cmake")
+  if(EXISTS "${_TurboMedia_codec_export}")
+    include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaCodecLibraries.cmake")
+    turbo_media_find_codec_libraries(${_TurboMedia_codec})
+    include("${_TurboMedia_codec_export}")
+    set(TurboMedia_${_TurboMedia_codec}_FOUND TRUE)
+  else()
+    set(TurboMedia_${_TurboMedia_codec}_FOUND FALSE)
+    if(TurboMedia_FIND_REQUIRED_${_TurboMedia_codec})
+      set(TurboMedia_NOT_FOUND_MESSAGE "The ${_TurboMedia_codec} installation component is missing")
+    endif()
+  endif()
+endforeach()
+
+set(_TurboMedia_protocols ${_TurboMedia_requested_components})
+unset(_TurboMedia_requested_components)
+if("RTPICE" IN_LIST _TurboMedia_protocols)
+  list(APPEND _TurboMedia_protocols RTP SDP)
+endif()
+foreach(_TurboMedia_protocol IN ITEMS SIP RTP SDP RTPICE SIPClient)
+  if(NOT _TurboMedia_protocol IN_LIST _TurboMedia_protocols)
+    continue()
+  endif()
+  list(REMOVE_ITEM _TurboMedia_other_components "${_TurboMedia_protocol}")
+  set(_TurboMedia_protocol_export
+      "${CMAKE_CURRENT_LIST_DIR}/TurboMedia${_TurboMedia_protocol}Targets.cmake")
+  if(EXISTS "${_TurboMedia_protocol_export}")
+    find_dependency(SaltsBase "$ENV{SALTS_BASE_VERSION}" EXACT CONFIG
+                    PATHS "$ENV{SALTS_BASE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    if(_TurboMedia_protocol STREQUAL "SIP")
+      find_dependency(Threads)
+      find_dependency(CMeta "$ENV{CMETA_VERSION}" EXACT CONFIG
+                      PATHS "$ENV{CMETA_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+      if(NOT TARGET Salts::Crypto)
+        find_dependency(SaltsCNet "$ENV{SALTS_CNET_VERSION}" EXACT CONFIG
+                        PATHS "$ENV{SALTS_CNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+      endif()
+    endif()
+    if(_TurboMedia_protocol STREQUAL "RTPICE")
+      if(NOT TARGET TurboMedia::RTP OR NOT TARGET TurboMedia::SDP)
+        set(TurboMedia_RTPICE_FOUND FALSE)
+        set(TurboMedia_NOT_FOUND_MESSAGE "RTPICE requires the RTP and SDP installation components")
+        continue()
+      endif()
+      if(NOT TARGET SaltsNet::ICE)
+        file(TO_CMAKE_PATH "$ENV{SALTSNET_ROOT}" _TurboMedia_saltsnet_root)
+        find_dependency(SaltsNet CONFIG
+                        PATHS "${_TurboMedia_saltsnet_root}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+        unset(_TurboMedia_saltsnet_root)
+      endif()
+    endif()
+    if(_TurboMedia_protocol STREQUAL "SIPClient")
+      set(_TurboMedia_sip_client_missing)
+      foreach(_TurboMedia_dependency IN LISTS _TurboMedia_sip_client_dependencies)
+        if(NOT TARGET TurboMedia::${_TurboMedia_dependency})
+          list(APPEND _TurboMedia_sip_client_missing ${_TurboMedia_dependency})
+        endif()
+      endforeach()
+      if(_TurboMedia_sip_client_missing)
+        set(TurboMedia_SIPClient_FOUND FALSE)
+        set(TurboMedia_NOT_FOUND_MESSAGE
+            "SIPClient is missing installation components: ${_TurboMedia_sip_client_missing}")
+        continue()
+      endif()
+    endif()
+    include("${_TurboMedia_protocol_export}")
+    set(TurboMedia_${_TurboMedia_protocol}_FOUND TRUE)
+  else()
+    set(TurboMedia_${_TurboMedia_protocol}_FOUND FALSE)
+    if(TurboMedia_FIND_REQUIRED_${_TurboMedia_protocol})
+      set(TurboMedia_NOT_FOUND_MESSAGE "The ${_TurboMedia_protocol} installation component is missing")
+    endif()
+  endif()
+endforeach()
+unset(_TurboMedia_protocols)
+unset(_TurboMedia_sip_client_dependencies)
+unset(_TurboMedia_sip_client_missing)
+unset(_TurboMedia_dependency)
+if(TurboMedia_FIND_COMPONENTS AND NOT _TurboMedia_other_components)
+  check_required_components(TurboMedia)
+  return()
+endif()
+
+foreach(_TurboMedia_root IN ITEMS SALTS_BASE_ROOT CMETA_ROOT SALTS_CNET_ROOT
+                                  SALTS_UTILS_ROOT CHTTP_ROOT)
   if(NOT DEFINED ENV{${_TurboMedia_root}} OR
      NOT IS_DIRECTORY "$ENV{${_TurboMedia_root}}")
     set(TurboMedia_FOUND FALSE)
@@ -15,41 +108,37 @@ foreach(_TurboMedia_package IN ITEMS Salts SaltsUtils)
         "${_TurboMedia_root} must name the installed SDK")
     return()
   endif()
-  unset(${_TurboMedia_package}_DIR CACHE)
-  unset(${_TurboMedia_package}_DIR)
 endforeach()
-unset(_TurboMedia_package)
 unset(_TurboMedia_root)
 
-find_dependency(Salts CONFIG REQUIRED
-                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-find_dependency(SaltsUtils CONFIG REQUIRED
-                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "TurboMedia requires Salts::Capture and Salts::Playback")
-  return()
+if(WIN32 OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_dependency(JPEG)
+  find_dependency(libyuv CONFIG)
 endif()
+find_dependency(SaltsBase "$ENV{SALTS_BASE_VERSION}" EXACT CONFIG
+                PATHS "$ENV{SALTS_BASE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_dependency(CMeta "$ENV{CMETA_VERSION}" EXACT CONFIG
+                PATHS "$ENV{CMETA_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_dependency(SaltsCNet "$ENV{SALTS_CNET_VERSION}" EXACT CONFIG
+                PATHS "$ENV{SALTS_CNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_dependency(SaltsUtils "$ENV{SALTS_UTILS_VERSION}" EXACT CONFIG
+                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_dependency(SaltsNet CONFIG REQUIRED
                 PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT DEFINED ENV{CHTTP_ROOT} OR
-   NOT IS_DIRECTORY "$ENV{CHTTP_ROOT}")
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "CHTTP_ROOT must name the installed Chttp SDK")
-  return()
+set(_TurboMedia_chttp_components Client Server App)
+if(NOT TurboMedia_FIND_COMPONENTS OR "WebRTCSignaling" IN_LIST TurboMedia_FIND_COMPONENTS)
+  list(APPEND _TurboMedia_chttp_components WebSocketPeerLease)
 endif()
-unset(Chttp_DIR CACHE)
-unset(Chttp_DIR)
-find_dependency(Chttp CONFIG REQUIRED
+find_dependency(Chttp "$ENV{CHTTP_VERSION}" EXACT CONFIG
+                COMPONENTS ${_TurboMedia_chttp_components}
                 PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+unset(_TurboMedia_chttp_components)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is
 # only a dependency of this component closure.  Keep non-media consumers
-# (for example Core or WebRTC) usable without FFmpeg development files.
-set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Pipeline Streamer RtcApps)
+# (for example MediaRuntime or WebRTC) usable without FFmpeg development files.
+set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Recognition Pipeline Streamer RTC RtcApps)
 set(_TurboMedia_requires_ffmpeg FALSE)
 if(NOT TurboMedia_FIND_COMPONENTS)
   set(_TurboMedia_requires_ffmpeg TRUE)
@@ -74,6 +163,9 @@ if(_TurboMedia_requires_ffmpeg)
   include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaFFmpegTargets.cmake")
 endif()
 
+# The full-package RTC target also depends on the standalone SDP and RTP libraries.
+include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaSDPTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaRTPTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaTargets.cmake")
 
 foreach(_TurboMedia_component IN LISTS TurboMedia_FIND_COMPONENTS)

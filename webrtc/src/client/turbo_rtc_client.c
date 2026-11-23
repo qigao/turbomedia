@@ -3,7 +3,7 @@
 #include "turbo_http_media_client.h"
 #include "turbo_peer_connection.h"
 
-#include <salts/clock.h>
+#include <core/clock.h>
 
 #include <limits.h>
 #include <stdint.h>
@@ -493,7 +493,7 @@ turbo_rtc_client_status_t turbo_rtc_client_start(
            strlen(response.location) + 1u);
     memcpy(client->session_etag, response.etag,
            strlen(response.etag) + 1u);
-    client->connect_started_ms = cmeta_monotonic_ms();
+    client->connect_started_ms = monotonic_ms();
     if (turbo_rtc_client_refresh_peer_state(client) !=
         TURBO_RTC_CLIENT_OK) {
         (void)turbo_rtc_client_delete_remote(client, response.location);
@@ -571,7 +571,7 @@ turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
         return TURBO_RTC_CLIENT_ESDP;
     }
 
-    client->connect_started_ms = cmeta_monotonic_ms();
+    client->connect_started_ms = monotonic_ms();
 
     if (turbo_rtc_client_refresh_peer_state(client) !=
         TURBO_RTC_CLIENT_OK) {
@@ -601,7 +601,7 @@ turbo_rtc_client_status_t turbo_rtc_client_poll(
         return TURBO_RTC_CLIENT_EPEER;
     }
     if (client->state == TURBO_RTC_CLIENT_CONNECTING) {
-        now = cmeta_monotonic_ms();
+        now = monotonic_ms();
         if (now - client->connect_started_ms >= client->connect_timeout_ms) {
             client->state = TURBO_RTC_CLIENT_FAILED;
             return TURBO_RTC_CLIENT_ETIMEDOUT;

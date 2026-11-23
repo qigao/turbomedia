@@ -4,7 +4,7 @@
 **Tracking:** [#162](https://github.com/qigao/turbomedia/issues/162) with implementation work [#163](https://github.com/qigao/turbomedia/issues/163)–[#167](https://github.com/qigao/turbomedia/issues/167).  
 **Consumer:** [TurboInteract #4](https://github.com/qigao/turbo-interact/issues/4).
 
-> The real API is still `pipeline/include/turbo_pipeline.h` and YAML `turbo.media.pipeline/v1`. The C code and YAML below are **API design sketches**, not callable exported symbols or a working configuration. Sources and installed SDKs are the ground truth.
+> The real API is still `streaming/pipeline/include/turbo_pipeline.h` and YAML `turbo.media.pipeline/v1`. The C code and YAML below are **API design sketches**, not callable exported symbols or a working configuration. Sources and installed SDKs are the ground truth.
 
 ## 1. Why v2, and ownership
 

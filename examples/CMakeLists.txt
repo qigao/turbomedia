@@ -1,5 +1,5 @@
 add_executable(capture_save_image capture_save_image.c)
-target_link_libraries(capture_save_image PRIVATE Salts::Capture)
+target_link_libraries(capture_save_image PRIVATE Salts::Media)
 set_target_properties(capture_save_image PROPERTIES FOLDER "turbomedia/examples")
 
 add_executable(codec_g711_smoke codec_g711_smoke.c)
@@ -15,4 +15,5 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   target_link_libraries(
     turbo_pipeline_run PRIVATE TurboMedia::Pipeline Salts::Core)
   set_target_properties(turbo_pipeline_run PROPERTIES FOLDER "turbomedia/examples")
+  turbo_media_install_application(turbo_pipeline_run MediaTranscode)
 endif()

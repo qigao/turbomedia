@@ -21,12 +21,11 @@ set(SFU_NODE_LIBS
   TurboMedia::RtcApps
   TurboMedia::RTC
   CHttp::Client
-  CHttp::Server
+  CHttp::App
   turbo_media_auth
   turbo_media_tenant_quota
   turbo_media_tenant_quota_wire
   Salts::Crypto
-  Salts::Platform
   Salts::Core
   Salts::JsonParser
   Salts::TomlParser)
@@ -47,15 +46,7 @@ set_target_properties(
              OUTPUT_NAME "sfu_node"
              FOLDER "Applications")
 
-install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
-if(WIN32)
-  install(
-    FILES $<TARGET_FILE:CHttp::Client>
-          $<TARGET_FILE:CHttp::Server>
-          $<TARGET_FILE:Salts::CNet>
-    DESTINATION bin
-    COMPONENT SfuNode)
-endif()
+turbo_media_install_application(sfu_node SfuNode)
 install(
   FILES config/sfu_node.toml.example
   DESTINATION etc/turbomedia

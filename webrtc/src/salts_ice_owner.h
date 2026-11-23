@@ -35,6 +35,8 @@ int turbo_ice_owner_send(
     turbo_ice_owner_t *owner, const void *data, size_t len);
 int turbo_ice_owner_send_async(
     turbo_ice_owner_t *owner, const void *data, size_t len);
+int turbo_ice_owner_send_tracked(void *owner, const void *data, size_t len,
+                                 void (*done)(void *, int), void *operation);
 ice_state_t turbo_ice_owner_get_state(turbo_ice_owner_t *owner);
 ice_gathering_state_t turbo_ice_owner_get_gathering_state(
     turbo_ice_owner_t *owner);

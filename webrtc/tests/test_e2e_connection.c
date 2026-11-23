@@ -13,8 +13,8 @@
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 #include "ice_integration.h"
-#include <salts/clock.h>
-#include <salts/thread.h>
+#include <core/clock.h>
+#include <threads/threads.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -336,7 +336,7 @@ void tearDown(void) {
         if (g_ctx.ice_b) {
             ice_integration_poll(g_ctx.ice_b);
         }
-        cmeta_sleep_ms(1);
+        sleep_ms(1);
     }
     
     /* Clear ICE agent references from peers BEFORE destroying ICE
@@ -385,7 +385,7 @@ void tearDown(void) {
  * ============================================================================ */
 
 void test_e2e_p2p_connection(void) {
-    uint64_t deadline = cmeta_monotonic_ms() + TEST_TIMEOUT_MS;
+    uint64_t deadline = monotonic_ms() + TEST_TIMEOUT_MS;
     /* Create peer A (offerer) */
     turbo_dc_config_t config_a = {
         .is_server = 0,
@@ -462,15 +462,15 @@ void test_e2e_p2p_connection(void) {
      * cross-owner AB/BA wait in this single-process test harness. */
     check_equal(ice_integration_start_gathering(g_ctx.ice_a), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_a) &&
-           cmeta_monotonic_ms() < deadline) {
-        cmeta_sleep_ms(1);
+           monotonic_ms() < deadline) {
+        sleep_ms(1);
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_a));
 
     check_equal(ice_integration_start_gathering(g_ctx.ice_b), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_b) &&
-           cmeta_monotonic_ms() < deadline) {
-        cmeta_sleep_ms(1);
+           monotonic_ms() < deadline) {
+        sleep_ms(1);
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_b));
 
@@ -497,11 +497,11 @@ void test_e2e_p2p_connection(void) {
         ice_integration_poll(g_ctx.ice_a);
         ice_integration_poll(g_ctx.ice_b);
         turbo_dc_handle_timers();
-        if (cmeta_monotonic_ms() >= deadline) {
+        if (monotonic_ms() >= deadline) {
             fail_test("Test timeout");
             break;
         }
-        cmeta_sleep_ms(10);
+        sleep_ms(10);
     }
     
     /* Verify test passed */

@@ -4,7 +4,7 @@
  * Captures a native MJPEG frame from the webcam and saves it as a JPEG file.
  */
 
-#include "salts_capture.h"
+#include "capture.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +18,7 @@
 
 static volatile int image_saved = 0;
 
-static void on_video_frame(salts_capture_t *capture,
+static void on_video_frame(capture_t *capture,
                            const uint8_t *frame, size_t len,
                            int width, int height,
                            uint64_t timestamp, void *user_data) {
@@ -47,8 +47,8 @@ int main(void) {
     printf("=== Video Capture to Image Example ===\n");
 
     /* List devices */
-    salts_capture_device_t devices[16];
-    int count = salts_capture_list_video_devices(devices, 16);
+    capture_device_t devices[16];
+    int count = capture_list_video_devices(devices, 16);
     
     if (count <= 0) {
         printf("No video devices found.\n");
@@ -60,20 +60,20 @@ int main(void) {
         printf("  %d: %s (ID: %s)\n", i, devices[i].name, devices[i].id);
     }
 
-    salts_video_device_t *device = NULL;
-    salts_video_native_mode_t modes[256];
-    const salts_video_native_mode_t *selected_mode = NULL;
+    video_device_t *device = NULL;
+    video_native_mode_t modes[256];
+    const video_native_mode_t *selected_mode = NULL;
     size_t mode_count = 0;
     printf("Opening device: %s\n", devices[0].name);
 
-    if (salts_video_device_open(devices[0].id, &device) != SALTS_CAPTURE_OK) {
+    if (video_device_open(devices[0].id, &device) != SALTS_CAPTURE_OK) {
         printf("Failed to open video device.\n");
         return 1;
     }
-    if (salts_video_device_list_modes(device, modes, 256, &mode_count) !=
+    if (video_device_list_modes(device, modes, 256, &mode_count) !=
         SALTS_CAPTURE_OK) {
         printf("Failed to enumerate native video modes.\n");
-        salts_video_device_close(device);
+        video_device_close(device);
         return 1;
     }
     for (size_t i = 0; i < mode_count; ++i) {
@@ -84,24 +84,24 @@ int main(void) {
     }
     if (!selected_mode) {
         printf("No native MJPEG mode found.\n");
-        salts_video_device_close(device);
+        video_device_close(device);
         return 1;
     }
 
-    salts_capture_t *cap = NULL;
-    int create_result = salts_video_device_create_capture(
+    capture_t *cap = NULL;
+    int create_result = video_device_create_capture(
         device, selected_mode, &cap);
-    salts_video_device_close(device);
+    video_device_close(device);
     if (create_result != SALTS_CAPTURE_OK || !cap) {
         printf("Failed to create capture instance.\n");
         return 1;
     }
 
-    salts_video_capture_set_callback(cap, on_video_frame, NULL);
+    video_capture_set_callback(cap, on_video_frame, NULL);
 
-    if (salts_capture_start(cap) != 0) {
+    if (capture_start(cap) != 0) {
         printf("Failed to start capture.\n");
-        salts_capture_destroy(cap);
+        capture_destroy(cap);
         return 1;
     }
 
@@ -114,8 +114,8 @@ int main(void) {
     }
 
 
-    salts_capture_stop(cap);
-    salts_capture_destroy(cap);
+    capture_stop(cap);
+    capture_destroy(cap);
 
     if (image_saved) {
         printf("Exiting... \n");

@@ -21,7 +21,7 @@ target_compile_options(
   PRIVATE -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden)
 target_link_libraries(
   turbo_media_android
-  PUBLIC Salts::Capture
+  PUBLIC Salts::Media
   PRIVATE ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
           ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY})
 
@@ -29,4 +29,9 @@ file(
   GENERATE
   OUTPUT "${CMAKE_BINARY_DIR}/android-screen-runtime-libraries.txt"
   CONTENT
-    "$<TARGET_FILE:turbo_media_android>\n$<TARGET_FILE:Salts::Capture>\n$<TARGET_FILE:Salts::Core>\n")
+    "$<TARGET_FILE:turbo_media_android>\n$<TARGET_FILE:Salts::Core>\n")
+
+turbo_media_add_module_test(turbo_media_test_android_capture tests/test_android_capture.c
+  Salts::Media Salts::Core)
+turbo_media_add_module_test(turbo_media_test_mobile_optimizer tests/test_mobile_optimizer.c
+  turbo_media_android)

@@ -29,6 +29,7 @@ target_link_libraries(ivr_worker
     TurboMedia::RTC
     CHttp::Client
     CHttp::Server
+    CHttp::App
     Salts::TomlParser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>)
@@ -123,7 +124,7 @@ cmake_add_test(
           ivr_worker_health.c
           ivr_worker_metrics.c
           ivr_worker_http.c
-  LIBS turbo_media_http_media_client Salts::TinyTest Salts::Core CHttp::Client CHttp::Server Salts::CNet
+  LIBS turbo_media_http_media_client Salts::TinyTest Salts::Core CHttp::Client CHttp::App Salts::CNet
        $<$<PLATFORM_ID:Linux>:pthread>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
@@ -138,6 +139,7 @@ if(WIN32)
   install(
     FILES $<TARGET_FILE:CHttp::Client>
           $<TARGET_FILE:CHttp::Server>
+          $<TARGET_FILE:CHttp::App>
           $<TARGET_FILE:Salts::CNet>
           $<TARGET_FILE:Salts::DataBind>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>

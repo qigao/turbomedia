@@ -23,7 +23,7 @@ target_include_directories(
   turbo_media_ivr
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-          ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
+          ${PROJECT_SOURCE_DIR}/media/speech/include)
 target_link_libraries(
   turbo_media_ivr
   PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech
@@ -40,7 +40,7 @@ target_include_directories(
   turbo_media_ivr_rtc
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-          ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
+          ${PROJECT_SOURCE_DIR}/media/speech/include)
 target_link_libraries(
   turbo_media_ivr_rtc
   PUBLIC turbo_media_ivr TurboMedia::RTC
@@ -94,7 +94,8 @@ target_sources(
           src/ivr_room_bridge.c)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC turbo_media_ivr_schema)
+  PUBLIC turbo_media_ivr_schema
+  PRIVATE CHttp::App)
 # Visible to sibling subdirectories (RoomService app) processed after this one.
 set(TURBO_MEDIA_HAS_IVR_CONTROL ON CACHE INTERNAL
     "IVR H1 WebSocket gateway/bridge/adapter available")
@@ -109,7 +110,7 @@ function(turbo_media_ivr_configure_test test_name test_source)
     DEFS IVR_TEST_SCHEMA_PATH="${IVR_TEST_SCHEMA_PATH}"
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
              ${CMAKE_CURRENT_SOURCE_DIR}/include
-             ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include
+             ${PROJECT_SOURCE_DIR}/media/speech/include
              ${CMAKE_CURRENT_SOURCE_DIR}/../tests
     FOLDER "turbomedia/tests/ivr")
   set_target_properties(
@@ -122,7 +123,7 @@ turbo_media_ivr_configure_test(test_ivr_protocol tests/test_ivr_protocol.c)
 cmake_add_test(
   test_ivr_control_ws
   SOURCES tests/test_ivr_control_ws.c src/ivr_control_ws.c src/ivr_thread.c
-  LIBS CHttp::Client CHttp::Server Salts::CNet Salts::Core Salts::TinyTest
+  LIBS CHttp::Client CHttp::App Salts::CNet Salts::Core Salts::TinyTest
        Threads::Threads $<$<PLATFORM_ID:Windows>:ws2_32>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
            ${CMAKE_CURRENT_SOURCE_DIR}/include

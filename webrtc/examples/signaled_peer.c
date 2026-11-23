@@ -9,10 +9,10 @@
  *   rtc_signaled_peer --answer --room demo
  */
 
-#include <platform.h>
+#include <core/platform.h>
 
 #include "ice_integration.h"
-#include "tlog.h"
+#include "core/tlog.h"
 #include "turbo_datachannel.h"
 #include <http_client/http.h>
 #include <cnet/websocket.h>
@@ -23,11 +23,10 @@
 #include "sctp_assoc_internal.h"
 #include "sctp_dcep_internal.h"
 #include "sctp_webrtc_internal.h"
-#include "sctp_gmssl_mac_internal.h"
-#include <gmssl/rand.h>
+#include "sctp_cookie_mac.h"
 #endif
-#include <cmeta_error.h>
-#include <cmeta_thread.h>
+#include <core/error.h>
+#include <threads/threads.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -111,7 +110,7 @@ typedef struct {
 #ifdef TURBO_MEDIA_TEST_PUBLIC_C11_SCTP
   cnet_sctp_assoc c11_assoc;
   cnet_sctp_dcep c11_dcep;
-  cnet_sctp_gmssl_mac c11_cookie_mac;
+  sctp_cookie_mac c11_cookie_mac;
   uint64_t c11_now_ms;
   int c11_assoc_initialized;
   int c11_dcep_initialized;
@@ -177,7 +176,7 @@ static void request_peer_list(app_state_t *app) {
     return;
   }
   if (enqueue_signalf(app, "{\"type\":\"list-peers\"}") == 0) {
-    app->last_peer_query_ms = cmeta_monotonic_ms();
+    app->last_peer_query_ms = monotonic_ms();
   }
 }
 
@@ -1061,24 +1060,24 @@ static int c11_is_owner(void *context) {
 }
 static int c11_entropy(void *context, uint8_t *out, size_t size) {
   (void)context;
-  return out && rand_bytes(out, size) == 1 ? 0 : -1;
+  return out && salts_crypto_random(out, size) == 0 ? 0 : -1;
 }
 static int c11_mac_sign(void *context, const uint8_t *bytes, size_t size,
                         uint8_t out[CNET_SCTP_ASSOC_MAC_BYTES]) {
   app_state_t *app = (app_state_t *)context;
-  return app ? cnet_sctp_gmssl_mac_sign(&app->c11_cookie_mac, bytes, size, out) : -1;
+  return app ? sctp_cookie_mac_sign(&app->c11_cookie_mac, bytes, size, out) : -1;
 }
 static int c11_mac_verify(void *context, const uint8_t *bytes, size_t size,
                           const uint8_t mac[CNET_SCTP_ASSOC_MAC_BYTES]) {
   app_state_t *app = (app_state_t *)context;
-  return app ? cnet_sctp_gmssl_mac_verify(&app->c11_cookie_mac, bytes, size, mac) : -1;
+  return app ? sctp_cookie_mac_verify(&app->c11_cookie_mac, bytes, size, mac) : -1;
 }
 static void c11_wipe(void *memory, size_t size) {
   volatile uint8_t *p = (volatile uint8_t *)memory;
   while (size-- != 0u) *p++ = 0u;
 }
 static uint64_t c11_clock(app_state_t *app) {
-  uint64_t now = cmeta_monotonic_ms();
+  uint64_t now = monotonic_ms();
   if (now < app->c11_now_ms) return app->c11_now_ms;
   app->c11_now_ms = now;
   return now;
@@ -1498,7 +1497,7 @@ static int c11_drain_reset_events(app_state_t *app) {
 }
 static int c11_start_association(app_state_t *app) {
   cnet_sctp_assoc_config config = {0};
-  uint8_t key[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+  uint8_t key[SCTP_COOKIE_KEY_BYTES] = {0};
   uint64_t binding = 0u;
   uint8_t packet[CNET_SCTP_ASSOC_MAX_PACKET];
   size_t packet_size = 0u;
@@ -1508,13 +1507,13 @@ static int c11_start_association(app_state_t *app) {
     return -1;
   }
   if (app->c11_assoc_initialized) return 0;
-  if (rand_bytes(key, sizeof(key)) != 1 ||
-      rand_bytes((uint8_t *)&binding, sizeof(binding)) != 1 || binding == 0u) {
+  if (salts_crypto_random(key, sizeof(key)) != 0 ||
+      salts_crypto_random(&binding, sizeof(binding)) != 0 || binding == 0u) {
     c11_wipe(key, sizeof(key));
     c11_fail(app, "cryptographic key or DTLS generation binding unavailable");
     return -1;
   }
-  if (cnet_sctp_gmssl_mac_init(&app->c11_cookie_mac, key, sizeof(key)) != 0) {
+  if (sctp_cookie_mac_init(&app->c11_cookie_mac, key, sizeof(key)) != 0) {
     c11_wipe(key, sizeof(key));
     c11_fail(app, "GmSSL Cookie MAC initialization failed");
     return -1;
@@ -1537,7 +1536,7 @@ static int c11_start_association(app_state_t *app) {
   config.provider_context = app;
   status = cnet_sctp_assoc_init(&app->c11_assoc, &config, c11_clock(app));
   if (status != CNET_SCTP_ASSOC_OK) {
-    cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+    sctp_cookie_mac_retire(&app->c11_cookie_mac);
     c11_fail(app, "C11 SCTP association initialization failed");
     return -1;
   }
@@ -1896,7 +1895,7 @@ static void c11_cleanup_owner_task(void *arg1, void *arg2) {
     }
     app->c11_assoc_initialized = 0;
   }
-  cnet_sctp_gmssl_mac_retire(&app->c11_cookie_mac);
+  sctp_cookie_mac_retire(&app->c11_cookie_mac);
 }
 
 static void c11_poll_owner_task(void *arg1, void *arg2) {
@@ -2200,7 +2199,7 @@ static int run_signaling(app_state_t *app) {
   rc = chttp_websocket_client_init(&app->signal_client, &config);
   if (rc != SALTS_OK) {
     TLOG_ERRORF("Failed to initialize signaling WebSocket: {} ({})", rc,
-                cmeta_strerror(rc));
+                error_code_string(rc));
     return -1;
   }
   app->signal_client_initialized = 1;
@@ -2214,7 +2213,7 @@ static int run_signaling(app_state_t *app) {
                                       &http_status);
   if (rc != SALTS_OK) {
     TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({}) HTTP {}",
-                rc, cmeta_strerror(rc), http_status);
+                rc, error_code_string(rc), http_status);
     return -1;
   }
 
@@ -2253,7 +2252,7 @@ static int run_signaling(app_state_t *app) {
     }
 
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
-      uint64_t now_ms = cmeta_monotonic_ms();
+      uint64_t now_ms = monotonic_ms();
       if (app->last_peer_query_ms == 0 || now_ms - app->last_peer_query_ms >= 1000) {
         request_peer_list(app);
       }
@@ -2275,7 +2274,7 @@ static int run_signaling(app_state_t *app) {
       continue;
     }
     if (rc != SALTS_OK) {
-      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, cmeta_strerror(rc));
+      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, error_code_string(rc));
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {

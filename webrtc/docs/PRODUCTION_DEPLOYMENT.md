@@ -26,7 +26,7 @@ This guide covers deploying TurboNet WebRTC in production environments.
 
 - Linux/Windows/macOS
 - libuv >= 1.40
-- BoringSSL (resolved by the project vcpkg manifest)
+- SaltsCNet SDK with DTLS-SRTP support
 - usrsctp >= 0.9.5
 - libSRTP >= 2.3 (for media)
 

@@ -14,9 +14,9 @@
  */
 
 #include "ice_integration.h"
-#include "tlog.h"
+#include "core/tlog.h"
 #include "turbo_datachannel.h"
-#include <cmeta_thread.h>
+#include <threads/threads.h>
 #include <stb_sprintf.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
   TLOG_INFO("Waiting for candidate gathering...");
   while (!ice_integration_is_gathering_complete(app.ice)) {
     ice_integration_poll(app.ice);
-    cmeta_sleep_ms(100u);
+    sleep_ms(100u);
   }
 
 
@@ -281,7 +281,7 @@ int main(int argc, char **argv) {
     /* Process SCTP timers - required for message delivery */
     turbo_dc_handle_timers();
 
-    cmeta_sleep_ms(10u);
+    sleep_ms(10u);
 
     /* Send test message if channel is open */
     turbo_dc_channel_t *channel = atomic_load(&app.channel);

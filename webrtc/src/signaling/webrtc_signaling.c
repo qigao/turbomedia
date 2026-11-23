@@ -7,16 +7,17 @@
 #include "signaling_source_identity.h"
 #include "signaling_tenant_quota_internal.h"
 
-#include "platform.h"
-#include "tlog.h"
+#include "core/platform.h"
+#include "core/tlog.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation_projection.h"
-#include <http_server/http.h>
+#include <chttp_app/application.h>
+#include <cnet/websocket.h>
 #include <cstl/hash_map.h>
 #include <json_parser.h>
-#include <salts/error_codes.h>
-#include <salts/thread.h>
-#include <tstr.h>
+#include <core/error_codes.h>
+#include <threads/threads.h>
+#include <core/tstr.h>
 
 #include <limits.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@ enum {
   SIGNALING_WS_HANDSHAKE_TIMEOUT_MS = 5000,
   SIGNALING_CLEANUP_INTERVAL_MS = 1000,
   SIGNALING_STOP_TIMEOUT_MS = 10000,
+  SIGNALING_WS_EVENT_CAPACITY = 4,
   SIGNALING_DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024,
   SIGNALING_MAX_MESSAGE_BYTES = 4 * 1024 * 1024,
   SIGNALING_MAX_TARGET_BYTES = 1024,
@@ -122,8 +124,13 @@ static bool webrtc_str_equal(const void *left, const void *right, size_t key_siz
 }
 
 struct webrtc_signaling_server_s {
-  chttp_server http;
-  int http_initialized;
+  chttp_application http;
+  salts_configurator_provider_binding http_provider;
+  salts_configurator_deployment http_deployment;
+  chttp_controller http_controller;
+  chttp_websocket_endpoint http_websocket;
+  chttp_admission http_admission;
+  sync_mutex_t lifecycle_mutex;
   webrtc_signaling_config_t config;
 
   hash_map_t local_peers;
@@ -154,16 +161,34 @@ struct webrtc_signaling_server_s {
   turbo_media_revocation_projection_t *revocation_projection;
   turbo_media_tenant_quota_projection_t *tenant_quota_projection;
   char tenant_quota_node_id[TURBO_MEDIA_TENANT_QUOTA_NODE_ID_BYTES];
-  cmeta_mutex_t tenant_quota_mutex;
+  sync_mutex_t tenant_quota_mutex;
   int tenant_quota_mutex_initialized;
 
   int running;
   int cleanup_stop_requested;
   int cleanup_thread_started;
-  cmeta_thread_t cleanup_thread;
-  cmeta_cond_t state_changed;
-  cmeta_mutex_t mutex;
+  sync_thread_t cleanup_thread;
+  sync_cond_t state_changed;
+  sync_mutex_t mutex;
 };
+
+cmeta_reflect_data(webrtc_signaling_server_t, "turbomedia.signaling.WebSocketHost",
+                   cmeta_field(int, running));
+cmeta_component_empty(TurboSignalingWebSocket);
+
+static cmeta_status signaling_http_provider_create(
+    void *user, const cmeta_data_desc *data, const void *config,
+    const salts_configurator_dependency *dependencies, size_t count,
+    cmeta_object_ref *out) {
+  (void)data;
+  (void)config;
+  (void)dependencies;
+  if (count != 0U) {
+    return CMETA_INVALID_ARGUMENT;
+  }
+  return cmeta_object_borrow(out, user,
+                             cmeta_reflected_data(webrtc_signaling_server_t), NULL);
+}
 
 static int source_policy_enabled(const webrtc_signaling_config_t *config) {
   return config &&
@@ -556,7 +581,7 @@ static const char *json_string_maybe_escape(const char *str, tstr *owned) {
 }
 
 static tstr generate_peer_id_locked(webrtc_signaling_server_t *server) {
-  uint64_t timestamp = cmeta_monotonic_ms();
+  uint64_t timestamp = monotonic_ms();
   tstr id = tstr_new();
   uint64_t sequence = 0;
 
@@ -865,7 +890,7 @@ static void remove_peer_locked(webrtc_signaling_server_t *server, webrtc_peer_t 
     server->peers_tail = peer->prev;
   }
   server->peer_count--;
-  release_source_locked(server, peer, cmeta_monotonic_ms());
+  release_source_locked(server, peer, monotonic_ms());
 
   free_outbox_locked(peer);
   if (peer->id) {
@@ -1390,9 +1415,9 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   tstr err = NULL;
   tstr authorized_peer_id = NULL;
   int is_join = 0;
-  uint64_t now_ms = cmeta_monotonic_ms();
+  uint64_t now_ms = monotonic_ms();
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   if (!peer->closing &&
       !consume_peer_message_budget_locked(server, peer, now_ms)) {
     err = create_error_message("Message rate limit exceeded");
@@ -1401,11 +1426,11 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
     close_peer_locked(peer);
   }
   if (peer->closing) {
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     tstr_free(err);
     return;
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 
   null_terminated = (char *)malloc(len + 1);
   if (!null_terminated) {
@@ -1417,12 +1442,12 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   if (((root = json_parse((const char *)((const uint8_t *)null_terminated), len)) ? 0 : -1) != 0 || !root ||
       json_type(root) != JSON_OBJECT) {
     err = create_error_message("Invalid JSON");
-    cmeta_mutex_lock(&server->mutex);
+    sync_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       send_json_message_locked(peer, err);
     }
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     tstr_free(err);
     free(null_terminated);
     if (root) {
@@ -1435,12 +1460,12 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   type_value = json_object_get(root, "type");
   if (!type_value || json_type(type_value) != JSON_STRING) {
     err = create_error_message("Missing type");
-    cmeta_mutex_lock(&server->mutex);
+    sync_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       send_json_message_locked(peer, err);
     }
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     tstr_free(err);
     json_free(root);
     root = NULL;
@@ -1463,14 +1488,14 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   if (is_join &&
       authorize_join_message(server, root, &authorized_peer_id) != 0) {
     err = create_error_message("Unauthorized join");
-    cmeta_mutex_lock(&server->mutex);
+    sync_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       server->authentication_rejections++;
       send_json_message_locked(peer, err);
       close_peer_locked(peer);
     }
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     tstr_free(err);
     json_free(root);
     root = NULL;
@@ -1478,9 +1503,9 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
     return;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   if (peer->closing) {
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     tstr_free(authorized_peer_id);
     json_free(root);
     root = NULL;
@@ -1510,7 +1535,7 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
     send_json_message_locked(peer, err);
     tstr_free(err);
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 
   tstr_free(authorized_peer_id);
   json_free(root);
@@ -1673,55 +1698,59 @@ static unsigned int signaling_source_rejection_http_status(
              : result == SIGNALING_SOURCE_REJECT_ADDRESS ? 400U : 503U;
 }
 
-static int signaling_websocket_open(
-    void *user, chttp_websocket *websocket,
-    const chttp_server_request_view *request,
-    chttp_server_response *response) {
-  webrtc_signaling_server_t *server = (webrtc_signaling_server_t *)user;
-  webrtc_peer_t *peer = NULL;
+static void signaling_websocket_terminal(
+    void *user, const chttp_response_outcome *outcome) {
+  webrtc_peer_t *peer = user;
+  webrtc_signaling_server_t *server = peer->server;
+  (void)outcome;
+
+  sync_mutex_lock(&server->mutex);
+  remove_peer_and_notify_locked(server, peer);
+  sync_mutex_unlock(&server->mutex);
+}
+
+CHTTP_ACTION(signaling_websocket_open);
+int signaling_websocket_open(void *user, const chttp_invocation *invocation) {
+  webrtc_signaling_server_t *server = user;
+  const chttp_server_request_view *request = chttp_invocation_request(invocation);
+  webrtc_peer_t *peer;
   signaling_source_key_t source_key;
-  signaling_source_admission_result_t source_result =
-      SIGNALING_SOURCE_ADMITTED;
-  chttp_server_websocket_session session = {0};
+  signaling_source_admission_result_t source_result;
   int status;
 
-  if (!server || !websocket || !request || !response) {
+  if (!server || !request) {
     return SALTS_EINVAL;
-  }
-  status = chttp_server_websocket_session_capture(websocket, &session);
-  if (status != SALTS_OK) {
-    return status;
   }
   memset(&source_key, 0, sizeof(source_key));
   if (source_policy_enabled(&server->config)) {
     signaling_source_identity_result_t identity_result =
         signaling_source_key_from_request(server, request, &source_key);
     if (identity_result != SIGNALING_SOURCE_IDENTITY_OK) {
-      cmeta_mutex_lock(&server->mutex);
+      sync_mutex_lock(&server->mutex);
       record_source_rejection_locked(
           server, SIGNALING_SOURCE_REJECT_ADDRESS);
-      cmeta_mutex_unlock(&server->mutex);
-      return chttp_server_reply(
-          response, signaling_identity_rejection_http_status(identity_result),
+      sync_mutex_unlock(&server->mutex);
+      return chttp_invocation_respond(
+          invocation, signaling_identity_rejection_http_status(identity_result),
           "text/plain", "Invalid source identity",
           sizeof("Invalid source identity") - 1U);
     }
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   if (!server->running) {
-    cmeta_mutex_unlock(&server->mutex);
-    return chttp_server_reply(response, 503U, "text/plain", "Server stopping",
+    sync_mutex_unlock(&server->mutex);
+    return chttp_invocation_respond(invocation, 503U, "text/plain", "Server stopping",
                               sizeof("Server stopping") - 1U);
   }
   if (source_policy_enabled(&server->config)) {
     source_result = bind_source_connection_locked(
-        server, &source_key, cmeta_monotonic_ms());
+        server, &source_key, monotonic_ms());
     if (source_result != SIGNALING_SOURCE_ADMITTED) {
       record_source_rejection_locked(server, source_result);
-      cmeta_mutex_unlock(&server->mutex);
-      return chttp_server_reply(
-          response, signaling_source_rejection_http_status(source_result),
+      sync_mutex_unlock(&server->mutex);
+      return chttp_invocation_respond(
+          invocation, signaling_source_rejection_http_status(source_result),
           "text/plain", "Connection rejected", sizeof("Connection rejected") - 1U);
     }
   }
@@ -1729,34 +1758,44 @@ static int signaling_websocket_open(
   peer = (webrtc_peer_t *)calloc(1, sizeof(*peer));
   if (!peer) {
     if (source_policy_enabled(&server->config)) {
-      release_source_key_locked(server, &source_key, cmeta_monotonic_ms());
+      release_source_key_locked(server, &source_key, monotonic_ms());
     }
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     return SALTS_ENOMEM;
   }
   peer->server = server;
-  peer->session = session;
   peer->source_key = source_key;
   peer->source_admitted = source_policy_enabled(&server->config);
   peer->id = generate_peer_id_locked(server);
   if (!peer->id) {
-    release_source_locked(server, peer, cmeta_monotonic_ms());
-    cmeta_mutex_unlock(&server->mutex);
+    release_source_locked(server, peer, monotonic_ms());
+    sync_mutex_unlock(&server->mutex);
     free(peer);
     return SALTS_ENOMEM;
   }
-  peer->connected_at = cmeta_monotonic_ms();
+  peer->connected_at = monotonic_ms();
   peer->last_activity = peer->connected_at;
   peer->rate_last_refill_ms = peer->connected_at;
   peer->rate_tokens =
       (uint64_t)server->config.message_burst * SIGNALING_RATE_TOKEN_UNITS;
   if (hash_map_put(&server->local_peers, &peer->id, &peer) != STL_OK) {
-    release_source_locked(server, peer, cmeta_monotonic_ms());
-    cmeta_mutex_unlock(&server->mutex);
+    release_source_locked(server, peer, monotonic_ms());
+    sync_mutex_unlock(&server->mutex);
     tstr_free(peer->id);
     free(peer);
     return SALTS_ENOMEM;
   }
+  status = chttp_invocation_websocket_attach(invocation, &peer->session,
+                                             signaling_websocket_terminal, peer);
+  if (status != SALTS_OK) {
+    hash_map_remove(&server->local_peers, &peer->id, NULL);
+    release_source_locked(server, peer, monotonic_ms());
+    sync_mutex_unlock(&server->mutex);
+    tstr_free(peer->id);
+    free(peer);
+    return status;
+  }
+
   peer->prev = server->peers_tail;
   if (server->peers_tail) {
     server->peers_tail->next = peer;
@@ -1766,49 +1805,52 @@ static int signaling_websocket_open(
     server->peers_head = peer;
   }
   server->peer_count++;
-  cmeta_mutex_unlock(&server->mutex);
-  return SALTS_OK;
+  sync_mutex_unlock(&server->mutex);
+  return chttp_invocation_websocket_accept(invocation);
 }
 
-static void signaling_websocket_event(void *user, chttp_websocket *websocket,
-                                      const chttp_websocket_event *event) {
-  webrtc_signaling_server_t *server = (webrtc_signaling_server_t *)user;
-  chttp_server_websocket_session session = {0};
+CHTTP_WEBSOCKET_EVENT_ACTION(signaling_websocket_event);
+int signaling_websocket_event(void *user, const chttp_websocket_event_view *scope) {
+  webrtc_signaling_server_t *server = user;
+  const chttp_websocket_event *event;
   webrtc_peer_t *peer;
-  if (!server || !websocket || !event ||
-      chttp_server_websocket_session_capture(websocket, &session) != SALTS_OK) {
-    return;
+
+  if (!server || !scope || !scope->peer || !scope->event) {
+    return SALTS_EINVAL;
   }
-  cmeta_mutex_lock(&server->mutex);
-  peer = find_peer_by_session_locked(server, &session);
+  event = scope->event;
+  if (event->kind != CHTTP_WEBSOCKET_EVENT_MESSAGE &&
+      event->kind != CHTTP_WEBSOCKET_EVENT_CLOSE) {
+    return SALTS_OK;
+  }
+
+  sync_mutex_lock(&server->mutex);
+  peer = find_peer_by_session_locked(server, scope->peer);
   if (!peer) {
-    cmeta_mutex_unlock(&server->mutex);
-    return;
+    sync_mutex_unlock(&server->mutex);
+    return SALTS_EPROTO;
   }
   if (event->kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
-    remove_peer_and_notify_locked(server, peer);
-    cmeta_mutex_unlock(&server->mutex);
-    return;
-  }
-  if (event->kind != CHTTP_WEBSOCKET_EVENT_MESSAGE) {
-    cmeta_mutex_unlock(&server->mutex);
-    return;
+    peer->closing = 1;
+    sync_mutex_unlock(&server->mutex);
+    return SALTS_OK;
   }
   if (event->message_type != CHTTP_WEBSOCKET_MESSAGE_TEXT) {
     close_peer_locked(peer);
-    cmeta_mutex_unlock(&server->mutex);
-    return;
+    sync_mutex_unlock(&server->mutex);
+    return SALTS_OK;
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   handle_message(server, peer, (const char *)event->data, event->size);
+  return SALTS_OK;
 }
 
 static void signaling_cleanup_thread_main(void *arg) {
   webrtc_signaling_server_t *server = (webrtc_signaling_server_t *)arg;
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   while (!server->cleanup_stop_requested) {
     webrtc_peer_t *peer;
-    uint64_t now_ms = cmeta_monotonic_ms();
+    uint64_t now_ms = monotonic_ms();
     for (peer = server->peers_head; peer; peer = peer->next) {
       if (!peer->closing) {
         (void)flush_peer_outbox_locked(peer);
@@ -1817,12 +1859,12 @@ static void signaling_cleanup_thread_main(void *arg) {
     expire_peers_locked(server, now_ms);
     expire_source_states_locked(server, now_ms);
     if (!server->cleanup_stop_requested) {
-      (void)cmeta_cond_timedwait(
+      (void)sync_cond_timedwait(
           &server->state_changed, &server->mutex,
           (uint64_t)SIGNALING_CLEANUP_INTERVAL_MS * UINT64_C(1000000));
     }
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 }
 
 static native_io_backend_kind signaling_backend(void) {
@@ -1850,7 +1892,8 @@ static int signaling_next_power_of_two(size_t minimum, size_t *out) {
   return SALTS_OK;
 }
 
-static int signaling_http_admission(
+CHTTP_ADMISSION_ACTION(signaling_http_admission);
+int signaling_http_admission(
     void *user, const chttp_server_request_view *request,
     chttp_server_admission_result *result) {
   webrtc_signaling_server_t *server =
@@ -1872,23 +1915,23 @@ static int signaling_http_admission(
   identity_result =
       signaling_source_key_from_request(server, request, &source_key);
   if (identity_result != SIGNALING_SOURCE_IDENTITY_OK) {
-    cmeta_mutex_lock(&server->mutex);
+    sync_mutex_lock(&server->mutex);
     record_source_rejection_locked(
         server, SIGNALING_SOURCE_REJECT_ADDRESS);
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     result->status_code =
         signaling_identity_rejection_http_status(identity_result);
     return SALTS_OK;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   if (!server->running) {
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     result->status_code = 503U;
     return SALTS_OK;
   }
   source_result = pre_admit_source_locked(
-      server, &source_key, cmeta_monotonic_ms());
+      server, &source_key, monotonic_ms());
   if (source_result != SIGNALING_SOURCE_ADMITTED) {
     record_source_rejection_locked(server, source_result);
     result->status_code =
@@ -1898,7 +1941,7 @@ static int signaling_http_admission(
       result->retry_after_seconds = 1U;
     }
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   return SALTS_OK;
 }
 
@@ -1920,11 +1963,17 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
   size_t buffer_capacity;
   size_t per_connection_buffer;
   cnet_tls_server_config tls = {0};
-  chttp_server_config config;
-  chttp_server_websocket_options websocket;
+  chttp_application_config app = chttp_application_config_default();
+  const size_t worker_bytes_per_peer =
+      SIGNALING_MAX_TARGET_BYTES + 2U * SIGNALING_MAX_HEADER_BYTES +
+      SIGNALING_MAX_REQUEST_BODY_BYTES + SIGNALING_MAX_RESPONSE_BODY_BYTES +
+      (2U * SIGNALING_MAX_HEADER_COUNT + 1U) * sizeof(chttp_header) +
+      CNET_WEBSOCKET_MAX_CONTROL_BYTES +
+      SIGNALING_WS_EVENT_CAPACITY * (message_bytes + sizeof(chttp_websocket_event));
   int status;
 
   if (connections > (size_t)INT_MAX || connections > SIZE_MAX / 2U ||
+      connections > SIZE_MAX / worker_bytes_per_peer ||
       message_bytes > SIZE_MAX - SIGNALING_RESPONSE_WIRE_OVERHEAD_BYTES) {
     return SALTS_ERANGE;
   }
@@ -1973,7 +2022,7 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
                            ? CNET_TLS_CLIENT_AUTH_REQUIRED
                            : CNET_TLS_CLIENT_AUTH_NONE};
   }
-  config = (chttp_server_config){
+  app.http = (chttp_server_config){
       .host = server->config.host ? server->config.host : "0.0.0.0",
       .port = server->config.port,
       .backlog = connections,
@@ -2011,33 +2060,37 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
       .max_buffered_response_body_bytes =
           SIGNALING_MAX_RESPONSE_BODY_BYTES,
       .buffer_capacity_bytes = buffer_capacity};
-  status = chttp_server_init(&server->http, &config);
-  if (status != SALTS_OK) {
-    return status;
-  }
-  server->http_initialized = 1;
-  status = chttp_server_set_admission(
-      &server->http, signaling_http_admission, server);
-  if (status != SALTS_OK) {
-    (void)chttp_server_destroy(&server->http);
-    server->http_initialized = 0;
-    return status;
-  }
-  websocket = (chttp_server_websocket_options){
-      .size = sizeof(websocket),
-      .path = "/",
-      .max_frame_bytes = message_bytes,
-      .max_message_bytes = message_bytes,
-      .max_buffered_input_bytes = message_bytes + 64U,
-      .on_open = signaling_websocket_open,
-      .on_event = signaling_websocket_event,
-      .user = server};
-  status = chttp_server_websocket_with(&server->http, &websocket);
-  if (status != SALTS_OK) {
-    (void)chttp_server_destroy(&server->http);
-    server->http_initialized = 0;
-  }
-  return status;
+  server->http_provider = (salts_configurator_provider_binding){
+      sizeof(server->http_provider), SALTS_CONFIGURATOR_PROVIDER_BINDING_ABI_VERSION,
+      cmeta_component_meta(TurboSignalingWebSocket), server, NULL,
+      signaling_http_provider_create, NULL, NULL};
+  server->http_deployment = (salts_configurator_deployment){
+      &server->http_provider, NULL, NULL};
+  server->http_websocket = (chttp_websocket_endpoint){
+      .opening = CHTTP_GET("/", signaling_websocket_open),
+      .event_abi = FunctionAbi(signaling_websocket_event), .event = signaling_websocket_event,
+      .event_capacity = SIGNALING_WS_EVENT_CAPACITY,
+      .max_frame_bytes = message_bytes, .max_message_bytes = message_bytes,
+      .max_buffered_input_bytes = message_bytes + 64U};
+  server->http_controller = (chttp_controller){
+      .component_id = "TurboSignalingWebSocket",
+      .receiver = cmeta_reflected_data(webrtc_signaling_server_t),
+      .websockets = &server->http_websocket, .websocket_count = 1U};
+  server->http_admission = (chttp_admission){
+      .component_id = server->http_controller.component_id,
+      .receiver = server->http_controller.receiver,
+      .abi = FunctionAbi(signaling_http_admission), .invoke = signaling_http_admission};
+  app.workers = (chttp_worker_config){
+      .workers = 1U, .capacity = connections, .retained_bytes = connections * worker_bytes_per_peer,
+      .reply_bytes = SIGNALING_MAX_RESPONSE_BODY_BYTES,
+      .header_capacity = SIGNALING_MAX_HEADER_COUNT, .header_bytes = SIGNALING_MAX_HEADER_BYTES};
+  app.components = &server->http_deployment;
+  app.component_count = 1U;
+  app.dependency_capacity = 1U;
+  app.controllers = &server->http_controller;
+  app.controller_count = 1U;
+  app.admission = &server->http_admission;
+  return chttp_application_init(&server->http, &app);
 }
 
 webrtc_signaling_server_t *webrtc_signaling_create(
@@ -2130,8 +2183,8 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     return NULL;
   }
 
-  cmeta_mutex_init(&server->mutex);
-  cmeta_cond_init(&server->state_changed);
+  sync_mutex_init(&server->mutex);
+  sync_cond_init(&server->state_changed);
   if (hash_map_init_bytes(
           &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
           sizeof(webrtc_peer_t *), CMETA_ALIGNOF(webrtc_peer_t *),
@@ -2158,8 +2211,8 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     hash_map_destroy(&server->local_peers);
     hash_map_destroy(&server->local_rooms);
     destroy_source_states(server);
-    cmeta_cond_destroy(&server->state_changed);
-    cmeta_mutex_destroy(&server->mutex);
+    sync_cond_destroy(&server->state_changed);
+    sync_mutex_destroy(&server->mutex);
     turbo_media_revocation_projection_destroy(
         server->revocation_projection);
     server->revocation_projection = NULL;
@@ -2167,6 +2220,7 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     return NULL;
   }
 
+  sync_mutex_init(&server->lifecycle_mutex);
   if (config->use_tls &&
       (!config->cert_file || config->cert_file[0] == '\0' ||
        !config->key_file || config->key_file[0] == '\0')) {
@@ -2176,6 +2230,37 @@ webrtc_signaling_server_t *webrtc_signaling_create(
   return server;
 }
 
+/* lifecycle_mutex serializes listener operations. The Application must be
+ * joined without mutex so terminal callbacks can return their source credit. */
+static void signaling_stop_listener(webrtc_signaling_server_t *server) {
+  webrtc_peer_t *peer;
+  int status;
+
+  sync_mutex_lock(&server->mutex);
+  server->running = 0;
+  server->cleanup_stop_requested = 1;
+  sync_cond_broadcast(&server->state_changed);
+  for (peer = server->peers_head; peer; peer = peer->next) {
+    close_peer_locked(peer);
+  }
+  sync_mutex_unlock(&server->mutex);
+
+  if (server->cleanup_thread_started) {
+    (void)sync_thread_join(&server->cleanup_thread);
+    sync_thread_destroy(&server->cleanup_thread);
+    server->cleanup_thread_started = 0;
+  }
+  if (server->http.impl) {
+    status = chttp_application_close(&server->http, SIGNALING_STOP_TIMEOUT_MS);
+    if (status == SALTS_ETIMEDOUT) {
+      status = chttp_application_close(&server->http, 0U);
+    }
+    if (status != SALTS_OK) {
+      TLOG_ERRORF("Failed to stop signaling CHTTP server: {}", status);
+    }
+  }
+}
+
 int webrtc_signaling_start(webrtc_signaling_server_t *server) {
   uint16_t bound_port = 0U;
   int status;
@@ -2183,98 +2268,50 @@ int webrtc_signaling_start(webrtc_signaling_server_t *server) {
   if (!server) {
     return -1;
   }
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->lifecycle_mutex);
   if (server->running) {
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->lifecycle_mutex);
     return 0;
   }
-  if (server->http_initialized || server->cleanup_thread_started) {
-    cmeta_mutex_unlock(&server->mutex);
+  if (server->http.impl) {
+    sync_mutex_unlock(&server->lifecycle_mutex);
     return -1;
   }
-  cmeta_mutex_unlock(&server->mutex);
 
   status = signaling_http_init(server);
-  if (status != SALTS_OK) {
-    TLOG_ERRORF("Failed to initialize signaling CHTTP server: {}", status);
-    return -1;
+  if (status == SALTS_OK) {
+    sync_mutex_lock(&server->mutex);
+    server->running = 1;
+    server->cleanup_stop_requested = 0;
+    sync_mutex_unlock(&server->mutex);
+    status = chttp_application_start(&server->http);
   }
-  cmeta_mutex_lock(&server->mutex);
-  server->running = 1;
-  server->cleanup_stop_requested = 0;
-  cmeta_mutex_unlock(&server->mutex);
-  status = chttp_server_start(&server->http);
+  if (status == SALTS_OK && signaling_cleanup_enabled(server)) {
+    status = sync_thread_create(&server->cleanup_thread,
+                                 signaling_cleanup_thread_main, server);
+    server->cleanup_thread_started = status == SALTS_OK;
+  }
   if (status != SALTS_OK) {
-    cmeta_mutex_lock(&server->mutex);
-    server->running = 0;
-    cmeta_mutex_unlock(&server->mutex);
-    (void)chttp_server_destroy(&server->http);
-    server->http_initialized = 0;
+    signaling_stop_listener(server);
+    sync_mutex_unlock(&server->lifecycle_mutex);
     TLOG_ERRORF("Failed to start signaling CHTTP server: {}", status);
     return -1;
   }
-  if (signaling_cleanup_enabled(server)) {
-    status = cmeta_thread_create(&server->cleanup_thread,
-                                 signaling_cleanup_thread_main, server);
-    if (status != SALTS_OK) {
-      webrtc_signaling_stop(server);
-      TLOG_ERRORF("Failed to start signaling cleanup thread: {}", status);
-      return -1;
-    }
-    server->cleanup_thread_started = 1;
-  }
-  (void)chttp_server_port(&server->http, &bound_port);
+
+  (void)chttp_application_port(&server->http, &bound_port);
   TLOG_INFOF("Signaling server listening on {}://{}:{}", server->config.use_tls ? "wss" : "ws",
             server->config.host ? server->config.host : "0.0.0.0", bound_port);
+  sync_mutex_unlock(&server->lifecycle_mutex);
   return 0;
 }
 
 void webrtc_signaling_stop(webrtc_signaling_server_t *server) {
-  webrtc_peer_t *peer = NULL;
-  int status;
-
   if (!server) {
     return;
   }
-  cmeta_mutex_lock(&server->mutex);
-  if (!server->running && !server->http_initialized &&
-      !server->cleanup_thread_started) {
-    cmeta_mutex_unlock(&server->mutex);
-    return;
-  }
-  server->running = 0;
-  server->cleanup_stop_requested = 1;
-  cmeta_cond_broadcast(&server->state_changed);
-  for (peer = server->peers_head; peer; peer = peer->next) {
-    close_peer_locked(peer);
-  }
-  cmeta_mutex_unlock(&server->mutex);
-  if (server->cleanup_thread_started) {
-    (void)cmeta_thread_join(&server->cleanup_thread);
-    cmeta_thread_destroy(&server->cleanup_thread);
-    server->cleanup_thread_started = 0;
-  }
-  if (server->http_initialized) {
-    status = chttp_server_stop(&server->http, SIGNALING_STOP_TIMEOUT_MS);
-    if (status == SALTS_ETIMEDOUT) {
-      status = chttp_server_stop(&server->http, 0U);
-    }
-    if (status != SALTS_OK) {
-      TLOG_ERRORF("Failed to stop signaling CHTTP server: {}", status);
-    }
-    status = chttp_server_destroy(&server->http);
-    if (status != SALTS_OK) {
-      TLOG_ERRORF("Failed to destroy signaling CHTTP server: {}", status);
-    } else {
-      server->http_initialized = 0;
-    }
-  }
-  cmeta_mutex_lock(&server->mutex);
-  while (server->peers_head) {
-    remove_peer_and_notify_locked(server, server->peers_head);
-  }
-  server->cleanup_stop_requested = 0;
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_lock(&server->lifecycle_mutex);
+  signaling_stop_listener(server);
+  sync_mutex_unlock(&server->lifecycle_mutex);
 }
 
 void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
@@ -2283,12 +2320,16 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   }
 
   webrtc_signaling_stop(server);
+  if (server->http.impl) {
+    return;
+  }
 
+  sync_mutex_destroy(&server->lifecycle_mutex);
   hash_map_destroy(&server->local_peers);
   hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
-  cmeta_cond_destroy(&server->state_changed);
-  cmeta_mutex_destroy(&server->mutex);
+  sync_cond_destroy(&server->state_changed);
+  sync_mutex_destroy(&server->mutex);
   turbo_media_revocation_projection_destroy(
       server->revocation_projection);
   server->revocation_projection = NULL;
@@ -2298,7 +2339,7 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
     server->tenant_quota_projection = NULL;
   }
   if (server->tenant_quota_mutex_initialized) {
-    cmeta_mutex_destroy(&server->tenant_quota_mutex);
+    sync_mutex_destroy(&server->tenant_quota_mutex);
     server->tenant_quota_mutex_initialized = 0;
   }
   free(server);
@@ -2319,18 +2360,18 @@ int signaling_tenant_quota_enable(
     return -1;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   if (server->running || server->tenant_quota_projection ||
       server->tenant_quota_mutex_initialized) {
-    cmeta_mutex_unlock(&server->mutex);
+    sync_mutex_unlock(&server->mutex);
     turbo_media_tenant_quota_projection_destroy(projection);
     return -1;
   }
-  cmeta_mutex_init(&server->tenant_quota_mutex);
+  sync_mutex_init(&server->tenant_quota_mutex);
   server->tenant_quota_mutex_initialized = 1;
   server->tenant_quota_projection = projection;
   memcpy(server->tenant_quota_node_id, node_id, strlen(node_id) + 1U);
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   return 0;
 }
 
@@ -2352,11 +2393,11 @@ signaling_tenant_quota_apply_snapshot(
       strcmp(server->tenant_quota_node_id, node_id) != 0) {
     return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
   }
-  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  sync_mutex_lock(&server->tenant_quota_mutex);
   result = turbo_media_tenant_quota_apply_snapshot(
       server->tenant_quota_projection, epoch, sequence,
       leases, lease_count);
-  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  sync_mutex_unlock(&server->tenant_quota_mutex);
   return result;
 }
 
@@ -2371,10 +2412,10 @@ signaling_tenant_quota_apply_update(
       strcmp(server->tenant_quota_node_id, node_id) != 0) {
     return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
   }
-  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  sync_mutex_lock(&server->tenant_quota_mutex);
   result = turbo_media_tenant_quota_apply_update(
       server->tenant_quota_projection, epoch, sequence, lease);
-  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  sync_mutex_unlock(&server->tenant_quota_mutex);
   return result;
 }
 
@@ -2387,11 +2428,11 @@ int signaling_tenant_quota_status(
   if (!signaling_tenant_quota_enabled(server)) {
     return -1;
   }
-  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  sync_mutex_lock(&server->tenant_quota_mutex);
   result = turbo_media_tenant_quota_status(
       server->tenant_quota_projection, out_synchronized,
       out_epoch, out_sequence, out_lease_count);
-  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  sync_mutex_unlock(&server->tenant_quota_mutex);
   return result;
 }
 
@@ -2405,11 +2446,11 @@ signaling_tenant_quota_reserve(
   if (!signaling_tenant_quota_enabled(server)) {
     return TURBO_MEDIA_TENANT_QUOTA_RESERVE_UNKNOWN;
   }
-  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  sync_mutex_lock(&server->tenant_quota_mutex);
   result = turbo_media_tenant_quota_reserve(
       server->tenant_quota_projection, tenant_id, resource,
       amount, now_unix_ms);
-  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  sync_mutex_unlock(&server->tenant_quota_mutex);
   return result;
 }
 
@@ -2422,10 +2463,10 @@ int signaling_tenant_quota_release(
   if (!signaling_tenant_quota_enabled(server)) {
     return -1;
   }
-  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  sync_mutex_lock(&server->tenant_quota_mutex);
   result = turbo_media_tenant_quota_release(
       server->tenant_quota_projection, tenant_id, resource, amount);
-  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  sync_mutex_unlock(&server->tenant_quota_mutex);
   return result;
 }
 
@@ -2434,9 +2475,9 @@ int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server) {
   if (!server) {
     return 0;
   }
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   count = server->peer_count;
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   return count;
 }
 
@@ -2446,11 +2487,11 @@ int webrtc_signaling_get_port(webrtc_signaling_server_t *server,
   if (!server || !out_port) {
     return -1;
   }
-  cmeta_mutex_lock(&server->mutex);
-  status = server->running && server->http_initialized
-               ? chttp_server_port(&server->http, out_port)
+  sync_mutex_lock(&server->lifecycle_mutex);
+  status = server->running
+               ? chttp_application_port(&server->http, out_port)
                : SALTS_EBUSY;
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->lifecycle_mutex);
   return status == SALTS_OK ? 0 : -1;
 }
 
@@ -2498,9 +2539,9 @@ int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *ro
     return -1;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   sent = broadcast_locked(server, room, from, message);
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   return sent;
 }
 
@@ -2509,9 +2550,9 @@ int webrtc_signaling_get_room_count(webrtc_signaling_server_t *server) {
   if (!server) {
     return 0;
   }
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   count = server->room_count;
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   return count;
 }
 
@@ -2525,13 +2566,13 @@ char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server) {
     return NULL;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   json = tstr_cat(json, "{\"rooms\":[");
   for (room = server->rooms_head; room; room = room->next) {
     tstr escaped_room_id = NULL;
     const char *room_id_json = json_string_maybe_escape(room->id, &escaped_room_id);
     if (!room_id_json) {
-      cmeta_mutex_unlock(&server->mutex);
+      sync_mutex_unlock(&server->mutex);
       tstr_free(json);
       return NULL;
     }
@@ -2544,7 +2585,7 @@ char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server) {
     added++;
   }
   json = tstr_cat_fmt(json, "],\"total\":%d}", server->room_count);
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 
   result = tstr_to_cstr(json);
   tstr_free(json);
@@ -2560,12 +2601,12 @@ char *webrtc_signaling_get_room_peers_json(webrtc_signaling_server_t *server, co
     return NULL;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   room = find_room_locked(server, room_id);
   if (room) {
     list = create_peer_list_message_locked(room);
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 
   if (!list) {
     return NULL;
@@ -2588,7 +2629,7 @@ int webrtc_signaling_kick_peer(webrtc_signaling_server_t *server, const char *ro
     return -1;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   peer = find_peer_by_id_locked(server, peer_id);
   if (peer && peer->room && strcmp(peer->room, room_id) == 0) {
     reason_json = json_string_maybe_escape(
@@ -2601,7 +2642,7 @@ int webrtc_signaling_kick_peer(webrtc_signaling_server_t *server, const char *ro
     }
     close_peer_locked(peer);
   }
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
   tstr_free(msg);
   tstr_free(escaped_reason);
   return ret;
@@ -2615,7 +2656,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
     return NULL;
   }
 
-  cmeta_mutex_lock(&server->mutex);
+  sync_mutex_lock(&server->mutex);
   json = tstr_cat_fmt(json,
                       "{\"peer_count\":%d,\"room_count\":%d,"
                       "\"source_state_count\":%zu,\"timestamp\":%llu,"
@@ -2627,7 +2668,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
                       "\"source_concurrency\":%llu}}",
                       server->peer_count, server->room_count,
                       hash_map_size(&server->source_states),
-                      (unsigned long long)cmeta_monotonic_ms(), server->running,
+                      (unsigned long long)monotonic_ms(), server->running,
                       (unsigned long long)server->authentication_rejections,
                       (unsigned long long)server->join_timeout_rejections,
                       (unsigned long long)server->message_rate_rejections,
@@ -2636,7 +2677,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
                       (unsigned long long)server->source_capacity_rejections,
                       (unsigned long long)server->source_rate_rejections,
                       (unsigned long long)server->source_concurrency_rejections);
-  cmeta_mutex_unlock(&server->mutex);
+  sync_mutex_unlock(&server->mutex);
 
   result = tstr_to_cstr(json);
   tstr_free(json);

@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <turbo_export.h>
+#include <turbo_rtp_packet.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,9 +20,6 @@ extern "C" {
  * Constants
  * ============================================================================= */
 
-#define RTP_VERSION 2
-#define RTP_HEADER_SIZE 12 /* Fixed header without CSRC */
-#define RTP_MAX_CSRC 15
 #define RTP_MAX_PACKET 1500 /* MTU-safe */
 #define RTP_SEQ_MOD (1 << 16)
 
@@ -59,64 +57,6 @@ extern "C" {
 /* Clock rates */
 #define RTP_CLOCK_AUDIO 48000 /* Opus default */
 #define RTP_CLOCK_VIDEO 90000 /* Standard video clock */
-
-/* =============================================================================
- * RTP Packet Structures
- * ============================================================================= */
-
-/**
- * RTP Fixed Header (RFC 3550 Section 5.1)
- *
- *  0                   1                   2                   3
- *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |V=2|P|X|  CC   |M|     PT      |       sequence number         |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                           timestamp                           |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |           synchronization source (SSRC) identifier            |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- */
-typedef struct {
-  uint8_t version : 2;      /* Protocol version (2) */
-  uint8_t padding : 1;      /* Padding flag */
-  uint8_t extension : 1;    /* Extension header present */
-  uint8_t csrc_count : 4;   /* CSRC count */
-  uint8_t marker : 1;       /* Marker bit (frame boundary) */
-  uint8_t payload_type : 7; /* Payload type */
-  uint16_t sequence;        /* Sequence number */
-  uint32_t timestamp;       /* RTP timestamp */
-  uint32_t ssrc;            /* Synchronization source */
-} rtp_header_t;
-
-/**
- * RTP Header Extension (RFC 8285 - One-Byte Header)
- */
-typedef struct {
-  uint8_t id;       /* Extension ID (1-14) */
-  uint8_t length;   /* Length in bytes (0-16) */
-  uint8_t data[16]; /* Extension data */
-} rtp_extension_t;
-
-/**
- * RTP Packet (header + payload)
- */
-typedef struct {
-  rtp_header_t header;
-  uint32_t csrc[RTP_MAX_CSRC]; /* Contributing sources */
-
-  /* Header extensions */
-  rtp_extension_t extensions[8]; /* Up to 8 extensions */
-  int extension_count;
-
-  uint8_t *payload;   /* Payload data (points into buffer) */
-  size_t payload_len; /* Payload length */
-
-  /* Buffer management */
-  uint8_t *buffer;   /* Raw packet buffer */
-  size_t buffer_len; /* Total buffer length */
-  int owns_buffer;   /* 1 if we should free buffer */
-} rtp_packet_t;
 
 /* =============================================================================
  * RTCP Packet Structures
@@ -326,83 +266,6 @@ typedef struct {
 } rtp_session_stats_t;
 
 /* =============================================================================
- * RTP Packet Functions
- * ============================================================================= */
-
-/**
- * Initialize an RTP packet structure
- */
-TURBO_MEDIA_API void rtp_packet_init(rtp_packet_t *pkt);
-
-/**
- * Build RTP packet from header and payload
- *
- * @param pkt       Packet structure to fill
- * @param pt        Payload type
- * @param seq       Sequence number
- * @param ts        RTP timestamp
- * @param ssrc      Synchronization source
- * @param marker    Marker bit (frame boundary)
- * @param payload   Payload data
- * @param payload_len Payload length
- * @param buffer    Buffer to write packet into
- * @param buffer_len Buffer size
- * @return          Bytes written, or -1 on error
- */
-TURBO_MEDIA_API int rtp_packet_build(rtp_packet_t *pkt, uint8_t pt, uint16_t seq, uint32_t ts,
-                               uint32_t ssrc, int marker, const uint8_t *payload,
-                               size_t payload_len, uint8_t *buffer, size_t buffer_len);
-
-/**
- * Parse RTP packet from buffer
- *
- * @param pkt       Packet structure to fill
- * @param buffer    Buffer containing RTP packet
- * @param buffer_len Buffer length
- * @return          0 on success, -1 on error
- */
-TURBO_MEDIA_API int rtp_packet_parse(rtp_packet_t *pkt, const uint8_t *buffer, size_t buffer_len);
-
-/**
- * Serialize RTP packet to buffer
- *
- * @param pkt       Packet to serialize
- * @param buffer    Output buffer
- * @param buffer_len Buffer size
- * @return          Bytes written, or -1 on error
- */
-TURBO_MEDIA_API int rtp_packet_serialize(const rtp_packet_t *pkt, uint8_t *buffer, size_t buffer_len);
-
-/**
- * Free RTP packet resources (if owns_buffer is set)
- */
-TURBO_MEDIA_API void rtp_packet_free(rtp_packet_t *pkt);
-
-/**
- * Add extension to RTP packet
- *
- * @param pkt       RTP packet
- * @param id        Extension ID (1-14)
- * @param data      Extension data
- * @param len       Data length (0-16 bytes)
- * @return          0 on success, -1 on error
- */
-TURBO_MEDIA_API int rtp_packet_add_extension(rtp_packet_t *pkt, uint8_t id, const uint8_t *data,
-                                       uint8_t len);
-
-/**
- * Get extension from RTP packet
- *
- * @param pkt       RTP packet
- * @param id        Extension ID to find
- * @param data      Output: extension data
- * @param len       Output: data length
- * @return          0 on success, -1 if not found
- */
-TURBO_MEDIA_API int rtp_packet_get_extension(const rtp_packet_t *pkt, uint8_t id, uint8_t *data,
-                                       uint8_t *len);
-
-/* =============================================================================
  * RTCP Packet Functions
  * ============================================================================= */
 
@@ -576,16 +439,6 @@ TURBO_MEDIA_API void rtp_session_set_payload_type(rtp_session_t *session, uint8_
  * Get current SSRC
  */
 TURBO_MEDIA_API uint32_t rtp_session_get_ssrc(const rtp_session_t *session);
-
-/**
- * Check if sequence number is newer (handles wraparound)
- */
-TURBO_MEDIA_API int rtp_seq_newer(uint16_t s1, uint16_t s2);
-
-/**
- * Calculate sequence number difference (handles wraparound)
- */
-TURBO_MEDIA_API int rtp_seq_diff(uint16_t s1, uint16_t s2);
 
 /* =============================================================================
  * TWCC Functions

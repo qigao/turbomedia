@@ -2,9 +2,10 @@
 
 #include "ivr_thread.h"
 
+#include <chttp_app/application.h>
 #include <http_client/http.h>
-#include <platform.h>
-#include <salts/clock.h>
+#include <core/platform.h>
+#include <core/clock.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,9 @@ enum {
     IVR_CONTROL_WS_SERVER_RESTART_MAX_MS = 30000,
     IVR_CONTROL_WS_IDENTITY_CAPACITY = 128,
     IVR_CONTROL_WS_HANDSHAKE_HEADER_BYTES = 16 * 1024,
+    IVR_CONTROL_WS_HANDSHAKE_TARGET_BYTES = 512,
+    IVR_CONTROL_WS_EVENT_CAPACITY = 4,
+    IVR_CONTROL_WS_WORKER_OVERHEAD_BYTES = 4096,
     IVR_CONTROL_WS_CLOSE_POLICY_VIOLATION = 1008,
     IVR_CONTROL_WS_CLOSE_OVERLOADED = 1013
 };
@@ -71,7 +75,11 @@ struct ivr_control_ws_client_s {
 };
 
 struct ivr_control_ws_server_s {
-    chttp_server server;
+    chttp_application server;
+    salts_configurator_provider_binding http_provider;
+    salts_configurator_deployment http_deployment;
+    chttp_controller http_controller;
+    chttp_websocket_endpoint http_endpoint;
     char *host;
     char *path;
     uint16_t port;
@@ -97,13 +105,27 @@ struct ivr_control_ws_server_s {
     atomic_int started;
 };
 
-static int ivr_control_ws_server_open(
-    void *context, chttp_websocket *websocket,
-    const chttp_server_request_view *request,
-    chttp_server_response *response);
-static void ivr_control_ws_server_event(
-    void *context, chttp_websocket *websocket,
-    const chttp_websocket_event *event);
+cmeta_reflect_data(ivr_control_ws_server_t, "turbomedia.ivr.ControlWebSocket",
+                   cmeta_field(int, has_tls));
+cmeta_component_empty(TurboIvrControlWebSocket);
+
+CHTTP_ACTION(ivr_control_ws_server_open);
+CHTTP_WEBSOCKET_EVENT_ACTION(ivr_control_ws_server_ready);
+CHTTP_WEBSOCKET_EVENT_ACTION(ivr_control_ws_server_event);
+
+static cmeta_status ivr_control_ws_provider_create(
+    void *user, const cmeta_data_desc *data, const void *config,
+    const salts_configurator_dependency *dependencies, size_t count,
+    cmeta_object_ref *out) {
+    (void)data;
+    (void)config;
+    (void)dependencies;
+    if (count != 0u) {
+        return CMETA_INVALID_ARGUMENT;
+    }
+    return cmeta_object_borrow(out, user,
+                               cmeta_reflected_data(ivr_control_ws_server_t), NULL);
+}
 
 static char *ivr_control_ws_copy_string(const char *value) {
     size_t size;
@@ -173,12 +195,22 @@ static int ivr_control_ws_route_equal(const ivr_control_ws_route_t *left,
 
 static int ivr_control_ws_server_init_runtime(
     ivr_control_ws_server_t *server) {
-    chttp_server_config config;
-    chttp_server_websocket_options route;
-    size_t wire_capacity =
+    chttp_application_config application = chttp_application_config_default();
+    chttp_server_config config = {0};
+    const size_t wire_capacity =
         ivr_control_ws_wire_capacity(server->maximum_message_bytes);
-    int status;
-    memset(&config, 0, sizeof(config));
+    const size_t snapshot_bytes =
+        2u * IVR_CONTROL_WS_WORKER_OVERHEAD_BYTES +
+        IVR_CONTROL_WS_HANDSHAKE_HEADER_BYTES + IVR_CONTROL_WS_HANDSHAKE_TARGET_BYTES;
+    size_t retained_per_peer;
+
+    if (wire_capacity > (SIZE_MAX - snapshot_bytes) / IVR_CONTROL_WS_EVENT_CAPACITY) {
+        return SALTS_ERANGE;
+    }
+    retained_per_peer = snapshot_bytes + IVR_CONTROL_WS_EVENT_CAPACITY * wire_capacity;
+    if (server->peer_capacity > SIZE_MAX / retained_per_peer) {
+        return SALTS_ERANGE;
+    }
     config.host = server->host;
     config.port = server->port;
     config.backlog = server->peer_capacity;
@@ -208,7 +240,7 @@ static int ivr_control_ws_server_init_runtime(
     config.max_route_middleware_count = 1u;
     config.max_route_param_count = 1u;
     config.max_route_param_bytes = 128u;
-    config.max_target_bytes = 512u;
+    config.max_target_bytes = IVR_CONTROL_WS_HANDSHAKE_TARGET_BYTES;
     config.max_header_count = 32u;
     config.max_header_bytes = IVR_CONTROL_WS_HANDSHAKE_HEADER_BYTES;
     config.max_request_body_bytes = 1u;
@@ -218,33 +250,40 @@ static int ivr_control_ws_server_init_runtime(
     config.poll_slice_ms = IVR_CONTROL_WS_DEFAULT_IO_SLICE_MS;
     config.tls = server->has_tls ? &server->tls : NULL;
     config.enable_http2 = 0;
-    status = chttp_server_init(&server->server, &config);
-    if (status != SALTS_OK) {
-        fprintf(stderr,
-                "IVR control WebSocket server init failed: stage=chttp_init "
-                "status=%d tls=%d\n",
-                status, server->has_tls);
-        return status;
-    }
-    memset(&route, 0, sizeof(route));
-    route.size = sizeof(route);
-    route.path = server->path;
-    route.max_frame_bytes = server->maximum_message_bytes;
-    route.max_message_bytes = server->maximum_message_bytes;
-    route.max_buffered_input_bytes = wire_capacity;
-    route.on_open = ivr_control_ws_server_open;
-    route.on_event = ivr_control_ws_server_event;
-    route.user = server;
-    status = chttp_server_websocket_with(&server->server, &route);
-    if (status != SALTS_OK) {
-        fprintf(stderr,
-                "IVR control WebSocket server init failed: "
-                "stage=websocket_route status=%d\n",
-                status);
-        (void)chttp_server_destroy(&server->server);
-        memset(&server->server, 0, sizeof(server->server));
-    }
-    return status;
+    server->http_provider = (salts_configurator_provider_binding){
+        sizeof(server->http_provider), SALTS_CONFIGURATOR_PROVIDER_BINDING_ABI_VERSION,
+        cmeta_component_meta(TurboIvrControlWebSocket), server, NULL,
+        ivr_control_ws_provider_create, NULL, NULL};
+    server->http_deployment = (salts_configurator_deployment){&server->http_provider, NULL, NULL};
+    server->http_endpoint = (chttp_websocket_endpoint){
+        .opening = CHTTP_GET(server->path, ivr_control_ws_server_open),
+        .event_abi = FunctionAbi(ivr_control_ws_server_event),
+        .event = ivr_control_ws_server_event,
+        .event_capacity = IVR_CONTROL_WS_EVENT_CAPACITY,
+        .max_frame_bytes = server->maximum_message_bytes,
+        .max_message_bytes = server->maximum_message_bytes,
+        .max_buffered_input_bytes = wire_capacity,
+        .ready_abi = FunctionAbi(ivr_control_ws_server_ready),
+        .ready = ivr_control_ws_server_ready};
+    server->http_controller = (chttp_controller){
+        .component_id = "TurboIvrControlWebSocket",
+        .receiver = cmeta_reflected_data(ivr_control_ws_server_t),
+        .websockets = &server->http_endpoint,
+        .websocket_count = 1u};
+    application.http = config;
+    application.workers = (chttp_worker_config){
+        .workers = 1u,
+        .capacity = server->peer_capacity,
+        .retained_bytes = server->peer_capacity * retained_per_peer,
+        .reply_bytes = config.max_response_body_bytes,
+        .header_capacity = config.max_response_header_count,
+        .header_bytes = config.max_response_header_bytes};
+    application.components = &server->http_deployment;
+    application.component_count = 1u;
+    application.dependency_capacity = 1u;
+    application.controllers = &server->http_controller;
+    application.controller_count = 1u;
+    return chttp_application_init(&server->server, &application);
 }
 
 static void ivr_control_ws_server_clear_peers(
@@ -418,11 +457,11 @@ static int ivr_control_ws_client_send_front(
 
 static void ivr_control_ws_client_wait_reconnect(
     ivr_control_ws_client_t *client, uint32_t delay_ms) {
-    uint64_t deadline_ms = cmeta_monotonic_ms() + delay_ms;
+    uint64_t deadline_ms = monotonic_ms() + delay_ms;
     ivr_mutex_lock(&client->lock);
     while (!atomic_load_explicit(&client->stop_requested,
                                  memory_order_acquire)) {
-        uint64_t now_ms = cmeta_monotonic_ms();
+        uint64_t now_ms = monotonic_ms();
         if (now_ms >= deadline_ms) {
             break;
         }
@@ -765,45 +804,46 @@ static ivr_control_ws_peer_entry_t *ivr_control_ws_server_find_route_locked(
     return NULL;
 }
 
-static int ivr_control_ws_server_open(void *context,
-                                      chttp_websocket *websocket,
-                                      const chttp_server_request_view *request,
-                                      chttp_server_response *response) {
-    ivr_control_ws_server_t *server =
-        (ivr_control_ws_server_t *)context;
+int ivr_control_ws_server_open(void *context, const chttp_invocation *invocation) {
+    ivr_control_ws_server_t *server = context;
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     const char *identity;
-    size_t identity_size;
-    ivr_control_ws_route_t route;
-    ivr_control_ws_peer_entry_t *slot = NULL;
     int status;
 
-    if (!server || !websocket || !request || !response ||
-        request->http_major != 1u || request->method != CHTTP_METHOD_GET) {
+    if (!server || !request || request->http_major != 1u ||
+        request->method != CHTTP_METHOD_GET) {
         return SALTS_EPROTO;
     }
-    identity = chttp_server_request_header(
-        request, IVR_CONTROL_WS_IDENTITY_HEADER);
-    identity_size = identity ? strlen(identity) : 0u;
-    if (!identity_size || identity_size >= IVR_CONTROL_WS_IDENTITY_CAPACITY) {
+    identity = chttp_server_request_header(request, IVR_CONTROL_WS_IDENTITY_HEADER);
+    if (!identity || !*identity || strlen(identity) >= IVR_CONTROL_WS_IDENTITY_CAPACITY) {
         return SALTS_EPERM;
     }
     if (server->verify_identity &&
         !server->verify_identity(server->verify_identity_context,
-                                 request->peer_certificate_sha256,
-                                 identity)) {
+                                 request->peer_certificate_sha256, identity)) {
         return SALTS_EPERM;
     }
-    status = chttp_server_response_select_websocket_subprotocol(
-        response, request, IVR_CONTROL_WS_SUBPROTOCOL);
-    if (status != SALTS_OK) {
-        return status;
+    status = chttp_invocation_select_websocket_subprotocol(
+        invocation, IVR_CONTROL_WS_SUBPROTOCOL);
+    return status == SALTS_OK ? chttp_invocation_websocket_accept(invocation) : status;
+}
+
+int ivr_control_ws_server_ready(void *context, const chttp_websocket_event_view *scope) {
+    ivr_control_ws_server_t *server = context;
+    ivr_control_ws_peer_entry_t *slot = NULL;
+    ivr_control_ws_route_t route;
+    const char *identity;
+    size_t identity_size;
+
+    if (!server || !scope || !scope->peer || !scope->request) {
+        return SALTS_EINVAL;
     }
-    memset(&route, 0, sizeof(route));
-    status = chttp_server_websocket_session_capture(websocket,
-                                                    &route.session);
-    if (status != SALTS_OK) {
-        return status;
+    identity = chttp_server_request_header(scope->request, IVR_CONTROL_WS_IDENTITY_HEADER);
+    identity_size = identity ? strlen(identity) : 0u;
+    if (!identity_size || identity_size >= IVR_CONTROL_WS_IDENTITY_CAPACITY) {
+        return SALTS_EPERM;
     }
+    route.session = *scope->peer;
     ivr_mutex_lock(&server->peers_lock);
     for (size_t i = 0; i < server->peer_capacity; ++i) {
         if (server->peers[i].active &&
@@ -829,9 +869,8 @@ static int ivr_control_ws_server_open(void *context,
     return SALTS_OK;
 }
 
-static void ivr_control_ws_server_event(void *context,
-                                        chttp_websocket *websocket,
-                                        const chttp_websocket_event *event) {
+int ivr_control_ws_server_event(void *context, const chttp_websocket_event_view *scope) {
+    const chttp_websocket_event *event;
     ivr_control_ws_server_t *server =
         (ivr_control_ws_server_t *)context;
     ivr_control_ws_route_t route;
@@ -839,11 +878,11 @@ static void ivr_control_ws_server_event(void *context,
     char identity[IVR_CONTROL_WS_IDENTITY_CAPACITY];
     int remove = 0;
     int found = 0;
-    if (!server || !websocket || !event ||
-        chttp_server_websocket_session_capture(websocket,
-                                               &route.session) != SALTS_OK) {
-        return;
+    if (!server || !scope || !scope->peer || !scope->event) {
+        return SALTS_EINVAL;
     }
+    event = scope->event;
+    route.session = *scope->peer;
     identity[0] = '\0';
     ivr_mutex_lock(&server->peers_lock);
     peer = ivr_control_ws_server_find_route_locked(server, &route);
@@ -859,13 +898,12 @@ static void ivr_control_ws_server_event(void *context,
     }
     ivr_mutex_unlock(&server->peers_lock);
     if (!found) {
-        return;
+        return SALTS_OK;
     }
     if (event->kind == CHTTP_WEBSOCKET_EVENT_MESSAGE) {
         int callback_status;
         if (event->message_type != CHTTP_WEBSOCKET_MESSAGE_BINARY) {
-            (void)chttp_websocket_close(websocket, 1003u, NULL, 0u);
-            return;
+            return chttp_server_websocket_close(&route.session, 1003u, NULL, 0u);
         }
         callback_status = server->on_message
             ? server->on_message(server->callback_context, &route, identity,
@@ -875,11 +913,12 @@ static void ivr_control_ws_server_event(void *context,
             uint16_t close_code = callback_status == IVR_ENOSPC
                 ? IVR_CONTROL_WS_CLOSE_OVERLOADED
                 : IVR_CONTROL_WS_CLOSE_POLICY_VIOLATION;
-            (void)chttp_websocket_close(websocket, close_code, NULL, 0u);
+            (void)chttp_server_websocket_close(&route.session, close_code, NULL, 0u);
         }
     } else if (remove && server->on_peer) {
         server->on_peer(server->callback_context, &route, identity, 0);
     }
+    return SALTS_OK;
 }
 
 ivr_status_t ivr_control_ws_server_create(
@@ -981,12 +1020,12 @@ ivr_status_t ivr_control_ws_server_start(ivr_control_ws_server_t *server) {
             return ivr_control_ws_status(status);
         }
     }
-    status = chttp_server_start(&server->server);
+    status = chttp_application_start(&server->server);
     if (status != SALTS_OK) {
         atomic_store_explicit(&server->started, 0, memory_order_release);
     } else {
         uint16_t bound_port = 0u;
-        if (chttp_server_port(&server->server, &bound_port) == SALTS_OK) {
+        if (chttp_application_port(&server->server, &bound_port) == SALTS_OK) {
             server->port = bound_port;
         }
         server->next_restart_ms = 0u;
@@ -1020,14 +1059,14 @@ ivr_status_t ivr_control_ws_server_maintain(
         return IVR_EINVAL;
     }
     memset(&stats, 0, sizeof(stats));
-    status = chttp_server_get_stats(&server->server, &stats);
+    status = chttp_application_stats(&server->server, &stats);
     if (status == SALTS_OK && stats.running) {
         return IVR_OK;
     }
     if (status == SALTS_OK) {
         terminal_status = stats.terminal_status;
     }
-    now_ms = cmeta_monotonic_ms();
+    now_ms = monotonic_ms();
     if (server->next_restart_ms && now_ms < server->next_restart_ms) {
         return IVR_ESTATE;
     }
@@ -1037,31 +1076,21 @@ ivr_status_t ivr_control_ws_server_maintain(
             "restarting listener\n",
             terminal_status);
     if (server->server.impl) {
-        status = chttp_server_stop(&server->server,
-                                   server->shutdown_timeout_ms);
-        if (status == SALTS_ETIMEDOUT) {
+        (void)chttp_application_close(&server->server, server->shutdown_timeout_ms);
+        if (server->server.impl) {
             ivr_control_ws_server_schedule_restart(server, now_ms);
             return IVR_ESTATE;
         }
-        status = chttp_server_destroy(&server->server);
-        if (status != SALTS_OK) {
-            ivr_control_ws_server_schedule_restart(server, now_ms);
-            return IVR_ESTATE;
-        }
-        memset(&server->server, 0, sizeof(server->server));
     }
     ivr_control_ws_server_clear_peers(server);
     status = ivr_control_ws_server_init_runtime(server);
     if (status == SALTS_OK) {
-        status = chttp_server_start(&server->server);
+        status = chttp_application_start(&server->server);
     }
     if (status != SALTS_OK) {
         if (server->server.impl) {
-            int destroy_status =
-                chttp_server_destroy(&server->server);
-            if (destroy_status == SALTS_OK) {
-                memset(&server->server, 0, sizeof(server->server));
-            }
+            (void)chttp_application_close(&server->server,
+                                          server->shutdown_timeout_ms);
         }
         ivr_control_ws_server_schedule_restart(server, now_ms);
         return IVR_ESTATE;
@@ -1074,25 +1103,22 @@ ivr_status_t ivr_control_ws_server_maintain(
 }
 
 ivr_status_t ivr_control_ws_server_stop(ivr_control_ws_server_t *server) {
-    int stop_status;
-    int destroy_status;
+    int status;
     if (!server) {
         return IVR_EINVAL;
     }
     if (!atomic_load_explicit(&server->started, memory_order_acquire)) {
         return IVR_OK;
     }
-    stop_status = chttp_server_stop(&server->server,
-                                    server->shutdown_timeout_ms);
-    if (stop_status == SALTS_ETIMEDOUT || stop_status == SALTS_EBUSY)
-        return ivr_control_ws_status(stop_status);
-    destroy_status = chttp_server_destroy(&server->server);
-    if (destroy_status != SALTS_OK)
-        return ivr_control_ws_status(destroy_status);
-    memset(&server->server, 0, sizeof(server->server));
+    status = server->server.impl
+                 ? chttp_application_close(&server->server, server->shutdown_timeout_ms)
+                 : SALTS_OK;
+    if (server->server.impl) {
+        return ivr_control_ws_status(status);
+    }
     atomic_store_explicit(&server->started, 0, memory_order_release);
     ivr_control_ws_server_clear_peers(server);
-    return ivr_control_ws_status(stop_status);
+    return ivr_control_ws_status(status);
 }
 
 ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
@@ -1108,11 +1134,11 @@ ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
         return stop_status;
     }
     if (server->server.impl) {
-        int status = chttp_server_destroy(&server->server);
+        int status = chttp_application_close(&server->server,
+                                             server->shutdown_timeout_ms);
         if (status != SALTS_OK) {
             return ivr_control_ws_status(status);
         }
-        memset(&server->server, 0, sizeof(server->server));
     }
     ivr_mutex_destroy(&server->peers_lock);
     free(server->peers);
@@ -1133,7 +1159,7 @@ ivr_status_t ivr_control_ws_server_port(const ivr_control_ws_server_t *server,
         return IVR_EINVAL;
     }
     return ivr_control_ws_status(
-        chttp_server_port((chttp_server *)&server->server, out_port));
+        chttp_application_port(&server->server, out_port));
 }
 
 ivr_status_t ivr_control_ws_server_send_copy(
@@ -1156,7 +1182,7 @@ ivr_status_t ivr_control_ws_server_send_copy(
     if (status != SALTS_OK) {
         chttp_server_stats stats;
         memset(&stats, 0, sizeof(stats));
-        if (chttp_server_get_stats(&server->server, &stats) == SALTS_OK) {
+        if (chttp_application_stats(&server->server, &stats) == SALTS_OK) {
             fprintf(stderr,
                     "IVR control WebSocket server send failed: status=%d "
                     "running=%d terminal_status=%d\n",

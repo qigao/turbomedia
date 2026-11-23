@@ -3,7 +3,7 @@
  * RFC 8888 - RTP Control Protocol (RTCP) Feedback for Congestion Control
  */
 #include "turbo_rtp.h"
-#include <platform.h>
+#include <core/platform.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,7 +73,7 @@ struct twcc_receiver_s {
  * Helper Functions
  * ============================================================================= */
 
-static uint64_t get_time_us(void) { return cmeta_monotonic_ms() * 1000ULL; }
+static uint64_t get_time_us(void) { return monotonic_ms() * 1000ULL; }
 
 static int seq_newer(uint16_t s1, uint16_t s2) { return ((int16_t)(s1 - s2)) > 0; }
 

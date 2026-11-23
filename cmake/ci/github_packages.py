@@ -350,7 +350,7 @@ def media_manifest(scope, destination):
     if scope != "rtsp-iocp":
         raise ValueError(f"unknown media scope: {scope}")
     product = json.loads((REPO / "vcpkg.json").read_text())
-    required = {"boringssl", "gmssl", "llhttp"}
+    required = {"gmssl", "llhttp"}
     product["dependencies"] = [d for d in product["dependencies"]
                                if (d if isinstance(d, str) else d["name"]) in required]
     if {d if isinstance(d, str) else d["name"] for d in product["dependencies"]} != required:

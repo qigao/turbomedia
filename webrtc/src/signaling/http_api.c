@@ -10,16 +10,16 @@
 #include "turbo_media_revocation_wire.h"
 #include "turbo_media_tenant_quota_wire.h"
 #include "webrtc_signaling.h"
-#include <http_server/http.h>
+#include <chttp_app/application.h>
 #include <json_parser.h>
-#include <salts/error_codes.h>
-#include <cmeta_thread.h>
-#include <tlog.h>
+#include <core/error_codes.h>
+#include <threads/threads.h>
+#include <core/tlog.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <tstr.h>
+#include <core/tstr.h>
 
 #define SIGNALING_MANAGEMENT_AUDIENCE "turbomedia-signaling-management"
 #define SIGNALING_MANAGEMENT_SCOPE_READ "signaling.management.read"
@@ -67,17 +67,38 @@ typedef enum http_api_state_e {
 struct http_api_server_s {
     http_api_config_t config;
     webrtc_signaling_server_t *signaling;
-    cmeta_mutex_t lifecycle_mutex;
-    chttp_server http;
-    int http_initialized;
+    sync_mutex_t lifecycle_mutex;
+    chttp_application http;
+    salts_configurator_provider_binding http_provider;
+    salts_configurator_deployment http_deployment;
+    chttp_controller http_controller;
+    chttp_action http_actions[HTTP_API_ROUTE_CAPACITY];
     int revocation_enabled;
     int tenant_quota_enabled;
     http_api_state_t state;
 };
 
+cmeta_reflect_data(http_api_server_t, "turbomedia.signaling.ManagementHost",
+                   cmeta_field(int, revocation_enabled));
+cmeta_component_empty(TurboSignalingManagement);
+
+static cmeta_status http_api_provider_create(
+    void *user, const cmeta_data_desc *data, const void *config,
+    const salts_configurator_dependency *dependencies, size_t count,
+    cmeta_object_ref *out) {
+    (void)data;
+    (void)config;
+    (void)dependencies;
+    if (count != 0u) {
+        return CMETA_INVALID_ARGUMENT;
+    }
+    return cmeta_object_borrow(out, user, cmeta_reflected_data(http_api_server_t),
+                               NULL);
+}
+
 typedef struct http_api_response_s {
     http_api_server_t *server;
-    chttp_server_response *response;
+    const chttp_invocation *invocation;
     int status;
 } http_api_response_t;
 
@@ -102,22 +123,22 @@ static turbo_media_auth_config_t signed_auth_config(
 static int http_api_add_cors_headers(http_api_response_t *response) {
     int status;
 
-    if (!response || !response->server || !response->response) {
+    if (!response || !response->server || !response->invocation) {
         return SALTS_EINVAL;
     }
     if (response->server->config.auth_enabled) {
         return SALTS_OK;
     }
-    status = chttp_server_response_set_header(
-        response->response, "Access-Control-Allow-Origin", "*");
+    status = chttp_invocation_set_header(
+        response->invocation, "Access-Control-Allow-Origin", "*");
     if (status == SALTS_OK) {
-        status = chttp_server_response_set_header(
-            response->response, "Access-Control-Allow-Methods",
+        status = chttp_invocation_set_header(
+            response->invocation, "Access-Control-Allow-Methods",
             "GET, POST, DELETE, OPTIONS");
     }
     if (status == SALTS_OK) {
-        status = chttp_server_response_set_header(
-            response->response, "Access-Control-Allow-Headers",
+        status = chttp_invocation_set_header(
+            response->invocation, "Access-Control-Allow-Headers",
             "Content-Type, Authorization");
     }
     return status;
@@ -128,8 +149,8 @@ static void set_header(http_api_response_t *response, const char *name,
     if (!response || response->status != SALTS_OK) {
         return;
     }
-    response->status = chttp_server_response_set_header(
-        response->response, name, value);
+    response->status = chttp_invocation_set_header(
+        response->invocation, name, value);
 }
 
 static void reply(http_api_response_t *response, unsigned int status,
@@ -140,8 +161,8 @@ static void reply(http_api_response_t *response, unsigned int status,
     }
     response->status = http_api_add_cors_headers(response);
     if (response->status == SALTS_OK) {
-        response->status = chttp_server_reply(
-            response->response, status, content_type, body, body_size);
+        response->status = chttp_invocation_respond(
+            response->invocation, status, content_type, body, body_size);
     }
 }
 
@@ -222,21 +243,19 @@ static int authorize_management_request(
     return 1;
 }
 
-static int handle_health(void *user,
-                         const chttp_server_request_view *request,
-                         chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_health);
+int http_api_handle_health(void *user, const chttp_invocation *invocation) {
     http_api_response_t response = {
-        (http_api_server_t *)user, raw_response, SALTS_OK};
-    (void)request;
+        (http_api_server_t *)user, invocation, SALTS_OK};
     send_text(&response, 200, "OK");
     return response.status;
 }
 
-static int handle_status(void *user,
-                         const chttp_server_request_view *request,
-                         chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_status);
+int http_api_handle_status(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     char *json;
 
     if (!authorize_management_request(
@@ -254,11 +273,11 @@ static int handle_status(void *user,
     return response.status;
 }
 
-static int handle_get_rooms(void *user,
-                            const chttp_server_request_view *request,
-                            chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_get_rooms);
+int http_api_handle_get_rooms(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     char *json;
 
     if (!authorize_management_request(
@@ -276,11 +295,11 @@ static int handle_get_rooms(void *user,
     return response.status;
 }
 
-static int handle_get_room_peers(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_get_room_peers);
+int http_api_handle_get_room_peers(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     const char *room_id = chttp_server_request_param(request, "id");
     char *json;
 
@@ -303,11 +322,11 @@ static int handle_get_room_peers(
     return response.status;
 }
 
-static int handle_kick_peer(void *user,
-                            const chttp_server_request_view *request,
-                            chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_kick_peer);
+int http_api_handle_kick_peer(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     const char *room_id = chttp_server_request_param(request, "id");
     const char *peer_id = chttp_server_request_param(request, "peer_id");
     int result;
@@ -331,11 +350,11 @@ static int handle_kick_peer(void *user,
     return response.status;
 }
 
-static int handle_broadcast(void *user,
-                            const chttp_server_request_view *request,
-                            chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_broadcast);
+int http_api_handle_broadcast(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     const char *room_id = chttp_server_request_param(request, "id");
     char result_json[64];
     tstr message;
@@ -415,11 +434,11 @@ static void send_revocation_result(
     reply(response, status, "application/json", body, (size_t)length);
 }
 
-static int handle_revocation_snapshot(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_revocation_snapshot);
+int http_api_handle_revocation_snapshot(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     turbo_media_revocation_wire_snapshot_t snapshot;
     webrtc_signaling_revocation_apply_result_t result;
 
@@ -442,11 +461,11 @@ static int handle_revocation_snapshot(
     return response.status;
 }
 
-static int handle_revocation_revoke(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_revocation_revoke);
+int http_api_handle_revocation_revoke(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     turbo_media_revocation_wire_revoke_t revoke;
     webrtc_signaling_revocation_apply_result_t result;
 
@@ -515,11 +534,11 @@ static void send_tenant_quota_result(
     reply(response, status, "application/json", body, (size_t)length);
 }
 
-static int handle_tenant_quota_snapshot(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_tenant_quota_snapshot);
+int http_api_handle_tenant_quota_snapshot(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     turbo_media_tenant_quota_wire_snapshot_t *snapshot = NULL;
     turbo_media_tenant_quota_apply_result_t result;
 
@@ -547,11 +566,11 @@ static int handle_tenant_quota_snapshot(
     return response.status;
 }
 
-static int handle_tenant_quota_update(
-    void *user, const chttp_server_request_view *request,
-    chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_tenant_quota_update);
+int http_api_handle_tenant_quota_update(void *user, const chttp_invocation *invocation) {
+    const chttp_server_request_view *request = chttp_invocation_request(invocation);
     http_api_server_t *server = (http_api_server_t *)user;
-    http_api_response_t response = {server, raw_response, SALTS_OK};
+    http_api_response_t response = {server, invocation, SALTS_OK};
     turbo_media_tenant_quota_wire_update_t update;
     turbo_media_tenant_quota_apply_result_t result;
 
@@ -574,12 +593,10 @@ static int handle_tenant_quota_update(
     return response.status;
 }
 
-static int handle_options(void *user,
-                          const chttp_server_request_view *request,
-                          chttp_server_response *raw_response) {
+CHTTP_ACTION(http_api_handle_options);
+int http_api_handle_options(void *user, const chttp_invocation *invocation) {
     http_api_response_t response = {
-        (http_api_server_t *)user, raw_response, SALTS_OK};
-    (void)request;
+        (http_api_server_t *)user, invocation, SALTS_OK};
     reply(&response, 204, NULL, NULL, 0u);
     return response.status;
 }
@@ -686,74 +703,79 @@ static chttp_server_config http_api_server_config(
     return config;
 }
 
-static int http_api_register_routes(http_api_server_t *server) {
-    static const char *const option_paths[] = {
-        "/health",
-        "/api/v1/status",
-        "/api/v1/rooms",
-        "/api/v1/rooms/:id/peers",
-        "/api/v1/rooms/:id/peers/:peer_id",
-        "/api/v1/rooms/:id/broadcast",
-        "/api/v1/security/revocations/snapshot",
-        "/api/v1/security/revocations/revoke",
-        "/api/v1/security/tenant-quotas/snapshot",
-        "/api/v1/security/tenant-quotas/update"};
-    int status;
-    size_t index;
+static int http_api_init(http_api_server_t *server,
+                         const cnet_tls_server_config *tls) {
+    static const chttp_action routes[] = {
+        CHTTP_GET("/health", http_api_handle_health),
+        CHTTP_GET("/api/v1/status", http_api_handle_status),
+        CHTTP_GET("/api/v1/rooms", http_api_handle_get_rooms),
+        CHTTP_GET("/api/v1/rooms/:id/peers", http_api_handle_get_room_peers),
+        CHTTP_MAPPING(CHTTP_METHOD_DELETE, "/api/v1/rooms/:id/peers/:peer_id",
+                      http_api_handle_kick_peer),
+        CHTTP_POST("/api/v1/rooms/:id/broadcast", http_api_handle_broadcast)
+    };
+    static const chttp_action revocation_routes[] = {
+        CHTTP_POST("/api/v1/security/revocations/snapshot",
+                   http_api_handle_revocation_snapshot),
+        CHTTP_POST("/api/v1/security/revocations/revoke",
+                   http_api_handle_revocation_revoke)
+    };
+    static const chttp_action tenant_quota_routes[] = {
+        CHTTP_POST("/api/v1/security/tenant-quotas/snapshot",
+                   http_api_handle_tenant_quota_snapshot),
+        CHTTP_POST("/api/v1/security/tenant-quotas/update",
+                   http_api_handle_tenant_quota_update)
+    };
+    static const struct {
+        const chttp_action *routes;
+        size_t count;
+    } groups[] = {
+        {routes, sizeof(routes) / sizeof(routes[0])},
+        {revocation_routes, sizeof(revocation_routes) / sizeof(revocation_routes[0])},
+        {tenant_quota_routes, sizeof(tenant_quota_routes) / sizeof(tenant_quota_routes[0])}
+    };
+    const int enabled[] = {1, server->revocation_enabled, server->tenant_quota_enabled};
+    chttp_application_config application = chttp_application_config_default();
+    size_t count = 0u;
 
-    status = chttp_server_get(&server->http, "/health", handle_health,
-                              server);
-    if (status == SALTS_OK) {
-        status = chttp_server_get(&server->http, "/api/v1/status",
-                                  handle_status, server);
+    for (size_t group = 0u; group < sizeof(groups) / sizeof(groups[0]); ++group) {
+        for (size_t index = 0u; index < groups[group].count; ++index) {
+            const chttp_action *route = &groups[group].routes[index];
+            if (enabled[group]) {
+                server->http_actions[count++] = *route;
+            }
+            if (!server->config.auth_enabled) {
+                server->http_actions[count++] = (chttp_action)CHTTP_MAPPING(
+                    CHTTP_METHOD_OPTIONS, route->path, http_api_handle_options);
+            }
+        }
     }
-    if (status == SALTS_OK) {
-        status = chttp_server_get(&server->http, "/api/v1/rooms",
-                                  handle_get_rooms, server);
-    }
-    if (status == SALTS_OK) {
-        status = chttp_server_get(&server->http,
-                                  "/api/v1/rooms/:id/peers",
-                                  handle_get_room_peers, server);
-    }
-    if (status == SALTS_OK) {
-        status = chttp_server_delete(
-            &server->http, "/api/v1/rooms/:id/peers/:peer_id",
-            handle_kick_peer, server);
-    }
-    if (status == SALTS_OK) {
-        status = chttp_server_post(
-            &server->http, "/api/v1/rooms/:id/broadcast",
-            handle_broadcast, server);
-    }
-    if (status == SALTS_OK && server->revocation_enabled) {
-        status = chttp_server_post(
-            &server->http, "/api/v1/security/revocations/snapshot",
-            handle_revocation_snapshot, server);
-    }
-    if (status == SALTS_OK && server->revocation_enabled) {
-        status = chttp_server_post(
-            &server->http, "/api/v1/security/revocations/revoke",
-            handle_revocation_revoke, server);
-    }
-    if (status == SALTS_OK && server->tenant_quota_enabled) {
-        status = chttp_server_post(
-            &server->http, "/api/v1/security/tenant-quotas/snapshot",
-            handle_tenant_quota_snapshot, server);
-    }
-    if (status == SALTS_OK && server->tenant_quota_enabled) {
-        status = chttp_server_post(
-            &server->http, "/api/v1/security/tenant-quotas/update",
-            handle_tenant_quota_update, server);
-    }
-    for (index = 0u;
-         status == SALTS_OK && !server->config.auth_enabled &&
-         index < sizeof(option_paths) / sizeof(option_paths[0]);
-         ++index) {
-        status = chttp_server_options(&server->http, option_paths[index],
-                                      handle_options, server);
-    }
-    return status;
+    server->http_provider = (salts_configurator_provider_binding){
+        sizeof(server->http_provider),
+        SALTS_CONFIGURATOR_PROVIDER_BINDING_ABI_VERSION,
+        cmeta_component_meta(TurboSignalingManagement), server, NULL,
+        http_api_provider_create, NULL, NULL};
+    server->http_deployment = (salts_configurator_deployment){
+        &server->http_provider, NULL, NULL};
+    server->http_controller = (chttp_controller){
+        .component_id = "TurboSignalingManagement",
+        .receiver = cmeta_reflected_data(http_api_server_t),
+        .actions = server->http_actions,
+        .action_count = count};
+    application.http = http_api_server_config(&server->config, tls);
+    application.workers = (chttp_worker_config){
+        .workers = 1u,
+        .capacity = HTTP_API_CONNECTION_CAPACITY,
+        .retained_bytes = HTTP_API_BUFFER_CAPACITY_BYTES,
+        .reply_bytes = HTTP_API_MAX_RESPONSE_BODY_BYTES,
+        .header_capacity = HTTP_API_MAX_HEADER_COUNT,
+        .header_bytes = HTTP_API_MAX_HEADER_BYTES};
+    application.components = &server->http_deployment;
+    application.component_count = 1u;
+    application.dependency_capacity = 1u;
+    application.controllers = &server->http_controller;
+    application.controller_count = 1u;
+    return chttp_application_init(&server->http, &application);
 }
 
 http_api_server_t *http_api_create(
@@ -836,26 +858,25 @@ http_api_server_t *http_api_create(
             return NULL;
         }
     }
-    cmeta_mutex_init(&server->lifecycle_mutex);
+    sync_mutex_init(&server->lifecycle_mutex);
     server->state = HTTP_API_STOPPED;
     return server;
 }
 
 int http_api_start(http_api_server_t *server) {
     cnet_tls_server_config tls;
-    chttp_server_config config;
     int status;
 
     if (!server) {
         return -1;
     }
-    cmeta_mutex_lock(&server->lifecycle_mutex);
+    sync_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_RUNNING) {
-        cmeta_mutex_unlock(&server->lifecycle_mutex);
+        sync_mutex_unlock(&server->lifecycle_mutex);
         return 0;
     }
-    if (server->state != HTTP_API_STOPPED || server->http_initialized) {
-        cmeta_mutex_unlock(&server->lifecycle_mutex);
+    if (server->state != HTTP_API_STOPPED || server->http.impl) {
+        sync_mutex_unlock(&server->lifecycle_mutex);
         return -1;
     }
     server->state = HTTP_API_STARTING;
@@ -867,29 +888,22 @@ int http_api_start(http_api_server_t *server) {
         tls.key_file = server->config.key_file;
         tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
     }
-    config = http_api_server_config(
-        &server->config, server->config.use_tls ? &tls : NULL);
-    status = chttp_server_init(&server->http, &config);
+    status = http_api_init(server, server->config.use_tls ? &tls : NULL);
     if (status == SALTS_OK) {
-        server->http_initialized = 1;
-        status = http_api_register_routes(server);
-    }
-    if (status == SALTS_OK) {
-        status = chttp_server_start(&server->http);
+        status = chttp_application_start(&server->http);
     }
     if (status != SALTS_OK) {
-        if (server->http_initialized) {
-            (void)chttp_server_destroy(&server->http);
+        if (server->http.impl) {
+            (void)chttp_application_close(&server->http, 0u);
         }
-        server->http_initialized = 0;
-        server->state = HTTP_API_STOPPED;
-        cmeta_mutex_unlock(&server->lifecycle_mutex);
+        server->state = server->http.impl ? HTTP_API_STOPPING : HTTP_API_STOPPED;
+        sync_mutex_unlock(&server->lifecycle_mutex);
         TLOG_ERRORF("Failed to start HTTP management API on {}:{}: {}",
                     server->config.host, server->config.port, status);
         return -1;
     }
     server->state = HTTP_API_RUNNING;
-    cmeta_mutex_unlock(&server->lifecycle_mutex);
+    sync_mutex_unlock(&server->lifecycle_mutex);
     TLOG_INFOF("{} management API listening on {}:{}",
                server->config.use_tls ? "HTTPS" : "HTTP",
                server->config.host, server->config.port);
@@ -897,30 +911,22 @@ int http_api_start(http_api_server_t *server) {
 }
 
 void http_api_stop(http_api_server_t *server) {
-    int stop_status;
-    int destroy_status;
+    int status;
 
     if (!server) {
         return;
     }
-    cmeta_mutex_lock(&server->lifecycle_mutex);
+    sync_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_STOPPED) {
-        cmeta_mutex_unlock(&server->lifecycle_mutex);
+        sync_mutex_unlock(&server->lifecycle_mutex);
         return;
     }
     server->state = HTTP_API_STOPPING;
-    stop_status = server->http_initialized
-                      ? chttp_server_stop(&server->http, 0u)
-                      : SALTS_OK;
-    destroy_status = server->http_initialized
-                         ? chttp_server_destroy(&server->http)
-                         : SALTS_OK;
-    server->http_initialized = 0;
-    server->state = HTTP_API_STOPPED;
-    cmeta_mutex_unlock(&server->lifecycle_mutex);
-    if (stop_status != SALTS_OK || destroy_status != SALTS_OK) {
-        TLOG_ERRORF("Failed to stop HTTP management API: stop={}, destroy={}",
-                    stop_status, destroy_status);
+    status = chttp_application_close(&server->http, 0u);
+    server->state = server->http.impl ? HTTP_API_STOPPING : HTTP_API_STOPPED;
+    sync_mutex_unlock(&server->lifecycle_mutex);
+    if (status != SALTS_OK) {
+        TLOG_ERRORF("Failed to stop HTTP management API: {}", status);
     }
 }
 
@@ -929,7 +935,10 @@ void http_api_destroy(http_api_server_t *server) {
         return;
     }
     http_api_stop(server);
+    if (server->http.impl) {
+        return;
+    }
     http_api_free_config_strings(&server->config);
-    cmeta_mutex_destroy(&server->lifecycle_mutex);
+    sync_mutex_destroy(&server->lifecycle_mutex);
     free(server);
 }

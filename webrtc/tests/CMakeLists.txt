@@ -9,7 +9,7 @@ function(turbo_media_add_webrtc_base_test name)
     ${name}
     PRIVATE Salts::TinyTest
             Salts::Core
-            Salts::CSTL)
+            CMeta::CSTL)
   if(NOT ANDROID)
     add_test(NAME ${name} COMMAND ${name})
   endif()
@@ -34,7 +34,6 @@ target_include_directories(
 target_link_libraries(
   turbo_media_test_salts_ice_owner PRIVATE SaltsNet::ICE)
 
-turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 
 # Compile the exact production DCEP source in a private test translation unit.
@@ -46,7 +45,7 @@ turbo_media_add_webrtc_test(
   ../src/turbo_datachannel_errors.c)
 target_link_libraries(
   turbo_media_test_dcep_ack_fault
-  PRIVATE unofficial::usrsctp::usrsctp roaring::roaring)
+  PRIVATE Salts::CNet Salts::Crypto unofficial::usrsctp::usrsctp roaring::roaring)
 
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
@@ -123,7 +122,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/security)
 target_link_libraries(
   turbo_media_test_signaling_internals
-  PRIVATE Salts::CNet CHttp::Client CHttp::Server
+  PRIVATE Salts::CNet CHttp::Client CHttp::App
           turbo_media_auth
           turbo_media_tenant_quota
           turbo_media_tenant_quota_wire
@@ -190,6 +189,43 @@ turbo_media_add_rtc_test(turbo_media_test_recognition_integration
 turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
 target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)
 
+
+# Compile the production Peer/DTLS/SCTP implementation directly into a
+# private lifecycle test executable. This lets the Linux opt-in TSan gate
+# instrument the first-party Peer destroy barrier instead of testing only a
+# synthetic lease fixture or an uninstrumented shared library.
+set(_dc_peer_drain_sources)
+foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
+  list(APPEND _dc_peer_drain_sources
+       "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
+endforeach()
+turbo_media_add_webrtc_base_test(
+  turbo_media_test_datachannel_peer_destroy_drain
+  test_datachannel_peer_destroy_drain.c
+  ${_dc_peer_drain_sources})
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_datachannel_peer_destroy_drain
+                       PROPERTIES TIMEOUT 30)
+endif()
+target_compile_definitions(
+  turbo_media_test_datachannel_peer_destroy_drain
+  PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1
+          TURBO_MEDIA_TEST_CHANNEL_SENDV=1)
+target_link_libraries(
+  turbo_media_test_datachannel_peer_destroy_drain
+  PRIVATE TurboMedia::SDP
+          Salts::LtvParser
+          turbo_media_cnet_adapter
+          Salts::CNet
+          SaltsNet::ICE
+          unofficial::usrsctp::usrsctp
+          Salts::Crypto
+          roaring::roaring)
+set_target_properties(
+  turbo_media_test_datachannel_peer_destroy_drain
+  PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+             CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+             FOLDER "turbomedia/tests/webrtc")
 
 option(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN
        "Run the private C11 SCTP handoff test with ThreadSanitizer (Linux only)" OFF)
@@ -265,7 +301,6 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
   turbo_media_add_webrtc_base_test(
     turbo_media_test_c11_sctp_dtls_records
     test_c11_sctp_dtls_records.c
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/dc_certificate.cpp"
     "${_salts_sctp_src}/sctp_wire.c"
     "${_salts_sctp_src}/sctp_init_params.c"
     "${_salts_sctp_src}/sctp_collision.c"
@@ -280,8 +315,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
   target_link_libraries(
     turbo_media_test_c11_sctp_dtls_records
     PRIVATE TurboMedia::SDP
-            OpenSSL::SSL
-            OpenSSL::Crypto)
+            Salts::Crypto)
   set_target_properties(
     turbo_media_test_c11_sctp_dtls_records
     PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
@@ -295,48 +329,6 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_c11_sctp_dtls_records
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
-
-  # Compile the production Peer/DTLS/SCTP implementation directly into a
-  # private lifecycle test executable. This lets the Linux opt-in TSan gate
-  # instrument the first-party Peer destroy barrier instead of testing only a
-  # synthetic lease fixture or an uninstrumented shared library.
-  set(_dc_peer_drain_sources)
-  foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
-    list(APPEND _dc_peer_drain_sources
-         "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
-  endforeach()
-  turbo_media_add_webrtc_base_test(
-    turbo_media_test_datachannel_peer_destroy_drain
-    test_datachannel_peer_destroy_drain.c
-    ${_dc_peer_drain_sources})
-  if(NOT ANDROID)
-    set_tests_properties(turbo_media_test_datachannel_peer_destroy_drain
-                         PROPERTIES TIMEOUT 30)
-  endif()
-  target_compile_definitions(
-    turbo_media_test_datachannel_peer_destroy_drain
-    PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1
-            TURBO_MEDIA_TEST_CHANNEL_SENDV=1)
-  target_link_libraries(
-    turbo_media_test_datachannel_peer_destroy_drain
-    PRIVATE TurboMedia::SDP
-            Salts::LtvParser
-            turbo_media_cnet_adapter
-            Salts::CNet
-            SaltsNet::ICE
-            unofficial::usrsctp::usrsctp
-            OpenSSL::SSL
-            OpenSSL::Crypto
-            roaring::roaring)
-  set_target_properties(
-    turbo_media_test_datachannel_peer_destroy_drain
-    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
-               CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
-               FOLDER "turbomedia/tests/webrtc")
-
-  # The bridge now exercises the exact private GmSSL SM3-HMAC cookie
-  # provider used by the C11 SCTP prototype, not a test-only substitute.
-  find_package(GmSSL CONFIG REQUIRED)
 
   # Test-only end-to-end bridge: compile the real Peer/DTLS sources with
   # a private application-record handler and feed its authenticated plaintext
@@ -352,8 +344,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     "${_salts_sctp_src}/sctp_data.c"
     "${_salts_sctp_src}/sctp_assoc.c"
     "${_salts_sctp_src}/sctp_dcep.c"
-    "${_salts_sctp_src}/sctp_webrtc.c"
-    "${_salts_sctp_src}/sctp_gmssl_mac.c")
+    "${_salts_sctp_src}/sctp_webrtc.c")
   target_include_directories(
     turbo_media_test_c11_sctp_peer_bridge
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
@@ -369,9 +360,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
             Salts::CNet
             SaltsNet::ICE
             unofficial::usrsctp::usrsctp
-            OpenSSL::SSL
-            OpenSSL::Crypto
-            GmSSL::GmSSL
+            Salts::Crypto
             roaring::roaring)
   set_target_properties(
     turbo_media_test_c11_sctp_peer_bridge
@@ -409,13 +398,12 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       "${_salts_sctp_src}/sctp_data.c"
       "${_salts_sctp_src}/sctp_assoc.c"
       "${_salts_sctp_src}/sctp_dcep.c"
-      "${_salts_sctp_src}/sctp_webrtc.c"
-      "${_salts_sctp_src}/sctp_gmssl_mac.c")
+      "${_salts_sctp_src}/sctp_webrtc.c")
     target_include_directories(
       rtc_signaled_peer_c11
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../include"
               "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-              "${STB_INCLUDE_DIR}"
+              "${STB_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
               "${_salts_sctp_inc}" "${_salts_sctp_src}")
     target_compile_definitions(
       rtc_signaled_peer_c11
@@ -431,11 +419,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
               CHttp::Client
               Salts::JsonParser
               Salts::Core
-              Salts::CSTL
+              CMeta::CSTL
               unofficial::usrsctp::usrsctp
-              OpenSSL::SSL
-              OpenSSL::Crypto
-              GmSSL::GmSSL
+              Salts::Crypto
               roaring::roaring)
     set_target_properties(
       rtc_signaled_peer_c11
@@ -487,7 +473,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_datachannel_channel_leases_asan
       PRIVATE TurboMedia::SDP Salts::LtvParser turbo_media_cnet_adapter
               Salts::CNet SaltsNet::ICE unofficial::usrsctp::usrsctp
-              OpenSSL::SSL OpenSSL::Crypto roaring::roaring)
+              Salts::Crypto roaring::roaring)
     set_target_properties(
       turbo_media_test_datachannel_channel_leases_asan
       PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
@@ -525,4 +511,18 @@ if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN AND
    NOT TARGET turbo_media_test_salts_c11_sctp_dtls_handoff)
   message(FATAL_ERROR
     "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires SALTS_SCTP_SOURCE_DIR")
+endif()
+
+turbo_media_add_module_test(turbo_media_test_rtc_client test_rtc_client.c
+  TurboMedia::RTCClient)
+turbo_media_add_module_test(turbo_media_test_rtc_subscriber test_rtc_subscriber.c
+  TurboMedia::RTCClient)
+turbo_media_add_module_test(turbo_media_test_rtc_capture_source test_rtc_capture_source.c
+  TurboMedia::RTCClient)
+turbo_media_add_module_test(turbo_media_test_rtc_playback_sink test_rtc_playback_sink.c
+  TurboMedia::RTCClient)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
+  turbo_media_add_module_test(turbo_media_test_webrtc test_webrtc.c
+    TurboMedia::WebRTC TurboMedia::MediaRuntime TurboMedia::Pipeline
+    TurboMedia::Transport Salts::Core TurboMedia::RTC)
 endif()

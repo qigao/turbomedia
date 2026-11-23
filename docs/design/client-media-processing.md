@@ -298,7 +298,7 @@ Rules:
 
 - built only for `TURBO_MEDIA_PRODUCT=CLIENT`;
 - available on Windows, Linux, macOS, Android, and iOS;
-- must not link `TurboMedia::Server`, `TurboMedia::Pipeline`,
+- must not link `TurboMedia::MediaRuntime`, `TurboMedia::Pipeline`,
   `TurboMedia::Streamer`, TurboDB, RulesForge, or server applications;
 - may link shared TurboMedia Codec/Demuxer/Muxer targets;
 - Capture/Playback adapter targets may link `Salts::Capture` and

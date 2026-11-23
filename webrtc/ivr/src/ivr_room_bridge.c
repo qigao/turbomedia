@@ -4,6 +4,7 @@
 #include "ivr_internal.h"
 #include "ivr_control_ws.h"
 #include "turbomedia_ivr_v2.h"
+#include <core/clock.h>
 #include <json_parser.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +35,7 @@ typedef struct {
 
 static uint64_t ivr_dedup_default_now(void *ctx) {
     (void)ctx;
-    return cmeta_monotonic_ms();
+    return monotonic_ms();
 }
 
 static uint64_t ivr_dedup_now(const ivr_dedup_t *d) {

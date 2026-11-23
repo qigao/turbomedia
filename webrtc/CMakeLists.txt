@@ -1,8 +1,45 @@
-cmake_add_grammar(
-  TURBO_MEDIA_SDP
-  LEXER_RE src/sdp/turbo_sdp_parser.re
-  LEXER_OUTPUT turbo_sdp_parser_gen.c
-  FOLDER "turbomedia/webrtc/codegen")
+include(CheckSymbolExists)
+include(CMakePushCheckState)
+
+install(
+  FILES include/http_api.h
+        include/ice_integration.h
+        include/turbo_datachannel.h
+        include/turbo_datachannel_errors.h
+        include/turbo_dc_msg.h
+        include/turbo_media_engine.h
+        include/turbo_nack.h
+        include/turbo_peer_connection.h
+        include/turbo_rtp.h
+        include/turbo_simulcast.h
+        include/turbo_srtp.h
+        include/turbo_srtp_defs.h
+        include/webrtc_signaling.h
+        include/turbo_rtc_client.h
+        include/turbo_rtc_subscriber.h
+        include/turbo_rtc_playback_sink.h
+        include/turbo_rtc_capture_source.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
+  install(
+    FILES include/turbo_media_webrtc.h
+          include/turbo_media_webrtc_backend.h
+          include/turbo_recorder.h
+          include/turbo_room_service.h
+          include/turbo_sfu.h
+          include/turbo_sfu_node.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_LIBRARIES Salts::Crypto)
+unset(TURBO_MEDIA_SALTS_DTLS_SRTP CACHE)
+check_symbol_exists(crypto_dtls_stream_set_mtu "crypto/dtls_stream.h"
+                    TURBO_MEDIA_SALTS_DTLS_SRTP)
+cmake_pop_check_state()
+if(NOT TURBO_MEDIA_SALTS_DTLS_SRTP)
+  message(FATAL_ERROR "SALTS_CNET_ROOT must point at a SaltsCNet SDK with DTLS-SRTP support")
+endif()
 
 add_library(
   turbo_media_http_media_client STATIC
@@ -28,7 +65,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser OpenSSL::Crypto Salts::Core)
+  PRIVATE Salts::JsonParser Salts::Crypto Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(
@@ -63,25 +100,9 @@ target_link_libraries(
 set_target_properties(
   turbo_media_revocation_https PROPERTIES FOLDER "turbomedia/components")
 
-add_library(turbo_media_sdp STATIC)
-turbo_media_configure_component(turbo_media_sdp SDP)
-target_sources(
-  turbo_media_sdp
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sdp/turbo_sdp.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/stb_sprintf.c
-          ${TURBO_MEDIA_SDP_LEXER_GEN})
-target_include_directories(
-  turbo_media_sdp
-  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sdp
-          ${CMAKE_CURRENT_BINARY_DIR}
-          ${STB_INCLUDE_DIR})
-target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
-
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
-    src/dc_certificate.cpp
+    src/dc_certificate.c
     src/turbo_datachannel_errors.c
     src/turbo_dc_msg.c
     src/dcep_protocol.c
@@ -104,10 +125,9 @@ target_link_libraries(
           Salts::CNet
           SaltsNet::ICE
           Salts::Core
-          Salts::CSTL
+          CMeta::CSTL
           unofficial::usrsctp::usrsctp
-          OpenSSL::SSL
-          OpenSSL::Crypto
+          Salts::Crypto
           roaring::roaring)
 
 if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
@@ -126,7 +146,7 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(
     turbo_media_webrtc
-    PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel SaltsNet::ICE
+    PUBLIC TurboMedia::MediaRuntime TurboMedia::DataChannel SaltsNet::ICE
     PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
   target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 endif()
@@ -148,13 +168,12 @@ target_link_libraries(
   PUBLIC Salts::CNet CHttp::Server
   PRIVATE turbo_media_auth turbo_media_tenant_quota
           turbo_media_tenant_quota_wire
-          Salts::JsonParser Salts::Core Salts::CSTL)
+          CHttp::App Salts::JsonParser Salts::Core CMeta::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
 set(TURBO_MEDIA_RTC_SOURCES
     src/salts_ice_owner.c
-    src/rtc/rtp/rtp_packet.c
     src/rtc/rtp/rtcp_packet.c
     src/rtc/rtp/rtp_session.c
     src/rtc/rtp/rtp_history.c
@@ -167,6 +186,10 @@ set(TURBO_MEDIA_RTC_SOURCES
     src/rtc/media/turbo_peer_connection.c)
 
 add_library(turbo_media_rtc SHARED)
+if(MINGW AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
+  set_property(SOURCE src/rtc/media/turbo_media_engine.c APPEND PROPERTY
+               COMPILE_OPTIONS -fms-extensions)
+endif()
 turbo_media_configure_component(turbo_media_rtc RTC)
 target_sources(turbo_media_rtc PRIVATE ${TURBO_MEDIA_RTC_SOURCES})
 target_include_directories(
@@ -179,24 +202,17 @@ target_link_libraries(
   turbo_media_rtc
   PUBLIC TurboMedia::DataChannel
          TurboMedia::SDP
-         TurboMedia::Crypto
+         TurboMedia::RTP
          TurboMedia::Speech
          TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
           SaltsNet::ICE
           Salts::CNet
           Salts::Core
-          Salts::CSTL
-          OpenSSL::SSL
-          OpenSSL::Crypto
+          CMeta::CSTL
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
-target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
-# See transport/CMakeLists.txt: RTC and legacy transport packets have distinct
-# layouts, so internal calls must never be preempted by the peer shared object.
-target_link_options(
-  turbo_media_rtc
-  PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
+target_link_libraries(turbo_media_rtc PRIVATE Salts::Media)
 
 add_library(turbo_media_rtc_client SHARED
     src/client/turbo_rtc_client.c
@@ -211,11 +227,11 @@ add_library(turbo_media_rtc_client SHARED
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
   target_link_libraries(
     turbo_media_rtc_client
-    PUBLIC Salts::Playback
+    PUBLIC Salts::Media
     PRIVATE TurboMedia::RTC
             turbo_media_http_media_client
-            Salts::Capture
-            Salts::Platform
+            Salts::Media
+            Salts::Core
             Salts::Core)
 
 # Room-service / SFU server apps are desktop targets; keep them out of the

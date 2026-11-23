@@ -5,24 +5,18 @@ name: M15d real RTSP Windows IOCP dequeue cancellation #192
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-iocp-kernel-dispatch.yml'
-      - 'tests/rtsp_nativeio_iocp_dispatch.c'
-      - 'tests/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
-      - 'cmake/TurboMediaIOCPKernelTest.cmake'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-iocp-kernel-dispatch.yml'
-      - 'tests/rtsp_nativeio_iocp_dispatch.c'
-      - 'tests/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
-      - 'cmake/TurboMediaIOCPKernelTest.cmake'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
@@ -120,7 +114,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-iocp'
           $commands = Get-Content -LiteralPath (Join-Path $build 'compile_commands.json') -Raw | ConvertFrom-Json
-          foreach ($suffix in @('/tests/rtsp_nativeio_iocp_dispatch.c','/native-io/src/native_io.c','/native-io/src/native_io_accept_escrow.c','/native-io/src/native_io_iocp.c')) {
+          foreach ($suffix in @('/streaming/rtsp/tests/rtsp_nativeio_iocp_dispatch.c','/native-io/src/native_io.c','/native-io/src/native_io_accept_escrow.c','/native-io/src/native_io_iocp.c')) {
             $units = @($commands | Where-Object { ($_.file -replace '\\','/').EndsWith($suffix) })
             if ($units.Count -eq 0) { throw "Original private IOCP source not compiled: $suffix" }
             foreach ($unit in $units) {

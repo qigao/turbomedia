@@ -15,7 +15,7 @@ add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c src/turbo_fra
   src/turbo_streamgraph_provider_completion.c)
 target_include_directories(turbo_media_streamgraph
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
+         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/codec/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(turbo_media_streamgraph PRIVATE SHARED_CXX)
 if(MSVC)
@@ -30,7 +30,7 @@ if(_TM_SG_ISOLATED)
           LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
           ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../media/include/turbo_export.h
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../media/codec/include/turbo_export.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_frame_store.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_fanout.h
@@ -124,7 +124,7 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
   target_include_directories(turbo_media_streamgraph_ffmpeg
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include>
            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/codec/include>
            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(turbo_media_streamgraph_ffmpeg
     PUBLIC turbo_media_streamgraph

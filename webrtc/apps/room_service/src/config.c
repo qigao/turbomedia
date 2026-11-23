@@ -2,8 +2,8 @@
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation_fanout.h"
-#include "platform.h"
-#include <salts/clock.h>
+#include "core/platform.h"
+#include <core/clock.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -174,7 +174,7 @@ static int room_service_scope_valid(const char *scope) {
 
 static int room_service_control_identities_valid(
     const room_service_app_config_t *config) {
-    uint64_t now_ms = cmeta_realtime_ms();
+    uint64_t now_ms = realtime_ms();
     int i;
     int j;
     if (config->control_ws_worker_identity_count <= 0 ||

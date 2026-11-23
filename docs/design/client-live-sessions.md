@@ -2,7 +2,8 @@
 
 ## Status
 
-Architecture decision for #51.
+Original architecture decision for #51. See the [SIP client SDK](../../README.md#sip-客户端-api)
+for the current targets and install contract.
 
 TurboMedia already exposes the media/security pieces needed by a live client,
 but it does not yet expose an install-level client session product. This ADR
@@ -57,7 +58,7 @@ flowchart TB
   Transport --> CNet
 ```
 
-Neither target may depend on `TurboMedia::Server`,
+Neither target may depend on `TurboMedia::MediaRuntime`,
 `TurboMedia::Pipeline`, `TurboMedia::Streamer`, RulesForge, TurboDB, or
 server applications.
 
@@ -142,7 +143,7 @@ server fallback.
 ## Existing implementation reused by SIPClient
 
 The repository already contains a SIP implementation under
-`transport/sip/`:
+`sip/signaling/`:
 
 - UAC REGISTER, OPTIONS, INVITE, CANCEL, BYE, re-INVITE, PRACK, UPDATE;
 - UAS request handling;
@@ -420,8 +421,8 @@ TurboMedia::SIPClient
 
 Both are built only when `TURBO_MEDIA_PRODUCT=CLIENT`.
 
-SIPClient may include `transport/sip/include` privately while building, but
-those headers do not become installed public headers.
+The implemented client consumes the installed signaling headers through
+`TurboMedia::SIP` and uses `sip/signaling/` privately for transaction internals.
 
 ## Delivery order
 

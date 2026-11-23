@@ -14,11 +14,11 @@ sudo apt-get install cmake ninja-build
 brew install cmake ninja
 
 # Windows (vcpkg)
-vcpkg install boringssl usrsctp
+vcpkg install
 ```
 
-The project requires BoringSSL on every platform. Do not install or substitute
-OpenSSL; the CMake presets resolve BoringSSL through the vcpkg manifest.
+Set `SALTS_CNET_ROOT` to the SaltsCNet SDK that exports the DTLS-SRTP API.
+The CMake presets resolve the remaining native dependencies from the vcpkg manifest.
 
 ### Build
 

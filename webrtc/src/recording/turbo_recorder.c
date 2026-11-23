@@ -15,23 +15,15 @@
 #include "turbo_recorder_internal.h"
 #include "turbo_muxer.h"
 #include "rtp-payload.h"
+#include <core/clock.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <tstr.h>
+#include <core/tstr.h>
 #include <cstl/vec.h>
 #include <stdio.h>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define NORPC
-#define NOSERVICE
-#include <platform.h>
-#else
-#include <time.h>
-#endif
 
 /* =============================================================================
  * Recording Configuration
@@ -144,16 +136,7 @@ struct rtp_recorder_ctx_t {
  * ============================================================================= */
 
 static int64_t get_time_us(void) {
-#ifdef _WIN32
-    LARGE_INTEGER frequency, counter;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&counter);
-    return (int64_t)((counter.QuadPart * 1000000) / frequency.QuadPart);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-#endif
+    return (int64_t)(hrtime() / 1000u);
 }
 
 static void recorder_emit_error(turbo_recorder_t *rec, const char *error) {

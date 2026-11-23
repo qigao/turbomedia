@@ -12,8 +12,8 @@
 
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
-#include "tlog.h"
-#include <platform.h>
+#include "core/tlog.h"
+#include <core/platform.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +58,7 @@ typedef struct {
  * ============================================================================ */
 
 static uint64_t get_time_us(void) {
-    return cmeta_monotonic_ms() * 1000ULL;
+    return monotonic_ms() * 1000ULL;
 }
 
 static void print_stats(benchmark_state_t *bench) {
@@ -351,7 +351,7 @@ int main(int argc, char **argv) {
         }
 
         update_throughput_test(&bench, now_us);
-        cmeta_sleep_ms(1);
+        sleep_ms(1);
     }
 
     turbo_dc_peer_destroy(bench.peer);

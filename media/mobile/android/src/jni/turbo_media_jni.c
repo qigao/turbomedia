@@ -10,7 +10,7 @@
 
 #include <android/log.h>
 #include <jni.h>
-#include <salts_capture_android.h>
+#include <capture_android.h>
 #include <stdint.h>
 
 #define LOG_TAG "TurboMediaJNI"
@@ -33,13 +33,13 @@ Java_com_turbonet_media_ScreenCapture_nativeCreate(JNIEnv *env,
     (void)env;
     (void)thiz;
 
-    salts_android_screen_capture_config_t config = {
+    android_screen_capture_config_t config = {
         .width = width,
         .height = height,
         .framerate = framerate,
     };
-    salts_capture_t *screen = NULL;
-    if (salts_android_screen_capture_create(&config, &screen) !=
+    capture_t *screen = NULL;
+    if (android_screen_capture_create(&config, &screen) !=
         SALTS_CAPTURE_OK) {
         return 0;
     }
@@ -54,9 +54,9 @@ Java_com_turbonet_media_ScreenCapture_nativeDestroy(JNIEnv *env,
     (void)env;
     (void)thiz;
 
-    salts_capture_t *screen = (salts_capture_t *)jlong_to_ptr(handle);
+    capture_t *screen = (capture_t *)jlong_to_ptr(handle);
     if (screen) {
-        salts_capture_destroy(screen);
+        capture_destroy(screen);
     }
 }
 
@@ -66,11 +66,11 @@ Java_com_turbonet_media_ScreenCapture_nativeGetSurface(JNIEnv *env,
                                                        jlong handle) {
     (void)thiz;
 
-    salts_capture_t *screen = (salts_capture_t *)jlong_to_ptr(handle);
+    capture_t *screen = (capture_t *)jlong_to_ptr(handle);
     if (!screen) return NULL;
 
     jobject surface = NULL;
-    return salts_android_screen_capture_get_surface(env, screen, &surface) ==
+    return android_screen_capture_get_surface(env, screen, &surface) ==
                    SALTS_CAPTURE_OK
                ? surface
                : NULL;
@@ -83,10 +83,10 @@ Java_com_turbonet_media_ScreenCapture_nativeStart(JNIEnv *env,
     (void)env;
     (void)thiz;
 
-    salts_capture_t *screen = (salts_capture_t *)jlong_to_ptr(handle);
+    capture_t *screen = (capture_t *)jlong_to_ptr(handle);
     if (!screen) return JNI_FALSE;
 
-    return salts_capture_start(screen) == SALTS_CAPTURE_OK ? JNI_TRUE
+    return capture_start(screen) == SALTS_CAPTURE_OK ? JNI_TRUE
                                                            : JNI_FALSE;
 }
 
@@ -97,10 +97,10 @@ Java_com_turbonet_media_ScreenCapture_nativeStop(JNIEnv *env,
     (void)env;
     (void)thiz;
 
-    salts_capture_t *screen = (salts_capture_t *)jlong_to_ptr(handle);
+    capture_t *screen = (capture_t *)jlong_to_ptr(handle);
     if (!screen) return JNI_FALSE;
 
-    salts_capture_stop(screen);
+    capture_stop(screen);
     return JNI_TRUE;
 }
 
@@ -111,9 +111,9 @@ Java_com_turbonet_media_ScreenCapture_nativeGetFrameCount(JNIEnv *env,
     (void)env;
     (void)thiz;
 
-    salts_capture_t *screen = (salts_capture_t *)jlong_to_ptr(handle);
+    capture_t *screen = (capture_t *)jlong_to_ptr(handle);
     uint64_t frame_count = 0;
-    if (salts_android_screen_capture_get_frame_count(screen, &frame_count) !=
+    if (android_screen_capture_get_frame_count(screen, &frame_count) !=
         SALTS_CAPTURE_OK) {
         return 0;
     }

@@ -316,7 +316,7 @@ async function main() {
     console.log('\n=== Browser Stats ===');
     console.log(JSON.stringify(stats?.result?.value || [], null, 2));
 
-    if (!snapshot.messages.includes('Hello from TurboNet!')) {
+    if (!snapshot.messages.includes('Hello from Salts!')) {
       throw new Error('data channel opened but expected native greeting was not observed');
     }
     if (!snapshot.messages.includes('Hello from browser!')) {

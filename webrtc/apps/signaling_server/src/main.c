@@ -9,8 +9,8 @@
 #include "signaling_server/config.h"
 #include "signaling_server/server.h"
 #include "webrtc_signaling.h"
-#include <platform.h>
-#include <tlog.h>
+#include <core/platform.h>
+#include <core/tlog.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -323,7 +323,7 @@ int main(int argc, char **argv) {
     }
     
     /* Initialize logging */
-    tlog_set_level(tlog_get_default(), cmeta_log_level_from_name(config.log_level));
+    tlog_set_level(tlog_get_default(), log_level_from_name(config.log_level));
     
     /* Print startup banner */
     TLOG_INFO("=================================================");

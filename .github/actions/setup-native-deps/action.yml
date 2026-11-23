@@ -1,8 +1,8 @@
 name: Set up native dependency transport
-description: Bootstrap the locked vcpkg contract and download re2c with curl; no Mono or .NET.
+description: Bootstrap the locked vcpkg contract and restore host code generators with curl.
 inputs:
   re2c:
-    description: Download the locked re2c host tool
+    description: Restore the locked re2c and Lemon host tools
     default: 'true'
 runs:
   using: composite
@@ -24,3 +24,25 @@ runs:
       env:
         GITHUB_TOKEN: ${{ github.token }}
       run: python cmake/ci/github_packages.py re2c
+    - name: Select the Lemon host package
+      id: lemon-host
+      if: inputs.re2c == 'true'
+      shell: bash
+      run: |
+        host="$(printf '%s-%s' "$RUNNER_OS" "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+        executable=lemon
+        if [ "$RUNNER_OS" = Windows ]; then
+          executable=lemon.exe
+        fi
+        printf 'payload=tools/%s\nexecutable=bin/%s\n' "$host" "$executable" >> "$GITHUB_OUTPUT"
+    - uses: qigao/vcpkg-cache/.github/actions/setup-native-dependency@46980b67893391cd4e43d193d00c14631adc7372
+      if: inputs.re2c == 'true'
+      with:
+        package-id: Qigao.Lemon.Binary
+        version: 1.0.0
+        sha256: 92539e4d99c38657fa69f0bdaea73be2b35f6572cb6a9264731ae58a6da073cd
+        destination: ${{ runner.temp }}/turbomedia-lemon
+        payload: ${{ steps.lemon-host.outputs.payload }}
+        required-files: share/lemon/lempar.c
+        executables: ${{ steps.lemon-host.outputs.executable }}
+        env-prefix: LEMON

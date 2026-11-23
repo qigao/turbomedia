@@ -5,20 +5,24 @@
  */
 #include "turbo_media_engine.h"
 #include "jitter_buffer.h"
-#include "tlog.h"
+#include "core/tlog.h"
 #if defined(TURBO_MEDIA_PRODUCT_CLIENT)
-#include "salts_capture.h"
+#include "capture.h"
 #endif
 #include "turbo_codec.h"
 #include "turbo_datachannel.h"
 #include "turbo_nack.h"
 #include "turbo_rtp.h"
 #include "turbo_srtp.h"
-#include <platform.h>
+#include <core/clock.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+
+#if defined(_WIN32) && (defined(_MSC_VER) || defined(__clang__))
+#include <windows.h>
+#endif
 
 #if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 #define MEDIA_MAX_NATIVE_VIDEO_MODES 256
@@ -86,7 +90,7 @@ struct turbo_media_context_s {
   turbo_dc_peer_t *peer;
   void *user_data;
   srtp_session_t *rtcp_session;
-  cmeta_mutex_t srtp_mutex;
+  sync_mutex_t srtp_mutex;
   int srtp_mutex_initialized;
 
   /* Tracks */
@@ -108,7 +112,7 @@ struct turbo_media_context_s {
 
 #define MEDIA_RTP_PAYLOAD_MTU 1100
 
-static uint64_t get_time_ms(void) { return cmeta_monotonic_ms(); }
+static uint64_t get_time_ms(void) { return monotonic_ms(); }
 
 static uint32_t read_u32(const uint8_t *p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -253,13 +257,13 @@ static int media_track_srtp_protect(turbo_media_track_t *track, uint8_t *packet,
 
   if (!track || !track->ctx || !packet || !len) return -1;
   ctx = track->ctx;
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (!track->srtp_send_session) {
-    cmeta_mutex_unlock(&ctx->srtp_mutex);
+    sync_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtp_protect(track->srtp_send_session, packet, len, max_len);
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -270,13 +274,13 @@ static int media_track_srtp_unprotect(turbo_media_track_t *track, uint8_t *packe
 
   if (!track || !track->ctx || !packet || !len) return -1;
   ctx = track->ctx;
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (!track->srtp_recv_session) {
-    cmeta_mutex_unlock(&ctx->srtp_mutex);
+    sync_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtp_unprotect(track->srtp_recv_session, packet, len);
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -285,13 +289,13 @@ static int media_srtcp_protect(turbo_media_context_t *ctx, uint8_t *packet, size
   int result;
 
   if (!ctx || !packet || !len) return -1;
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    cmeta_mutex_unlock(&ctx->srtp_mutex);
+    sync_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtcp_protect(ctx->rtcp_session, packet, len, max_len);
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -299,13 +303,13 @@ static int media_srtcp_unprotect(turbo_media_context_t *ctx, uint8_t *packet, si
   int result;
 
   if (!ctx || !packet || !len) return -1;
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    cmeta_mutex_unlock(&ctx->srtp_mutex);
+    sync_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtcp_unprotect(ctx->rtcp_session, packet, len);
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -351,9 +355,9 @@ static int media_setup_new_track_srtp_if_ready(turbo_media_track_t *track) {
 
   if (!track || !track->ctx) return -1;
   ctx = track->ctx;
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   srtp_ready = ctx->rtcp_session != NULL;
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   if (!srtp_ready) return 0;
 
   profile = turbo_dc_peer_get_srtp_keys(ctx->peer, &material);
@@ -364,16 +368,16 @@ static int media_setup_new_track_srtp_if_ready(turbo_media_track_t *track) {
     return -1;
   }
 
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    cmeta_mutex_unlock(&ctx->srtp_mutex);
+    sync_mutex_unlock(&ctx->srtp_mutex);
     if (send_session) srtp_session_destroy(send_session);
     if (recv_session) srtp_session_destroy(recv_session);
     return -1;
   }
   track->srtp_send_session = send_session;
   track->srtp_recv_session = recv_session;
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   return 0;
 }
 
@@ -402,12 +406,12 @@ turbo_media_context_t *turbo_media_create(turbo_dc_peer_t *peer, void *user_data
   ctx->peer = peer;
   ctx->user_data = user_data;
   ctx->rtcp_interval_ms = 5000; /* Default 5 second RTCP interval */
-  cmeta_mutex_init(&ctx->srtp_mutex);
+  sync_mutex_init(&ctx->srtp_mutex);
   ctx->srtp_mutex_initialized = 1;
 
   /* Initialize SRTP library */
   if (srtp_lib_init() != 0) {
-    cmeta_mutex_destroy(&ctx->srtp_mutex);
+    sync_mutex_destroy(&ctx->srtp_mutex);
     free(ctx);
     return NULL;
   }
@@ -435,15 +439,15 @@ void turbo_media_destroy(turbo_media_context_t *ctx) {
     turbo_media_remove_track(track);
   }
 
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (ctx->rtcp_session) {
     srtp_session_destroy(ctx->rtcp_session);
     ctx->rtcp_session = NULL;
   }
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
 
   if (ctx->srtp_mutex_initialized) {
-    cmeta_mutex_destroy(&ctx->srtp_mutex);
+    sync_mutex_destroy(&ctx->srtp_mutex);
   }
   free(ctx);
 }
@@ -481,7 +485,7 @@ int turbo_media_setup_srtp(turbo_media_context_t *ctx) {
       goto fail;
   }
 
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (ctx->rtcp_session) srtp_session_destroy(ctx->rtcp_session);
   ctx->rtcp_session = new_rtcp;
   new_rtcp = NULL;
@@ -495,7 +499,7 @@ int turbo_media_setup_srtp(turbo_media_context_t *ctx) {
     new_send[i] = NULL;
     new_recv[i] = NULL;
   }
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
 
   return 0;
 
@@ -760,7 +764,7 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
       size_t srtcp_len = len;
       memcpy(packet_buf, data, len);
       if (media_srtcp_unprotect(ctx, packet_buf, &srtcp_len) == 0) {
-#ifdef _WIN32
+#if defined(_WIN32) && (defined(_MSC_VER) || defined(__clang__))
         /* Windows can raise SEH here when a bad or racing control packet
          * reaches the RTCP dispatcher. Treat it as a dropped feedback
          * packet instead of taking down the whole media pipeline. */
@@ -770,7 +774,7 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
           if (parsed > 0) {
             return 0;
           }
-#ifdef _WIN32
+#if defined(_WIN32) && (defined(_MSC_VER) || defined(__clang__))
         } __except (EXCEPTION_EXECUTE_HANDLER) {
           return 0;
         }
@@ -1087,7 +1091,7 @@ static void handle_rtcp_remb(turbo_media_context_t *ctx, const void *data, size_
 }
 
 #if defined(TURBO_MEDIA_PRODUCT_CLIENT)
-static int capture_device_id(salts_capture_type_t type, int device_index, char *device_id,
+static int capture_device_id(capture_type_t type, int device_index, char *device_id,
                              size_t device_id_len) {
   device_id[0] = '\0';
   if (device_index < 0) {
@@ -1098,13 +1102,13 @@ static int capture_device_id(salts_capture_type_t type, int device_index, char *
   snprintf(device_id, device_id_len, "%d", device_index);
   return 0;
 #else
-  salts_capture_device_t devices[SALTS_CAPTURE_MAX_DEVICES];
+  capture_device_t devices[SALTS_CAPTURE_MAX_DEVICES];
   int count;
 
   if (type == SALTS_CAPTURE_TYPE_AUDIO) {
-    count = salts_capture_list_audio_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
+    count = capture_list_audio_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
   } else {
-    count = salts_capture_list_video_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
+    count = capture_list_video_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
   }
   if (count <= device_index) {
     return -1;
@@ -1117,23 +1121,23 @@ static int capture_device_id(salts_capture_type_t type, int device_index, char *
 }
 
 static int capture_find_native_i420_mode(
-    salts_video_device_t *device,
+    video_device_t *device,
     int width,
     int height,
     int framerate,
-    salts_video_native_mode_t *selected_mode) {
-  salts_video_native_mode_t modes[MEDIA_MAX_NATIVE_VIDEO_MODES];
+    video_native_mode_t *selected_mode) {
+  video_native_mode_t modes[MEDIA_MAX_NATIVE_VIDEO_MODES];
   size_t mode_count = 0;
 
   if (!device || !selected_mode || width <= 0 || height <= 0 || framerate <= 0) return -1;
-  if (salts_video_device_list_modes(device, modes, MEDIA_MAX_NATIVE_VIDEO_MODES,
+  if (video_device_list_modes(device, modes, MEDIA_MAX_NATIVE_VIDEO_MODES,
                                     &mode_count) != SALTS_CAPTURE_OK ||
       mode_count == 0) {
     return -1;
   }
 
   for (size_t i = 0; i < mode_count; ++i) {
-    const salts_video_native_mode_t *mode = &modes[i];
+    const video_native_mode_t *mode = &modes[i];
     if (mode->format == SALTS_VIDEO_CAPTURE_FORMAT_I420 &&
         mode->width == width && mode->height == height &&
         (uint64_t)mode->framerate_numerator ==
@@ -1149,7 +1153,7 @@ static int capture_find_native_i420_mode(
  * Audio Capture Callbacks
  * ============================================================================= */
 
-static void on_audio_captured(salts_capture_t *capture, const uint8_t *samples, size_t len,
+static void on_audio_captured(capture_t *capture, const uint8_t *samples, size_t len,
                               uint64_t timestamp, void *user_data) {
   turbo_media_track_t *track = (turbo_media_track_t *)user_data;
   turbo_speech_audio_frame_t speech_frame;
@@ -1186,7 +1190,7 @@ static void on_audio_captured(salts_capture_t *capture, const uint8_t *samples, 
   turbo_media_track_send_frame(track, samples, len, 0);
 }
 
-static void on_video_captured(salts_capture_t *capture, const uint8_t *frame, size_t len, int width,
+static void on_video_captured(capture_t *capture, const uint8_t *frame, size_t len, int width,
                               int height, uint64_t timestamp, void *user_data) {
   turbo_media_track_t *track = (turbo_media_track_t *)user_data;
   if (!track || atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return;
@@ -1389,7 +1393,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   if (track->jitter) {
     jitter_buffer_destroy(track->jitter);
   }
-  cmeta_mutex_lock(&ctx->srtp_mutex);
+  sync_mutex_lock(&ctx->srtp_mutex);
   if (track->srtp_send_session) {
     srtp_session_destroy(track->srtp_send_session);
     track->srtp_send_session = NULL;
@@ -1398,7 +1402,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
     srtp_session_destroy(track->srtp_recv_session);
     track->srtp_recv_session = NULL;
   }
-  cmeta_mutex_unlock(&ctx->srtp_mutex);
+  sync_mutex_unlock(&ctx->srtp_mutex);
   if (track->twcc_tracker) {
     twcc_tracker_destroy(track->twcc_tracker);
   }
@@ -1407,7 +1411,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   }
 #if defined(TURBO_MEDIA_PRODUCT_CLIENT)
   if (track->capture) {
-    salts_capture_destroy((salts_capture_t *)track->capture);
+    capture_destroy((capture_t *)track->capture);
   }
 #endif
 
@@ -1424,13 +1428,13 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
 
   /* Destroy existing capture if any */
   if (track->capture) {
-    salts_capture_destroy((salts_capture_t *)track->capture);
+    capture_destroy((capture_t *)track->capture);
     track->capture = NULL;
   }
 
   if (config->type == TURBO_MEDIA_CAPTURE_MICROPHONE) {
     char device_id[128];
-    salts_audio_capture_config_t audio_cfg = {.sample_rate = config->audio.sample_rate,
+    audio_capture_config_t audio_cfg = {.sample_rate = config->audio.sample_rate,
                                               .channels = config->audio.channels,
                                               .bits_per_sample = 16, /* Standard for Opus input */
                                               .frame_size_ms = config->audio.frame_size_ms};
@@ -1440,25 +1444,25 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
       return -1;
     }
 
-    track->capture = salts_audio_capture_create(device_id[0] ? device_id : NULL, &audio_cfg);
+    track->capture = audio_capture_create(device_id[0] ? device_id : NULL, &audio_cfg);
     if (!track->capture) return -1;
 
-    salts_audio_capture_set_callback((salts_capture_t *)track->capture, on_audio_captured, track);
+    audio_capture_set_callback((capture_t *)track->capture, on_audio_captured, track);
     return 0;
   }
 
   if (config->type == TURBO_MEDIA_CAPTURE_CAMERA) {
     char device_id[128];
-    salts_video_device_t *device = NULL;
-    salts_video_native_mode_t native_mode;
-    salts_capture_t *capture = NULL;
+    video_device_t *device = NULL;
+    video_native_mode_t native_mode;
+    capture_t *capture = NULL;
 
     if (capture_device_id(SALTS_CAPTURE_TYPE_VIDEO, config->device_index, device_id,
                           sizeof(device_id)) != 0) {
       return -1;
     }
 
-    if (salts_video_device_open(device_id[0] ? device_id : NULL,
+    if (video_device_open(device_id[0] ? device_id : NULL,
                                 &device) != SALTS_CAPTURE_OK) {
       return -1;
     }
@@ -1466,32 +1470,32 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
                                       config->video.height,
                                       config->video.framerate,
                                       &native_mode) != 0) {
-      salts_video_device_close(device);
+      video_device_close(device);
       return -1;
     }
 
-    if (salts_video_device_create_capture(device, &native_mode, &capture) !=
+    if (video_device_create_capture(device, &native_mode, &capture) !=
         SALTS_CAPTURE_OK) {
-      salts_video_device_close(device);
+      video_device_close(device);
       return -1;
     }
-    salts_video_device_close(device);
+    video_device_close(device);
     track->capture = capture;
 
-    salts_video_capture_set_callback((salts_capture_t *)track->capture, on_video_captured, track);
+    video_capture_set_callback((capture_t *)track->capture, on_video_captured, track);
     return 0;
   }
 
   if (config->type == TURBO_MEDIA_CAPTURE_SCREEN) {
-    salts_screen_capture_config_t screen_cfg = {.monitor_index = config->device_index,
+    screen_capture_config_t screen_cfg = {.monitor_index = config->device_index,
                                                 .framerate = config->video.framerate,
                                                 .capture_cursor = 1,
                                                 .capture_audio = 0};
 
-    track->capture = salts_screen_capture_create(&screen_cfg);
+    track->capture = screen_capture_create(&screen_cfg);
     if (!track->capture) return -1;
 
-    salts_screen_capture_set_callback((salts_capture_t *)track->capture, on_video_captured, track);
+    screen_capture_set_callback((capture_t *)track->capture, on_video_captured, track);
     return 0;
   }
 
@@ -1725,7 +1729,7 @@ static int init_decoder(turbo_media_track_t *track) {
 static int start_capture_if_present(turbo_media_track_t *track) {
   if (!track->capture) return 0;
 
-  return salts_capture_start((salts_capture_t *)track->capture);
+  return capture_start((capture_t *)track->capture);
 }
 #endif
 
@@ -1738,7 +1742,7 @@ void turbo_media_track_stop(turbo_media_track_t *track) {
 #if defined(TURBO_MEDIA_PRODUCT_CLIENT)
   /* Stop the Client-owned SaltsUtils capture source. */
   if (track->capture) {
-    salts_capture_stop((salts_capture_t *)track->capture);
+    capture_stop((capture_t *)track->capture);
   }
 #endif
 
@@ -2061,8 +2065,8 @@ int turbo_media_track_get_transport_cc_ext_id(turbo_media_track_t *track) {
  * ============================================================================= */
 
 int turbo_media_list_audio_inputs(turbo_media_device_t *devices, int max_count) {
-  salts_capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
-  int count = salts_capture_list_audio_devices(
+  capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
+  int count = capture_list_audio_devices(
       cap_devices, max_count < SALTS_CAPTURE_MAX_DEVICES ? max_count : SALTS_CAPTURE_MAX_DEVICES);
   if (count < 0) return 0;
 
@@ -2076,8 +2080,8 @@ int turbo_media_list_audio_inputs(turbo_media_device_t *devices, int max_count) 
 }
 
 int turbo_media_list_video_inputs(turbo_media_device_t *devices, int max_count) {
-  salts_capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
-  int count = salts_capture_list_video_devices(
+  capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
+  int count = capture_list_video_devices(
       cap_devices, max_count < SALTS_CAPTURE_MAX_DEVICES ? max_count : SALTS_CAPTURE_MAX_DEVICES);
   if (count < 0) return 0;
 
@@ -2091,8 +2095,8 @@ int turbo_media_list_video_inputs(turbo_media_device_t *devices, int max_count) 
 }
 
 int turbo_media_list_screens(turbo_media_device_t *devices, int max_count) {
-  salts_capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
-  int count = salts_capture_list_screens(
+  capture_device_t cap_devices[SALTS_CAPTURE_MAX_DEVICES];
+  int count = capture_list_screens(
       cap_devices, max_count < SALTS_CAPTURE_MAX_DEVICES ? max_count : SALTS_CAPTURE_MAX_DEVICES);
   if (count < 0) return 0;
 

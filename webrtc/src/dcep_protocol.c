@@ -8,8 +8,8 @@
  */
 
 #include "turbo_datachannel_internal.h"
-#include <platform.h>
-#include <tstr.h>
+#include <core/platform.h>
+#include <core/tstr.h>
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
@@ -20,7 +20,7 @@ ssize_t turbo_media_test_dcep_sendv(
     struct sockaddr *address, int address_count, void *info,
     socklen_t info_length, unsigned int info_type, int flags);
 #endif
-#include "tlog.h"
+#include "core/tlog.h"
 
 /* DCEP header offsets */
 #define DCEP_HEADER_LENGTH    12
@@ -150,7 +150,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         /* Reserve one callback lease before publication. on_channel may
          * close/unpublish the channel, but cannot reclaim this live scope. */
         int published = 0;
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         if (!peer->destroying &&
             !roaring_bitmap_contains(peer->channel_ids, stream_id) &&
             peer_get_channel(peer, stream_id) == NULL) {
@@ -162,7 +162,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                 peer_free_channel_id(peer, stream_id);
             }
         }
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         if (!published) {
             tstr_free(channel->label);
             tstr_free(channel->protocol);
@@ -185,7 +185,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
              * Peer destruction begins and would leave this private record
              * published. No application callback has observed the Channel. */
             int reset_stream = 0;
-            cmeta_mutex_lock(&peer->operation_mutex);
+            sync_mutex_lock(&peer->operation_mutex);
             if (!channel->closing) {
                 channel->closing = 1;
                 channel->is_open = 0;
@@ -193,7 +193,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                     peer_remove_channel(peer, stream_id);
                 reset_stream = !peer->destroying && peer->sctp.socket != NULL;
             }
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             if (reset_stream &&
                 sctp_reset_channel_stream(peer, stream_id) != 0) {
                 dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND,
@@ -208,20 +208,20 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         turbo_dc_channel_cb on_channel = NULL;
         turbo_dc_open_cb on_open = NULL;
         void *callback_data;
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         if (!channel->closing && !peer->destroying) {
             channel->is_open = 1;
             on_channel = peer->on_channel;
         }
         callback_data = peer->user_data;
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         if (on_channel) on_channel(peer, channel, callback_data);
 
         /* Recheck terminal admission after the reentrant application call. */
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         if (!channel->closing && !peer->destroying) on_open = channel->on_open;
         callback_data = channel->user_data;
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         if (on_open) on_open(channel, callback_data);
         dc_channel_release(channel);
     }
@@ -230,7 +230,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         if (channel) {
             turbo_dc_open_cb on_open = NULL;
             void *callback_data;
-            cmeta_mutex_lock(&peer->operation_mutex);
+            sync_mutex_lock(&peer->operation_mutex);
             /* RFC 8832 ACK is valid only for a locally initiated channel
              * whose OPEN was accepted by SCTP. A channel merely allocated in
              * the public map is not yet waiting for an ACK. */
@@ -240,7 +240,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                 on_open = channel->on_open;
             }
             callback_data = channel->user_data;
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             if (on_open) on_open(channel, callback_data);
             dc_channel_release(channel);
         }

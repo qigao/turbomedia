@@ -1,8 +1,8 @@
 #include "ivr_certificate_identity.h"
 
-#include "platform.h"
-#include "cmeta_error.h"
-#include <salts/clock.h>
+#include "core/platform.h"
+#include "core/error.h"
+#include <core/clock.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -25,7 +25,7 @@ struct ivr_certificate_identity_s {
 
 static uint64_t identity_now_ms(const ivr_certificate_identity_t *identity) {
     return identity->clock ? identity->clock(identity->clock_context)
-                           : cmeta_realtime_ms();
+                           : realtime_ms();
 }
 
 static int fingerprint_valid(const char *value) {

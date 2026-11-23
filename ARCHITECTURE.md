@@ -61,16 +61,44 @@ mobile adapters"]
 
 ## 3. Shared media core
 
+### Source layout
+
+| Directory | Responsibility |
+| --- | --- |
+| `media/` | Media runtime, codecs, containers, playback, processing, and device adapters |
+| `sip/` | SIP signaling and client, SDP, RTP/RTCP, RTP ICE, and voice SDK tests |
+| `streaming/` | CNet and HTTP adapters, RTSP, desktop RTSP server adapter, HLS/DASH/RTMP/HTTP-FLV streamers, and YAML pipeline |
+| `webrtc/` | RTC and DataChannel libraries, signaling, and RTC applications |
+| `streamgraph/` | Typed media graph and provider integration |
+
+Muxer and demuxer share format code in `media/containers/common/`.
+`TurboMedia::Transport` provides the CNet, HTTP, and URL adapters.
+The layout follows the existing build domains and preserves installed header
+paths and platform availability. Source tools and CI path
+filters use the new paths. The directory moves and build-path changes can be
+reverted together without migrating user data or configuration.
+
+SIP signaling depends on the shared Salts core, containers, crypto and threads.
+The SIP client composes it with the shared transport and audio codec targets.
+WebRTC and streaming adapters use the media server runtime to publish and
+subscribe to sources. Each protocol module owns its wire state and builds its
+targets from its own CMake entry point.
+
+### Components
+
 The shared layer is always built.
 
-- `TurboMedia::Core` owns common media/runtime primitives.
+- `TurboMedia::MediaRuntime` owns the media-source registry, tracks, frame
+  publishing, and subscriptions. Its desktop build also owns server runtime
+  and protocol session state.
 - `TurboMedia::Codec` owns codec-facing conversion.
 - `TurboMedia::Muxer` / `TurboMedia::Demuxer` own container boundaries.
-- `TurboMedia::Transport` owns shared network transport.
+- `TurboMedia::Transport` owns the shared network adapters.
+- `TurboMedia::SIP` owns SIP signaling. `TurboMedia::RTP` owns media packet I/O.
 - `TurboMedia::RTSP` owns protocol parsing/session logic.
 - FFmpeg types do not enter the public media ABI.
 
-`common/codec_helpers` remains internal to the classic
+`media/containers/common/codec_helpers` remains internal to the classic
 muxer/demuxer/streamer path. Pipeline keeps native FFmpeg packet/frame timing
 inside its own graph.
 
@@ -94,6 +122,73 @@ flowchart LR
 `TurboMedia::Player` combines container/codec logic with playback.
 Platform adapters never replace Salts device ownership.
 
+### SIP voice
+
+The SIP transaction owner advances signaling through `sip_transport_t`. The
+media owner binds its own RTP/RTCP endpoints and uses the addresses and payload
+types selected by SDP. SIP retransmission and media playout each keep their own
+timers and queue budgets. A call handle coordinates dialog events, media start
+and stop, and resource drain across the two owners.
+
+`SIP`, `RTP`, `SDP`, and `AudioCodec` can be installed together as static
+components. PCM is the device boundary. Apps can supply their own audio I/O or
+use `Salts::Media`. SIP code links `TurboMedia::SIP`; media packet code links
+`TurboMedia::RTP`.
+
+`sip_registration_poll` drives REGISTER retries and renewal from the signaling
+owner, with the existing UAC transaction handling retransmissions and timeout.
+Keep the agent and transport context alive until the registration object is
+destroyed. It keeps a single Call-ID, increments CSeq, and uses the confirmed
+Contact lifetime for scheduling. Digest hashes and nonce generation come from
+`Salts::Crypto`. The SIP transaction layer retains the transport callback boundary.
+The registration uses SHA-256 when offered and supports legacy MD5 and `qop=auth`.
+Digest registration, UTF-8 MESSAGE, and PCMU audio use the loopback registrar and
+separate signaling and media UDP ports in tests.
+
+`TurboMedia::SIPClient` composes `SIP`, `SDP`, `RTP` and `AudioCodec` behind
+one account handle and one current call. It owns registration and call state,
+codec instances, RTP time and the RTCP report schedule. The application owns
+signal routing, media endpoints, playout timing and device I/O. The two
+transport interfaces can be combined with direct RTP or a separate media owner
+with ICE. Callbacks borrow packet and PCM storage until they return.
+
+The client drives transaction deadlines and I/O from one application owner.
+The low-level agent can continue to use native timers. An owner-driven agent
+admits up to 64 client and 64 server transactions, while the client holds
+32 application request slots. Pending or rejected operations surface a status
+at admission or a final event. Initial UAC send failure rolls back the
+transaction. Client destruction aborts outstanding local transactions and
+closes prepared media. Peer-visible BYE and unregister have explicit operations.
+Windows packages the client as a DLL with explicit C exports for registration,
+call control, voice media, and SIP MESSAGE. The DLL links RTP and the voice
+codecs internally. SIP and SDP remain public dependencies because the callbacks
+use their types. The install component stages the resolved runtime DLLs.
+Other platforms retain the static client and its link dependencies. The platform
+split keeps the existing static delivery path and lets Windows applications
+deploy one TurboMedia client DLL. The application still owns both transports
+and can link the low-level components separately.
+
+Windows applications moving from the static client rebuild against
+`TurboMedia::SIPClient` from a fresh SDK prefix and deploy the DLLs from that
+prefix together. To roll back, restore the previous SDK and rebuild its
+consumers. The transport callback contract and media formats carry over.
+
+The generic SDP answer builder uses offer order, rejects incompatible media
+sections by setting port zero, and uses the offered payload mapping. The RTC
+PeerConnection already computes its WebRTC-specific answer and calls the
+serializer with the negotiated SDP.
+
+`TurboMedia::RTPICE` is an optional transport for an RTP/RTCP-mux media session.
+The application owns the media thread and drives the existing SaltsNet ICE agent.
+Gathering and connectivity checks are synchronous on that owner. SDP carries the
+credentials, candidates and default address; SIP carries the SDP as its body.
+Media receive borrows the packet for the callback, and send borrows the packet
+until local transport completion. Checked destroy retains the transport when
+draining fails. This keeps the ICE agent independent of SIP transactions and
+avoids a second networking worker in the adapter. Existing direct UDP callers
+continue to link the standalone RTP and SIP components. Media SDP now retains the
+connection address, which changes the SDP struct ABI and requires consumer rebuilds.
+
 ## 5. RTC and WebRTC
 
 The shared WebRTC subtree provides:
@@ -104,13 +199,14 @@ The shared WebRTC subtree provides:
 - `TurboMedia::RTCClient`
 - `TurboMedia::WebRTCSignaling`
 
-RTC owns RTP/RTCP, NACK, TWCC, simulcast, jitter, SRTP, media engine, and
-PeerConnection state. Owner-driven polling advances ICE, DTLS, SRTP,
+RTC owns RTP sessions, RTCP feedback, NACK, TWCC, simulcast, jitter, SRTP, the
+media engine, and PeerConnection state. Owner-driven polling advances ICE, DTLS, SRTP,
 DataChannel transport, and timers.
 
 ```mermaid
 flowchart LR
   SDP["SDP"]
+  RTP["TurboMedia::RTP"]
   ICE["SaltsNet::ICE"]
   DTLS["DTLS"]
   SRTP["libSRTP"]
@@ -120,6 +216,7 @@ flowchart LR
   Desktop["Linux/Windows WebRTC facade"]
 
   SDP --> RTC
+  RTP --> RTC
   ICE --> RTC
   DTLS --> RTC
   SRTP --> RTC
@@ -131,15 +228,38 @@ flowchart LR
 The Linux/Windows WebRTC facade additionally integrates desktop
 `ServerRuntime`. Android/macOS/iOS do not create that target.
 
-The legacy transport RTP ABI and RTC RTP ABI intentionally have different
-packet layouts. Linux shared objects bind internal calls locally so ELF symbol
-preemption cannot route packets through the wrong implementation.
+RTC, SIP media, Pipeline, and the recorder use the packet ABI from
+`TurboMedia::RTP`. Keeping both serializers would require callers to choose
+between incompatible packet layouts with the same symbol. The common packet type
+keeps opaque extension bytes and exposes decoded one-byte extensions for RTC.
+Parsing borrows the source buffer. After serializing in place, callers parse
+again to refresh views before using the packet.
 
-## 6. Desktop services
+Applications upgrading from the old `Transport` entry points migrate to
+`<turbo_rtp_packet.h>` and `rtp_packet_parse` and rebuild against the new
+component targets. Roll back by rebuilding and deploying the previous SDK and
+its callers together. The wire packet format and stored media require no migration.
+
+## 6. Streaming and desktop services
+
+`streaming/rtsp` owns the RTSP parser and sessions on all supported platforms.
+On desktop platforms its server adapter connects RTSP sessions to the source
+runtime in `media/runtime`.
+
+RTSP, WebRTC, and Pipeline share runtime handles and call the same media-source
+and server APIs. Two shared libraries gave the server runtime a separate binary
+dependency on the source registry. A single `TurboMedia::MediaRuntime` library
+provides both APIs to these callers and removes one desktop shared library.
+The registry and session lifecycles, C headers, and error semantics carry over.
+The server API is available on Windows and Linux.
+
+Consumers migrating from `TurboMedia::Core` or `TurboMedia::Server` link
+`TurboMedia::MediaRuntime` and rebuild against the new SDK. Use a clean install
+prefix to verify the shipped set. To roll back, rebuild and deploy the previous
+SDK and its callers together. Existing media and configuration remain valid.
 
 Linux and Windows additionally build:
 
-- `TurboMedia::Server`
 - `TurboMedia::Streamer`
 - `TurboMedia::Pipeline`
 - `TurboMedia::ServerRTSP`
@@ -297,6 +417,6 @@ Tracked external evidence includes:
 
 ## 14. Related documents
 
-- `pipeline/README.md`
+- `streaming/pipeline/README.md`
 - `webrtc/docs/README.md`
 - `README.md`

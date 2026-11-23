@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <salts_playback.h>
+#include <playback.h>
 
 #include "turbo_export.h"
 #include "turbo_rtc_client.h"
@@ -31,7 +31,7 @@ typedef struct turbo_rtc_playback_sink_config_t {
      * Optional Salts playback device. create() copies the complete enumeration
      * result. NULL selects the Salts default device during prepare().
      */
-    const salts_playback_device_t *device;
+    const playback_device_t *device;
 
     uint32_t sample_rate;
     uint32_t channels;
@@ -42,7 +42,7 @@ typedef struct turbo_rtc_playback_sink_config_t {
 typedef struct turbo_rtc_playback_sink_snapshot_t {
     size_t size;
     turbo_rtc_playback_sink_state_t state;
-    salts_playback_state_t playback_state;
+    playback_state_t playback_state;
 
     uint64_t frames_written;
     uint64_t bytes_written;

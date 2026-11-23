@@ -4,28 +4,10 @@
  * Manages RTP session state, sequence numbers, timestamps, and statistics
  */
 #include "turbo_rtp.h"
+#include <core/clock.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-
-#ifdef _WIN32
-  #ifndef WIN32_LEAN_AND_MEAN
-    #define WIN32_LEAN_AND_MEAN
-  #endif
-  #ifndef NOMINMAX
-    #define NOMINMAX
-  #endif
-  #ifndef NORPC
-    #define NORPC
-  #endif
-  #ifndef NOSERVICE
-    #define NOSERVICE
-  #endif
-  #include <platform.h>
-#else
-  #include <sys/time.h>
-#endif
 
 /* RTP Session internal structure */
 struct rtp_session_s {
@@ -62,16 +44,7 @@ static atomic_uint_fast32_t g_ssrc_counter = 0x9E3779B9u;
 
 /* Get current time in milliseconds */
 static uint64_t get_time_ms(void) {
-#ifdef _WIN32
-  FILETIME ft;
-  GetSystemTimeAsFileTime(&ft);
-  uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-  return t / 10000 - 11644473600000ULL;
-#else
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-#endif
+  return realtime_ms();
 }
 
 /* Generate random SSRC */

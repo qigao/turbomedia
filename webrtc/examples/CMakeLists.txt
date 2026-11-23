@@ -24,9 +24,8 @@ if(NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   target_link_libraries(
     rtc_live_audio
     PRIVATE TurboMedia::RTCClient
-            Salts::Capture
-            Salts::Playback
-            Salts::Platform)
+            Salts::Media
+            Salts::Core)
   set_target_properties(rtc_live_audio PROPERTIES FOLDER webrtc/examples)
 endif()
 
@@ -38,7 +37,7 @@ target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::WebRTC TurboMedia::S
                                                $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)
 
-add_executable(dc_ice_example ice_datachannel.c)
+add_executable(dc_ice_example ice_datachannel.c ../src/stb_sprintf.c)
 target_link_libraries(
   dc_ice_example PRIVATE TurboMedia::WebRTC Salts::Core)
 target_include_directories(dc_ice_example PRIVATE ${STB_INCLUDE_DIR})

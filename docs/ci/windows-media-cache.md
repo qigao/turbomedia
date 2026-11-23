@@ -8,7 +8,7 @@ normal builds do not compile dependencies or publish cache entries.
 
 The separate `Windows media binary cache` workflow owns production of this
 repository's dependency closures. PR runs produce and independently restore
-only the focused `rtsp-iocp` closure: BoringSSL, GmSSL, llhttp and their build
+only the focused `rtsp-iocp` closure of GmSSL, llhttp and their build
 tools. Use `workflow_dispatch` with `scope=media` to produce the full 27-package
 media closure needed by Platform Build. A focused success does not qualify
 the full media cache or Platform Build. This follows the infrastructure

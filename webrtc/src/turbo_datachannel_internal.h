@@ -10,12 +10,11 @@
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
 #include <cnet/cnet.h>
-#include <platform.h>
-#include <tstr.h>
-#include <salts/thread.h>
+#include <core/platform.h>
+#include <core/tstr.h>
+#include <threads/threads.h>
 #include <cstl/hash_map.h>
-#include <openssl/ssl.h>
-#include <openssl/bio.h>
+#include <crypto/dtls_stream.h>
 #include <usrsctp.h>
 #include <stdlib.h>
 /* CRoaring's optimized inline containers trigger MSVC C4702 inside the
@@ -42,6 +41,7 @@ extern "C" {
 #define MAX_PROTOCOL_LEN 256
 #define SCTP_MTU_DEFAULT 1188
 #define DTLS_MTU_DEFAULT 1280
+#define DTLS_RECORD_OVERHEAD (CRYPTO_DTLS_MTU - CRYPTO_DTLS_MAX_APPLICATION_BYTES)
 #define MAX_CHANNELS 65536u
 #define SCTP_ASSOCIATION_PORT 5000
 #define SCTP_MAX_STREAMS 65535u
@@ -73,13 +73,21 @@ extern "C" {
  * Internal Structures
  * ============================================================================ */
 
-/* DTLS session state */
+typedef struct dc_dtls_flow_s dc_dtls_flow_t;
+typedef struct dc_dtls_packet_s dc_dtls_packet_t;
+
+/* Only the DataChannel owner advances DTLS. The transport completes a
+ * retained flow token and can release it after the Peer has been destroyed. */
 typedef struct {
-    SSL *ssl;
-    BIO *read_bio;
-    BIO *write_bio;
+    dc_dtls_flow_t *flow;
+    dc_dtls_packet_t *input_head, *input_tail, *output_head, *output_tail;
+    size_t input_count, output_count;
+    uint8_t *tcp_record;
+    size_t tcp_used;
+    int pumping;
+    int started;
     int handshake_done;
-    cmeta_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
+    native_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
 } dtls_session_t;
 
 /* One usrsctp callback record under bounded partial delivery. The buffer is
@@ -117,7 +125,7 @@ typedef void (*dc_test_c11_sctp_destroy_fn)(
 #endif
 
 struct turbo_dc_context_s {
-    SSL_CTX *ssl_ctx;
+    crypto_tls_credential_object *dtls_identity;
     int is_server;
     int initialized;
     int disable_sctp;
@@ -127,10 +135,10 @@ struct turbo_dc_context_s {
     turbo_dc_error_t last_error;      /* Only for errors before peer exists */
     tstr local_fingerprint;         /* SHA-256 hex fingerprint */
     tstr local_fingerprint_hash;    /* "sha-256" */
-    cmeta_thread_t transport_thread;  /* Dedicated CNet owner thread */
+    sync_thread_t transport_thread;  /* Dedicated CNet owner thread */
     int transport_thread_started;
-    cmeta_mutex_t transport_mutex;
-    cmeta_cond_t transport_cond;
+    sync_mutex_t transport_mutex;
+    sync_cond_t transport_cond;
     int transport_sync_initialized;
     int transport_stop_requested;
     int transport_command_pending;
@@ -138,8 +146,8 @@ struct turbo_dc_context_s {
     dc_transport_task_fn transport_command;
     void *transport_command_arg1;
     void *transport_command_arg2;
-    cmeta_mutex_t peer_mutex;
-    cmeta_cond_t peers_drained;
+    sync_mutex_t peer_mutex;
+    sync_cond_t peers_drained;
     int peer_mutex_initialized;
     int destroying;
     struct turbo_dc_peer_s *peers_head;
@@ -163,8 +171,8 @@ struct turbo_dc_peer_s {
     int is_dtls_server;
 
     /* External callbacks and destruction are serialized by this protocol. */
-    cmeta_mutex_t operation_mutex;
-    cmeta_cond_t operation_cond;
+    sync_mutex_t operation_mutex;
+    sync_cond_t operation_cond;
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;
@@ -185,6 +193,7 @@ struct turbo_dc_peer_s {
     /* Externally owned datagram transport, typically an ICE agent. */
     void *external_transport;
     turbo_dc_transport_send_cb external_transport_send;
+    turbo_dc_transport_send_async_cb external_transport_send_async;
 
     /* DTLS */
     dtls_session_t dtls;
@@ -286,8 +295,16 @@ int dtls_session_init(turbo_dc_peer_t *peer);
 int dtls_session_init_timer(turbo_dc_peer_t *peer);
 
 void dtls_session_cleanup(turbo_dc_peer_t *peer);
+void dtls_session_stop(turbo_dc_peer_t *peer);
 void dtls_poll_retransmit(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
+int dtls_write_application_data(turbo_dc_peer_t *, const void *, size_t);
+crypto_dtls_stream *dtls_session_stream(const turbo_dc_peer_t *);
+void dtls_handle_tcp(turbo_dc_peer_t *, const void *, size_t);
+int dc_submit_dtls(turbo_dc_peer_t *, const void *, size_t,
+                   turbo_dc_transport_send_done_cb, void *);
+void dtls_transport_done(void *, int);
+void dc_secure_clear(void *, size_t);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);
 
@@ -422,14 +439,14 @@ static inline turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer,
                                                    uint16_t id) {
     turbo_dc_channel_t *channel;
     if (!peer || !peer->operation_sync_initialized) return NULL;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     channel = !peer->destroying && peer->channels_initialized
                   ? peer_get_channel(peer, id) : NULL;
     if (channel && !channel->closing && channel->callback_refs < UINT32_MAX - 1u)
         ++channel->callback_refs;
     else
         channel = NULL;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return channel;
 }
 
@@ -438,13 +455,13 @@ static inline void dc_channel_release(turbo_dc_channel_t *channel) {
     int reclaim = 0;
     if (!channel || !channel->peer) return;
     peer = channel->peer;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (channel->callback_refs > 0) --channel->callback_refs;
     if (channel->closing && channel->callback_refs == 0) {
         peer_free_channel_id(peer, channel->id);
         reclaim = 1;
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     if (reclaim) {
         tstr_free(channel->label);
         tstr_free(channel->protocol);

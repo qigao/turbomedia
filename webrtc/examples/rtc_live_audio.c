@@ -14,9 +14,9 @@
 #include "turbo_rtc_playback_sink.h"
 #include "turbo_rtc_subscriber.h"
 
-#include <salts/thread.h>
-#include <salts_capture.h>
-#include <salts_playback.h>
+#include <threads/threads.h>
+#include <capture.h>
+#include <playback.h>
 
 #include <signal.h>
 #include <stdio.h>
@@ -182,15 +182,15 @@ static int live_parse_options(int argc, char **argv, live_options_t *options) {
 }
 
 static int live_list_devices(void) {
-    salts_capture_device_t capture_devices[SALTS_CAPTURE_MAX_DEVICES];
-    salts_playback_device_t playback_devices[SALTS_PLAYBACK_MAX_DEVICES];
+    capture_device_t capture_devices[SALTS_CAPTURE_MAX_DEVICES];
+    playback_device_t playback_devices[SALTS_PLAYBACK_MAX_DEVICES];
     size_t playback_count = 0u;
     int capture_count;
     int status;
     int i;
 
     memset(capture_devices, 0, sizeof(capture_devices));
-    capture_count = salts_capture_list_audio_devices(
+    capture_count = capture_list_audio_devices(
         capture_devices, SALTS_CAPTURE_MAX_DEVICES);
     if (capture_count < 0) {
         fprintf(stderr, "audio capture enumeration failed: %d\n", capture_count);
@@ -210,7 +210,7 @@ static int live_list_devices(void) {
     }
 
     memset(playback_devices, 0, sizeof(playback_devices));
-    status = salts_playback_list_devices(
+    status = playback_list_devices(
         playback_devices, SALTS_PLAYBACK_MAX_DEVICES, &playback_count);
     if (status != SALTS_PLAYBACK_OK) {
         fprintf(stderr, "audio playback enumeration failed: %d\n", status);
@@ -231,8 +231,8 @@ static int live_list_devices(void) {
 }
 
 static int live_resolve_playback_device(
-    int requested_index, salts_playback_device_t *out_device) {
-    salts_playback_device_t devices[SALTS_PLAYBACK_MAX_DEVICES];
+    int requested_index, playback_device_t *out_device) {
+    playback_device_t devices[SALTS_PLAYBACK_MAX_DEVICES];
     size_t count = 0u;
     size_t i;
     int status;
@@ -241,7 +241,7 @@ static int live_resolve_playback_device(
         return -1;
     }
     memset(devices, 0, sizeof(devices));
-    status = salts_playback_list_devices(
+    status = playback_list_devices(
         devices, SALTS_PLAYBACK_MAX_DEVICES, &count);
     if (status != SALTS_PLAYBACK_OK) {
         return -1;
@@ -398,7 +398,7 @@ static int live_run_publish(const live_options_t *options) {
                 goto cleanup;
             }
         }
-        cmeta_sleep_ms(LIVE_POLL_SLEEP_MS);
+        sleep_ms(LIVE_POLL_SLEEP_MS);
     }
 
     result = 0;
@@ -447,7 +447,7 @@ static int live_run_subscribe(const live_options_t *options) {
     turbo_rtc_playback_sink_config_t playback_config;
     turbo_rtc_subscriber_t *subscriber = NULL;
     turbo_rtc_playback_sink_t *playback = NULL;
-    salts_playback_device_t playback_device;
+    playback_device_t playback_device;
     turbo_rtc_client_status_t status;
     const char *token = live_token(options);
     int subscriber_prepared = 0;
@@ -524,7 +524,7 @@ static int live_run_subscribe(const live_options_t *options) {
         if (live_subscriber_poll_transport(subscriber) != 0) {
             goto cleanup;
         }
-        cmeta_sleep_ms(LIVE_POLL_SLEEP_MS);
+        sleep_ms(LIVE_POLL_SLEEP_MS);
     }
 
     result = 0;

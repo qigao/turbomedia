@@ -49,221 +49,55 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Sanitizers)
 include(CmakeUtils)
+include(TurboMediaRuntimeInstall)
 enable_testing()
 
-function(turbo_media_find_idlc output_variable)
-  if(CMAKE_CROSSCOMPILING)
-    set(_turbomedia_idlc_root_name SALTS_UTILS_HOST_ROOT)
-  else()
-    set(_turbomedia_idlc_root_name SALTS_UTILS_ROOT)
-  endif()
-  if(NOT DEFINED ENV{${_turbomedia_idlc_root_name}} OR
-     NOT IS_DIRECTORY "$ENV{${_turbomedia_idlc_root_name}}")
-    message(FATAL_ERROR
-      "${_turbomedia_idlc_root_name} must name the host SaltsUtils SDK")
-  endif()
-  # A previous configure must not retain a compiler from a different SDK.
-  unset(${output_variable} CACHE)
-  unset(${output_variable})
-  find_program(${output_variable} NAMES salts-idlc
-               PATHS "$ENV{${_turbomedia_idlc_root_name}}/bin"
-               NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
-  set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
-endfunction()
-
-function(turbo_media_configure_component target_name export_name)
-  cmake_config_target(
-    ${target_name}
-    ALIAS TurboMedia::${export_name}
-    EXPORT_NAME ${export_name}
-    FOLDER "turbomedia/components")
-  target_include_directories(
-    ${target_name}
-    PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/media/include>
-           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  get_target_property(_turbo_media_target_type ${target_name} TYPE)
-  if(_turbo_media_target_type STREQUAL "SHARED_LIBRARY" OR
-     _turbo_media_target_type STREQUAL "MODULE_LIBRARY")
-    target_compile_definitions(${target_name} PRIVATE SHARED_CXX)
-  endif()
-  unset(_turbo_media_target_type)
-  if(MSVC)
-    target_compile_options(${target_name} PRIVATE /W4 /wd4100 /wd4996)
-  else()
-    target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wno-unused-parameter)
-  endif()
-  install(
-    TARGETS ${target_name}
-    EXPORT TurboMediaTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endfunction()
-
-add_subdirectory(tools)
 include(FindTools)
 
 find_package(Threads REQUIRED)
-foreach(_turbomedia_package IN ITEMS Salts SaltsUtils)
-  if(_turbomedia_package STREQUAL "Salts")
-    set(_turbomedia_root SALTS_ROOT)
-  else()
-    set(_turbomedia_root SALTS_UTILS_ROOT)
-  endif()
-  if(NOT DEFINED ENV{${_turbomedia_root}} OR
-     NOT IS_DIRECTORY "$ENV{${_turbomedia_root}}")
-    message(FATAL_ERROR "${_turbomedia_root} must name the installed SDK")
-  endif()
-  unset(${_turbomedia_package}_DIR CACHE)
-  unset(${_turbomedia_package}_DIR)
-endforeach()
-find_package(Salts CONFIG REQUIRED
-             PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-find_package(SaltsUtils CONFIG REQUIRED
-             PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
-  message(FATAL_ERROR
-          "TurboMedia requires Salts::Capture and Salts::Playback")
+if(WIN32 OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(JPEG REQUIRED)
 endif()
+
+find_package(SaltsBase "$ENV{SALTS_BASE_VERSION}" EXACT CONFIG REQUIRED
+             PATHS "$ENV{SALTS_BASE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_package(CMeta "$ENV{CMETA_VERSION}" EXACT CONFIG REQUIRED
+             PATHS "$ENV{CMETA_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_package(SaltsCNet "$ENV{SALTS_CNET_VERSION}" EXACT CONFIG REQUIRED
+             PATHS "$ENV{SALTS_CNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_package(SaltsUtils "$ENV{SALTS_UTILS_VERSION}" EXACT CONFIG REQUIRED
+             PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_package(Chttp "$ENV{CHTTP_VERSION}" EXACT CONFIG REQUIRED
+             COMPONENTS Client Server App WebSocketPeerLease
+             PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(SaltsNet CONFIG REQUIRED
              PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT DEFINED ENV{CHTTP_ROOT} OR
-   NOT IS_DIRECTORY "$ENV{CHTTP_ROOT}")
-  message(FATAL_ERROR "CHTTP_ROOT must name the installed Chttp SDK")
-endif()
-unset(Chttp_DIR CACHE)
-unset(Chttp_DIR)
-find_package(Chttp CONFIG REQUIRED
-             PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)
-  message(FATAL_ERROR
-          "TurboMedia requires CHttp Client and Server targets")
-endif()
-if(TM_M15D_IOCP_KERNEL_ONLY)
-  find_package(OpenSSL REQUIRED)
-  add_subdirectory(network)
-  add_subdirectory(media/rtsp)
-  include("${PROJECT_SOURCE_DIR}/cmake/TurboMediaIOCPKernelTest.cmake")
-  return()
-endif()
-if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
-  find_package(RulesForge CONFIG REQUIRED
-               PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-endif()
- 
-find_package(OpenSSL REQUIRED)
+
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
 find_package(libyuv CONFIG REQUIRED)
 
 find_path(STB_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
-find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
-find_library(OPUS_LIBRARY NAMES opus REQUIRED)
-find_path(VPX_INCLUDE_DIR NAMES vpx/vpx_encoder.h vpx/vpx_decoder.h REQUIRED)
-find_library(VPX_LIBRARY NAMES vpx libvpx REQUIRED)
-find_path(OPENH264_INCLUDE_DIR NAMES wels/codec_api.h REQUIRED)
-find_library(OPENH264_LIBRARY NAMES openh264 wels REQUIRED)
-find_path(X265_INCLUDE_DIR NAMES x265.h REQUIRED)
-find_library(X265_LIBRARY NAMES x265 libx265 REQUIRED)
-find_path(LIBDE265_INCLUDE_DIR NAMES libde265/de265.h REQUIRED)
-find_library(LIBDE265_LIBRARY NAMES de265 libde265 REQUIRED)
+find_path(TURBO_MEDIA_FFMPEG_MODULE_DIR NAMES FindFFMPEG.cmake
+          PATH_SUFFIXES share/ffmpeg)
+if(TURBO_MEDIA_FFMPEG_MODULE_DIR)
+  list(PREPEND CMAKE_MODULE_PATH "${TURBO_MEDIA_FFMPEG_MODULE_DIR}")
+endif()
 find_package(FFMPEG REQUIRED)
 include(TurboMediaFFmpegTargets)
 
-add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
-add_subdirectory(common)
-add_subdirectory(core)
-add_subdirectory(streamgraph) # Shared platform C11 typed-graph component (no FFmpeg dependency)
-add_subdirectory(crypto)
-add_subdirectory(speech)
-add_subdirectory(codec)
-add_subdirectory(muxer)
-add_subdirectory(demuxer)
-add_subdirectory(network)
-add_subdirectory(transport)
-add_subdirectory(client_processing)
-add_subdirectory(player)
-add_subdirectory(recognition)
-add_subdirectory(media/rtsp)
-add_subdirectory(media/mobile)
-if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
-  add_subdirectory(server)
-  add_subdirectory(streamer)
-  add_subdirectory(pipeline)
-  add_library(turbo_media_server_rtsp SHARED server/rtsp_server_adapter.c)
-  turbo_media_configure_component(turbo_media_server_rtsp ServerRTSP)
-  target_include_directories(
-    turbo_media_server_rtsp
-    PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/server/include>
-           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-  target_link_libraries(
-    turbo_media_server_rtsp PUBLIC TurboMedia::Server TurboMedia::RTSP)
-endif()
-
+add_subdirectory(streamgraph)
+add_subdirectory(media)
+add_subdirectory(sip)
+add_subdirectory(streaming)
 add_subdirectory(webrtc)
 add_subdirectory(examples)
-add_subdirectory(tests)
 
 install(
   DIRECTORY streamgraph/include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   FILES_MATCHING PATTERN "*.h")
-
-install(
-  DIRECTORY core/include/ crypto/include/ speech/include/ recognition/include/
-             muxer/include/ demuxer/include/ network/include/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-  FILES_MATCHING PATTERN "*.h")
-install(
-  FILES media/include/turbo_codec.h
-        media/include/turbo_export.h
-        media/include/turbo_rtsp.h
-        transport/rtp/include/rtp-header.h
-        transport/rtp/include/rtp-packet.h
-        transport/rtp/include/rtp-payload.h
-        media/rtsp/parser/turbo_rtsp_parser.h
-        media/rtsp/parser/turbo_rtsp_message.h
-        media/rtsp/parser/turbo_rtsp_rtp.h
-        media/rtsp/parser/turbo_rtsp_sdp.h
-        webrtc/include/http_api.h
-        webrtc/include/ice_integration.h
-        webrtc/include/turbo_datachannel.h
-        webrtc/include/turbo_datachannel_errors.h
-        webrtc/include/turbo_dc_msg.h
-        webrtc/include/turbo_media_engine.h
-        webrtc/include/turbo_nack.h
-        webrtc/include/turbo_peer_connection.h
-        webrtc/include/turbo_rtp.h
-        webrtc/include/turbo_sdp.h
-        webrtc/include/turbo_simulcast.h
-        webrtc/include/turbo_srtp.h
-        webrtc/include/turbo_srtp_defs.h
-        webrtc/include/webrtc_signaling.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(
-  FILES media/include/turbo_player.h
-        media/mobile/turbo_mobile.h
-        media/mobile/turbo_mobile_codec.h
-        webrtc/include/turbo_rtc_client.h
-        webrtc/include/turbo_rtc_subscriber.h
-        webrtc/include/turbo_rtc_playback_sink.h
-        webrtc/include/turbo_rtc_capture_source.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
-  install(
-    DIRECTORY server/include/ streamer/include/ pipeline/include/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.h")
-  install(
-    FILES webrtc/include/turbo_media_webrtc.h
-          webrtc/include/turbo_media_webrtc_backend.h
-          webrtc/include/turbo_recorder.h
-          webrtc/include/turbo_room_service.h
-          webrtc/include/turbo_sfu.h
-          webrtc/include/turbo_sfu_node.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-endif()
 
 configure_package_config_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TurboMediaConfig.cmake.in"
@@ -272,6 +106,10 @@ configure_package_config_file(
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TurboMediaFFmpegTargets.cmake"
   "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaFFmpegTargets.cmake"
+  COPYONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TurboMediaCodecLibraries.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaCodecLibraries.cmake"
   COPYONLY)
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfigVersion.cmake"
@@ -283,6 +121,30 @@ install(
         "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfigVersion.cmake"
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TurboMediaFFmpegTargets.cmake"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/TurboMedia")
+foreach(codec_component IN ITEMS AudioCodec VideoCodec)
+  install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfig.cmake"
+          "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfigVersion.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TurboMediaCodecLibraries.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/TurboMedia"
+    COMPONENT ${codec_component})
+  export(
+    EXPORT TurboMedia${codec_component}Targets
+    FILE "${CMAKE_CURRENT_BINARY_DIR}/TurboMedia${codec_component}Targets.cmake"
+    NAMESPACE TurboMedia::)
+endforeach()
+foreach(protocol_component IN ITEMS SIP RTP SDP RTPICE SIPClient)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfig.cmake"
+                "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/TurboMedia" COMPONENT ${protocol_component})
+  export(EXPORT TurboMedia${protocol_component}Targets
+    FILE "${CMAKE_CURRENT_BINARY_DIR}/TurboMedia${protocol_component}Targets.cmake"
+    NAMESPACE TurboMedia::)
+endforeach()
+foreach(sdk_component IN ITEMS SIP RTP SDP RTPICE SIPClient AudioCodec VideoCodec)
+  install(FILES LICENSE NOTICE THIRD_PARTY_NOTICES.md
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/TurboMedia" COMPONENT ${sdk_component})
+endforeach()
 export(
   EXPORT TurboMediaTargets
   FILE "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaTargets.cmake"

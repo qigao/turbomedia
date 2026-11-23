@@ -192,6 +192,69 @@ void test_rtp_packet_parse_stops_at_reserved_extension_id(void) {
   check_equal((uint8_t)(pkt.payload[0]), (uint8_t)(0xAA));
 }
 
+static void test_rtp_packet_opaque_extension_and_padding(void) {
+  const uint8_t wire[] = {0xB1, 0x80, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3,
+                          0xDE, 0xAD, 0xBE, 0xEF, 0x10, 0x00, 0, 1,
+                          0x21, 0x03, 0x11, 0x22, 0xAA, 0x55, 0x7E, 2};
+  uint8_t out[sizeof(wire)];
+  const uint8_t extension[] = {0x01, 0x02};
+  rtp_packet_t pkt;
+
+  check_equal(rtp_packet_parse(&pkt, wire, sizeof(wire)), 0);
+  check_equal(pkt.csrc[0], UINT32_C(0xDEADBEEF));
+  check_equal(pkt.extension_profile, (uint16_t)0x1000);
+  check_equal(pkt.raw_extension_len, (size_t)4);
+  check_equal(pkt.padding_len, (uint8_t)2);
+  check_equal(pkt.payload_len, (size_t)2);
+  check_equal(rtp_packet_add_extension(&pkt, 3, extension, sizeof(extension)), -1);
+
+  memset(out, 0xCD, sizeof(out));
+  check_equal(rtp_packet_serialize(&pkt, out, sizeof(out) - 1), -1);
+  for (size_t i = 0; i < sizeof(out); ++i) {
+    check_equal(out[i], (uint8_t)0xCD);
+  }
+  check_equal(rtp_packet_serialize(&pkt, out, sizeof(out)), (int)sizeof(wire));
+  check_equal(memcmp(out, wire, sizeof(wire)), 0);
+
+  check_equal(rtp_packet_parse(&pkt, out, sizeof(out)), 0);
+  pkt.header.csrc_count = 0;
+  int size = rtp_packet_serialize(&pkt, out, sizeof(out));
+  check_equal(size, (int)sizeof(wire) - 4);
+  check_equal(out[0], (uint8_t)0xB0);
+  check_equal(memcmp(out + RTP_HEADER_SIZE, wire + RTP_HEADER_SIZE + 4,
+                     sizeof(wire) - 4 - RTP_HEADER_SIZE), 0);
+}
+
+static void test_rtp_packet_padding_and_invalid_lengths(void) {
+  uint8_t out[RTP_HEADER_SIZE + 3] = {0};
+  const uint8_t payload[] = {0xAA};
+  rtp_packet_t pkt;
+  rtp_packet_init(&pkt);
+  pkt.payload = payload;
+  pkt.payload_len = sizeof(payload);
+  pkt.padding_len = 2;
+
+  check_equal(rtp_packet_serialize(&pkt, out, sizeof(out)), (int)sizeof(out));
+  check_equal(out[0], (uint8_t)0xA0);
+  check_equal(out[RTP_HEADER_SIZE], payload[0]);
+  check_equal(out[sizeof(out) - 2], (uint8_t)0);
+  check_equal(out[sizeof(out) - 1], (uint8_t)2);
+
+  check_equal(rtp_packet_parse(&pkt, out, RTP_HEADER_SIZE), -1);
+  out[sizeof(out) - 1] = 0;
+  check_equal(rtp_packet_parse(&pkt, out, sizeof(out)), -1);
+  out[sizeof(out) - 1] = 4;
+  check_equal(rtp_packet_parse(&pkt, out, sizeof(out)), -1);
+
+  rtp_packet_init(&pkt);
+  pkt.payload = payload;
+  pkt.payload_len = SIZE_MAX;
+  check_equal(rtp_packet_serialize(&pkt, out, sizeof(out)), -1);
+  pkt.payload_len = sizeof(payload);
+  pkt.extension_count = RTP_MAX_EXTENSIONS + 1;
+  check_equal(rtp_packet_serialize(&pkt, out, sizeof(out)), -1);
+}
+
 /* =============================================================================
  * RTP Session
  * Tests
@@ -469,6 +532,8 @@ spec("test_rtp") {
   it("test_rtp_packet_extension_wire_roundtrip") { test_rtp_packet_extension_wire_roundtrip(); };
   it("test_rtp_packet_serialize_clears_empty_extension_bit") { test_rtp_packet_serialize_clears_empty_extension_bit(); };
   it("test_rtp_packet_parse_stops_at_reserved_extension_id") { test_rtp_packet_parse_stops_at_reserved_extension_id(); };
+  it("preserves opaque extensions and padding") { test_rtp_packet_opaque_extension_and_padding(); };
+  it("checks padding and packet lengths") { test_rtp_packet_padding_and_invalid_lengths(); };
 
   /* RTP Session */
   it("test_rtp_session_create_destroy") { test_rtp_session_create_destroy(); };

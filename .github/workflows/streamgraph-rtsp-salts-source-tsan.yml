@@ -6,9 +6,8 @@ name: M15d RTSP Salts full-source TSan #1170
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
-      - 'tests/**'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'streamgraph/**'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
@@ -17,9 +16,8 @@ name: M15d RTSP Salts full-source TSan #1170
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
-      - 'tests/**'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'streamgraph/**'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
@@ -177,9 +175,9 @@ jobs:
           from pathlib import Path
           cmds=json.loads(Path('build/m15d-rtsp-source-salts-tsan/compile_commands.json').read_text())
           for suffix in (
-              '/tests/test_rtsp.c',
-              '/network/internal/turbo_cnet_send_internal.c',
-              '/media/rtsp/turbo_rtsp.c',
+              '/streaming/rtsp/tests/test_rtsp.c',
+              '/streaming/transport/internal/turbo_cnet_send_internal.c',
+              '/streaming/rtsp/turbo_rtsp.c',
               '/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c',
               '/streamgraph/tests/installed_salts/real_component_provider.c',
           ):

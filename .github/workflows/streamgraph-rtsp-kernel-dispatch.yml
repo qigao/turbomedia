@@ -5,10 +5,8 @@ name: M15d RTSP kernel completion and Owner cancellation #192
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-kernel-dispatch.yml'
-      - 'tests/rtsp_nativeio_kernel_dispatch.c'
-      - 'tests/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
@@ -16,10 +14,8 @@ name: M15d RTSP kernel completion and Owner cancellation #192
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-kernel-dispatch.yml'
-      - 'tests/rtsp_nativeio_kernel_dispatch.c'
-      - 'tests/CMakeLists.txt'
-      - 'media/rtsp/**'
-      - 'network/**'
+      - 'streaming/rtsp/**'
+      - 'streaming/transport/**'
       - 'CMakeLists.txt'
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
@@ -142,7 +138,7 @@ jobs:
                             if os.uname().sysname == 'Darwin'
                             else '/native-io/src/native_io_epoll.c')
           for suffix in (
-              '/tests/rtsp_nativeio_kernel_dispatch.c',
+              '/streaming/rtsp/tests/rtsp_nativeio_kernel_dispatch.c',
               '/native-io/src/native_io.c',
               kernel_backend,
               '/native-io/src/native_io_readiness.c',

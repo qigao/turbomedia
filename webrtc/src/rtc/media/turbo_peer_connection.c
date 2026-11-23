@@ -8,10 +8,10 @@
 #include "turbo_rtp.h"
 #include "turbo_sdp.h"
 #include "ice/salts_ice.h"
-#include "tlog.h"
-#include <platform.h>
-#include <salts/thread.h>
-#include <tstr.h>
+#include "core/tlog.h"
+#include <core/platform.h>
+#include <threads/threads.h>
+#include <core/tstr.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +32,9 @@ struct turbo_peer_connection_s {
     turbo_peer_callbacks_t callbacks;
     
     turbo_ice_owner_t *ice_owner;
-    cmeta_thread_t ice_worker;
-    cmeta_mutex_t ice_mutex;
-    cmeta_cond_t ice_cond;
+    sync_thread_t ice_worker;
+    sync_mutex_t ice_mutex;
+    sync_cond_t ice_cond;
     int ice_sync_initialized;
     int ice_worker_started;
     int ice_stop_requested;
@@ -263,27 +263,27 @@ static void ice_worker_main(void *arg) {
         int gather;
         int checks;
         int rc;
-        cmeta_mutex_lock(&pc->ice_mutex);
+        sync_mutex_lock(&pc->ice_mutex);
         if (!pc->ice_stop_requested && !pc->ice_gather_requested &&
             !pc->ice_checks_requested) {
-            (void)cmeta_cond_timedwait(&pc->ice_cond, &pc->ice_mutex,
+            (void)sync_cond_timedwait(&pc->ice_cond, &pc->ice_mutex,
                                        TURBO_ICE_WORKER_POLL_INTERVAL_NS);
         }
         if (pc->ice_stop_requested) {
-            cmeta_mutex_unlock(&pc->ice_mutex);
+            sync_mutex_unlock(&pc->ice_mutex);
             break;
         }
         gather = pc->ice_gather_requested;
         checks = pc->ice_checks_requested;
         pc->ice_gather_requested = 0;
         pc->ice_checks_requested = 0;
-        cmeta_mutex_unlock(&pc->ice_mutex);
+        sync_mutex_unlock(&pc->ice_mutex);
         if (gather) {
             rc = turbo_ice_owner_gather_candidates(pc->ice_owner);
-            cmeta_mutex_lock(&pc->ice_mutex);
+            sync_mutex_lock(&pc->ice_mutex);
             pc->gathering_start_pending = 0;
-            cmeta_cond_broadcast(&pc->ice_cond);
-            cmeta_mutex_unlock(&pc->ice_mutex);
+            sync_cond_broadcast(&pc->ice_cond);
+            sync_mutex_unlock(&pc->ice_mutex);
             if (rc != 0 && !pc->destroying)
                 notify_state_change(pc, TURBO_PEER_STATE_FAILED);
         }
@@ -304,21 +304,21 @@ static int wait_for_local_ice_gathering(turbo_peer_connection_t *pc) {
         pc->ice_gathering_timeout_ms == 0u) {
         return -1;
     }
-    deadline_ms = cmeta_monotonic_ms() + pc->ice_gathering_timeout_ms;
-    cmeta_mutex_lock(&pc->ice_mutex);
+    deadline_ms = monotonic_ms() + pc->ice_gathering_timeout_ms;
+    sync_mutex_lock(&pc->ice_mutex);
     while (pc->gathering_start_pending && !pc->ice_stop_requested) {
-        uint64_t now_ms = cmeta_monotonic_ms();
+        uint64_t now_ms = monotonic_ms();
         uint64_t remaining_ms;
         if (now_ms >= deadline_ms) {
             break;
         }
         remaining_ms = deadline_ms - now_ms;
-        (void)cmeta_cond_timedwait(
+        (void)sync_cond_timedwait(
             &pc->ice_cond, &pc->ice_mutex,
             remaining_ms * UINT64_C(1000000));
     }
     complete = !pc->gathering_start_pending && !pc->ice_stop_requested;
-    cmeta_mutex_unlock(&pc->ice_mutex);
+    sync_mutex_unlock(&pc->ice_mutex);
     return complete &&
                    turbo_ice_owner_get_gathering_state(pc->ice_owner) ==
                        ICE_GATHERING_COMPLETE &&
@@ -329,9 +329,9 @@ static int wait_for_local_ice_gathering(turbo_peer_connection_t *pc) {
 
 static void pump_ice_context(turbo_peer_connection_t *pc) {
     if (!pc || !pc->ice_sync_initialized) return;
-    cmeta_mutex_lock(&pc->ice_mutex);
-    cmeta_cond_signal(&pc->ice_cond);
-    cmeta_mutex_unlock(&pc->ice_mutex);
+    sync_mutex_lock(&pc->ice_mutex);
+    sync_cond_signal(&pc->ice_cond);
+    sync_mutex_unlock(&pc->ice_mutex);
 }
 
 static int sdp_candidate_to_ice_line(const sdp_candidate_t *candidate, char *buffer, size_t buffer_len) {
@@ -417,11 +417,11 @@ static int maybe_start_checks(turbo_peer_connection_t *pc) {
     }
 
     notify_state_change(pc, TURBO_PEER_STATE_CONNECTING);
-    cmeta_mutex_lock(&pc->ice_mutex);
+    sync_mutex_lock(&pc->ice_mutex);
     pc->checks_start_pending = 1;
     pc->ice_checks_requested = 1;
-    cmeta_cond_signal(&pc->ice_cond);
-    cmeta_mutex_unlock(&pc->ice_mutex);
+    sync_cond_signal(&pc->ice_cond);
+    sync_mutex_unlock(&pc->ice_mutex);
     return 0;
 }
 
@@ -452,6 +452,12 @@ static void send_dc_transport(void *transport, const void *data, size_t len) {
     }
 }
 
+static int send_dc_dtls(void *transport, const void *data, size_t len,
+    turbo_dc_transport_send_done_cb done, void *operation) {
+    turbo_peer_connection_t *pc = transport;
+    if (!pc || pc->destroying || !pc->ice_owner) return -1;
+    return turbo_ice_owner_send_tracked(pc->ice_owner, data, len, done, operation);
+}
 
 
 static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
@@ -468,8 +474,8 @@ static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
             pc->ice_connected = 1;
             /* Bridge ICE and DataChannel if ready */
             if (pc->dc_peer) {
-                if (turbo_dc_peer_set_external_transport(
-                        pc->dc_peer, pc, send_dc_transport) != 0) {
+                if (turbo_dc_peer_set_external_transport_async(
+                        pc->dc_peer, pc, send_dc_transport, send_dc_dtls) != 0) {
                     pc->ice_connected = 0;
                     notify_state_change(pc, TURBO_PEER_STATE_FAILED);
                     return;
@@ -1230,8 +1236,8 @@ turbo_peer_connection_t *turbo_peer_connection_create(
         return NULL;
     }
     
-    cmeta_mutex_init(&pc->ice_mutex);
-    cmeta_cond_init(&pc->ice_cond);
+    sync_mutex_init(&pc->ice_mutex);
+    sync_cond_init(&pc->ice_cond);
     pc->ice_sync_initialized = 1;
 
     ice_callbacks_t ice_cb = {
@@ -1243,16 +1249,16 @@ turbo_peer_connection_t *turbo_peer_connection_create(
 
     pc->ice_owner = turbo_ice_owner_create(&ice_cfg, &ice_cb);
     if (!pc->ice_owner) {
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         free(pc);
         return NULL;
     }
     
     if (refresh_local_ice_credentials(pc) != 0) {
         turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         free(pc);
         return NULL;
     }
@@ -1266,8 +1272,8 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     pc->dc_ctx = turbo_dc_context_create(&dc_cfg);
     if (!pc->dc_ctx) {
         turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1279,8 +1285,8 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     if (!pc->dc_peer) {
         turbo_dc_context_destroy(pc->dc_ctx);
         turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1296,8 +1302,8 @@ turbo_peer_connection_t *turbo_peer_connection_create(
         turbo_dc_peer_destroy(pc->dc_peer);
         turbo_dc_context_destroy(pc->dc_ctx);
         turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1305,13 +1311,13 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     }
     
     /* Start gathering candidates immediately */
-    if (cmeta_thread_create(&pc->ice_worker, ice_worker_main, pc) != 0) {
+    if (sync_thread_create(&pc->ice_worker, ice_worker_main, pc) != 0) {
         turbo_media_destroy(pc->media_ctx);
         turbo_dc_peer_destroy(pc->dc_peer);
         turbo_dc_context_destroy(pc->dc_ctx);
         turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1319,10 +1325,10 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     }
     pc->ice_worker_started = 1;
     pc->gathering_start_pending = 1;
-    cmeta_mutex_lock(&pc->ice_mutex);
+    sync_mutex_lock(&pc->ice_mutex);
     pc->ice_gather_requested = 1;
-    cmeta_cond_signal(&pc->ice_cond);
-    cmeta_mutex_unlock(&pc->ice_mutex);
+    sync_cond_signal(&pc->ice_cond);
+    sync_mutex_unlock(&pc->ice_mutex);
     pump_ice_context(pc);
     
     return pc;
@@ -1349,14 +1355,14 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
     }
     
     if (pc->ice_owner) {
-        cmeta_mutex_lock(&pc->ice_mutex);
+        sync_mutex_lock(&pc->ice_mutex);
         pc->ice_stop_requested = 1;
-        cmeta_cond_broadcast(&pc->ice_cond);
-        cmeta_mutex_unlock(&pc->ice_mutex);
+        sync_cond_broadcast(&pc->ice_cond);
+        sync_mutex_unlock(&pc->ice_mutex);
         turbo_ice_owner_close(pc->ice_owner);
         if (pc->ice_worker_started) {
-            cmeta_thread_join(&pc->ice_worker);
-            cmeta_thread_destroy(&pc->ice_worker);
+            sync_thread_join(&pc->ice_worker);
+            sync_thread_destroy(&pc->ice_worker);
             pc->ice_worker_started = 0;
         }
         turbo_ice_owner_destroy(pc->ice_owner);
@@ -1366,8 +1372,8 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
         turbo_dc_context_destroy(pc->dc_ctx);
     }
     if (pc->ice_sync_initialized) {
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
+        sync_cond_destroy(&pc->ice_cond);
+        sync_mutex_destroy(&pc->ice_mutex);
         pc->ice_sync_initialized = 0;
     }
     
@@ -1554,7 +1560,7 @@ int turbo_peer_connection_create_answer(
         }
     }
 
-    return sdp_generate_answer(&sdp, &pc->remote_sdp, sdp_out, max_len);
+    return sdp_generate(&sdp, sdp_out, max_len);
 }
 
 int turbo_peer_connection_set_remote_description(

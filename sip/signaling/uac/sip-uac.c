@@ -1,0 +1,375 @@
+#include "sip-uac.h"
+#include "sip-internal.h"
+#include "sip-uac-transaction.h"
+#include "sip-timer.h"
+#include "sip-header.h"
+#include "sip-dialog.h"
+#include "sip-message.h"
+#include "sip-transport.h"
+#include <core/error.h>
+#include <stdio.h>
+#include <errno.h>
+
+int sip_uac_link_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
+{
+	int result;
+
+	sip_uac_transaction_addref(t);
+	sip_atomic_increment(&sip->ref); // ref by transaction
+	assert(sip->ref > 0);
+
+	sync_mutex_lock(&sip->locker);
+	assert(!t->linked);
+	if (sip->owner_timers && vec_size(&sip->uac) >= SIP_OWNER_MAX_TRANSACTIONS)
+		result = SALTS_EBUSY;
+	else
+		result = vec_push(&sip->uac, &t) == STL_OK ? SALTS_OK : SALTS_ENOMEM;
+	if (result == SALTS_OK)
+		t->linked = 1;
+	sync_mutex_unlock(&sip->locker);
+
+	if (result != STL_OK)
+	{
+		sip_uac_transaction_release(t);
+		sip_agent_destroy(sip);
+	}
+	return result;
+}
+
+int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
+{
+	size_t index;
+	struct sip_uac_transaction_t **candidate;
+
+	assert(sip->ref > 0);
+	sync_mutex_lock(&sip->locker);
+	if (!t->linked)
+	{
+		sync_mutex_unlock(&sip->locker);
+		return 0;
+	}
+
+	for (index = 0U; index < vec_size(&sip->uac); ++index)
+	{
+		candidate = (struct sip_uac_transaction_t **)vec_at(&sip->uac, index);
+		if (candidate && *candidate == t)
+		{
+			vec_erase(&sip->uac, index, NULL);
+			t->linked = 0;
+			break;
+		}
+	}
+	assert(!t->linked);
+
+	// 12.3 Termination of a Dialog (p77)
+	// Independent of the method, if a request outside of a dialog generates
+	// a non-2xx final response, any early dialogs created through
+	// provisional responses to that request are terminated.
+	//list_for_each_safe(pos, next, &sip->dialogs)
+	//{
+	//	dialog = list_entry(pos, struct sip_dialog_t, link);
+	//	if (sip_sv_equal(&t->req->callid, &dialog->callid) && DIALOG_ERALY == dialog->state)
+	//	{
+	//		//assert(0 == sip_contact_compare(&t->req->from, &dialog->local.uri));
+	//		sip_dialog_remove(sip, dialog); // TODO: release in locker
+	//		break;
+	//	}
+	//}
+
+	sync_mutex_unlock(&sip->locker);
+	sip_uac_transaction_release(t);
+	sip_agent_destroy(sip);
+	return 0;
+}
+
+sip_timer_t sip_uac_start_timer(struct sip_agent_t* sip, struct sip_uac_transaction_t* t, int timeout, sip_timer_handle handler)
+{
+	sip_timer_t id;
+
+	// wait for timer done
+	if (sip_uac_transaction_addref(t) < 2)
+	{
+		assert(0);
+		return NULL;
+	}
+
+	id = sip_agent_timer_start(sip, timeout, handler, t);
+	if (id == NULL) 
+		sip_uac_transaction_release(t);
+	return id;
+	//return uac->timer.start(uac->timerptr, timeout, handler, usrptr);
+}
+
+void sip_uac_stop_timer(struct sip_agent_t* sip, struct sip_uac_transaction_t* t, sip_timer_t* id)
+{
+	//if(0 == uac->timer.stop(uac->timerptr, id))
+	if (0 == sip_agent_timer_stop(sip, id))
+		sip_uac_transaction_release(t);
+}
+
+// RFC3261 17.1.3 Matching Responses to Client Transactions (p132)
+static struct sip_uac_transaction_t* sip_uac_find_transaction(vec_t* transactions, struct sip_message_t* reply)
+{
+	const vstr *p, *p2;
+	size_t index;
+	struct sip_uac_transaction_t **candidate;
+	struct sip_uac_transaction_t* t;
+
+	p = sip_vias_top_branch(&reply->vias);
+	if (!p || !sip_sv_starts_with(p, SIP_BRANCH_PREFIX)) return NULL;
+
+	for (index = 0U; index < vec_size(transactions); ++index)
+	{
+		candidate = (struct sip_uac_transaction_t **)vec_at(transactions, index);
+		if (!candidate || !*candidate)
+			continue;
+		t = *candidate;
+
+		// 1. via branch parameter
+		p2 = sip_vias_top_branch(&t->req->vias);
+		if (!p2 || 0 == sip_sv_equal(p, p2))
+			continue;
+		assert(sip_sv_starts_with(p2, SIP_BRANCH_PREFIX));
+		
+		// 2. CSeq number and method must match the original request.
+		// The method is needed since a CANCEL request constitutes a
+		// different transaction, but shares the same value of the branch parameter.
+		if (reply->cseq.id != t->req->cseq.id || !sip_sv_equal(&reply->cseq.method, &t->req->cseq.method))
+			continue;
+		if (!sip_sv_equal(&reply->callid, &t->req->callid) || !sip_sv_equal(&reply->from.tag, &t->req->from.tag))
+			continue;
+
+		//// 3. to tag
+		//p = sip_params_find_string(&reply->to.params, "tag");
+		//p2 = sip_params_find_string(&t->msg->to.params, "tag");
+		//if (p2 && (!p || !sip_sv_equal(p, p2)))
+		//	continue;
+
+		sip_uac_transaction_addref(t); // add ref
+		assert(t->ref >= 2);
+		return t;
+	}
+
+	return NULL;
+}
+
+int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
+{
+	int r;
+	struct sip_uac_transaction_t* t;
+
+	// A UAC MUST treat any provisional response different than 100 that it
+	// does not recognize as 183 (Session Progress). A UAC MUST be able to
+	// process 100 and 183 responses.
+
+	// 8.1.3.3 Vias (p43)
+	// If more than one Via header field value is present in a response, the
+	// UAC SHOULD discard the message.
+	if (1 != sip_vias_count(&reply->vias))
+		return 0;
+
+	// 1. fetch transaction
+	sync_mutex_lock(&sip->locker);
+	t = sip_uac_find_transaction(&sip->uac, reply);
+	sync_mutex_unlock(&sip->locker);
+	if (!t)
+	{
+		// timeout response, discard
+		return 0;
+	}
+	
+	// 8.1.3.4 Processing 3xx Responses (p43)
+	// Upon receipt of a redirection response (for example, a 301 response
+	// status code), clients SHOULD use the URI(s) in the Contact header
+	// field to formulate one or more new requests based on the redirected
+	// request.
+	if (300 <= reply->u.s.code && reply->u.s.code < 400)
+	{
+		// TODO or create new transaction ???
+	}
+
+	// 8.1.3.5 Processing 4xx Responses (p45)
+	switch (reply->u.s.code)
+	{
+	case 401: break; // Unauthorized
+	case 407: break; // Proxy Authentication Required
+	case 413: break; // Request Entity Too Large
+	case 415: break; // Unsupported Media Type
+	case 416: break; // Unsupported URI Scheme
+	case 420: break; // Bad Extension
+	default:  break;
+	}
+
+	sync_mutex_lock(&t->locker);
+
+	if (t->status == SIP_UAC_TRANSACTION_TERMINATED)
+		r = 0;
+	else if (sip_message_isinvite(reply))
+		r = sip_uac_transaction_invite_input(t, reply);
+	else
+		r = sip_uac_transaction_noninvite_input(t, reply);
+
+	sync_mutex_unlock(&t->locker);
+	sip_uac_transaction_release(t);
+	return r;
+}
+
+int sip_uac_send(struct sip_uac_transaction_t* t, const void* sdp, int bytes, struct sip_transport_t* transport, void* param)
+{
+	int r;
+	char via[1024];
+	char contact[1024];
+	
+	if (!t || !transport || !transport->via || !transport->send || bytes < 0 || (bytes > 0 && !sdp))
+		return -EINVAL;
+	if (t->transport.send)
+		return -EEXIST;
+	memcpy(&t->transport, transport, sizeof(struct sip_transport_t));
+	t->transportptr = param;
+
+	r = sip_uac_next_hop(t->req, t->next_hop);
+	if (r == 0)
+		r = sip_uac_transaction_via(t, t->next_hop, via, sizeof(via), contact, sizeof(contact));
+	if (0 != r)
+		return r;
+
+	// Via
+	if (0 == sip_vias_count(&t->req->vias))
+	{
+		// The Via header maddr, ttl, and sent-by components will be set when
+		// the request is processed by the transport layer (Section 18).
+
+		// Via: SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7
+		// Via: SIP/2.0/UDP first.example.com:4000;ttl=16;maddr=224.2.0.1;branch=z9hG4bKa7c6a8dlze.1
+		r = sip_message_add_header(t->req, "Via", via);
+		if (r != 0)
+			return r;
+	}
+	
+	// Contact: <sip:bob@192.0.2.4>
+	if (0 == sip_contacts_count(&t->req->contacts) && 
+		(sip_message_isinvite(t->req) || sip_message_isregister(t->req) || sip_message_isrefer(t->req) || sip_message_issubscribe(t->req)))
+	{
+		// 12.1.2 UAC Behavior (p71)
+		// When a UAC sends a request that can establish a dialog (such as an
+		// INVITE) it MUST provide a SIP or SIPS URI with global scope (i.e.,
+		// the same SIP URI can be used in messages outside this dialog) in the
+		// Contact header field of the request.
+
+		// The Contact header field MUST be present and contain exactly one SIP or 
+		// SIPS URI in any request that can result in the establishment of a dialog.
+		// For the methods defined in this specification, that includes only the INVITE request.
+
+		// While the Via header field tells other elements where to send the
+		// response, the Contact header field tells other elements where to send
+		// future requests.
+
+		// usually composed of a username at a fully qualified domain name(FQDN)
+		// If the Request-URI or top Route header field value contains a SIPS
+		// URI, the Contact header field MUST contain a SIPS URI as well.
+		r = sip_message_add_header(t->req, "Contact", contact);
+		if (r != 0)
+			return r;
+	}
+
+	// get transport reliable from via protocol
+	t->reliable = 1;
+	if (sip_vias_count(&t->req->vias) > 0 && !sip_transport_isreliable(&(sip_vias_get(&t->req->vias, 0)->transport)))
+	{
+		t->reliable = 0;
+	}
+
+	// message
+	t->req->payload = sdp;
+	t->req->size = bytes;
+	t->size = sip_message_write(t->req, t->data, sizeof(t->data));
+	if (t->size < 0 || (size_t)t->size >= sizeof(t->data))
+		return -E2BIG; // payload too long
+
+	return sip_uac_transaction_send(t);
+}
+
+int sip_uac_next_hop(const struct sip_message_t* request, char next_hop[SIP_UAC_NEXT_HOP_BYTES])
+{
+	const struct sip_uri_t* uri = sip_message_get_next_hop(request);
+	if (!uri || !sip_sv_valid(&uri->host))
+		return -EINVAL;
+	return sip_sv_copy(&uri->host, next_hop, SIP_UAC_NEXT_HOP_BYTES) >= SIP_UAC_NEXT_HOP_BYTES
+		? -E2BIG : 0;
+}
+
+int sip_uac_select_hop(struct sip_uac_transaction_t* t, const char* next_hop)
+{
+	char protocol[16] = {0};
+	char local[128] = {0};
+	char dns[128] = {0};
+	return t->transport.via(t->transportptr, next_hop, protocol, local, dns);
+}
+
+int sip_uac_transaction_via(struct sip_uac_transaction_t* t, const char* next_hop,
+                            char *via, int nvia, char *contact, int ncontact)
+{
+	int r;
+	uint64_t branch_id;
+	char dns[128];
+	char local[128];
+	char protocol[16];
+	vstr user;
+	const struct sip_uri_t* uri = sip_message_get_next_hop(t->req);
+
+	// rfc3263 4-Client Usage (p5)
+	// once a SIP server has successfully been contacted (success is defined below), 
+	// all retransmissions of the SIP request and the ACK for non-2xx SIP responses 
+	// to INVITE MUST be sent to the same host.
+	// Furthermore, a CANCEL for a particular SIP request MUST be sent to the same 
+	// SIP server that the SIP request was delivered to.
+	protocol[0] = local[0] = dns[0] = 0;
+	r = t->transport.via(t->transportptr, next_hop, protocol, local, dns);
+	if (0 != r)
+		return r;
+
+	if (NULL == strchr(dns, '.'))
+		snprintf(dns, sizeof(dns), "%s", local); // don't have valid dns
+
+	// Via
+	// Via: SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7
+	// Via: SIP/2.0/UDP first.example.com:4000;ttl=16;maddr=224.2.0.1;branch=z9hG4bKa7c6a8dlze.1
+	if (0 != sip_random_u64(&branch_id))
+		return -1;
+	r = snprintf(via, nvia, "SIP/2.0/%s %s;branch=%s%016llx%s", protocol, dns,
+		SIP_BRANCH_PREFIX, (unsigned long long)branch_id,
+		sip_transport_isreliable2(protocol)?"":";rport");
+	if (r < 0 || r >= nvia)
+		return -1; // ENOMEM
+
+	// Contact
+	// usually composed of a username at a fully qualified domain name(FQDN)
+	// If the Request-URI or top Route header field value contains a SIPS
+	// URI, the Contact header field MUST contain a SIPS URI as well.
+	if (0 == sip_uri_username(&t->req->from.uri, &user))
+	{
+		assert(user.len > 0);
+		r = snprintf(contact, ncontact, "<%.*s:%.*s@%s>", (uri && uri->scheme.len > 0) ? (int)uri->scheme.len : 3, (uri && uri->scheme.len > 0) ? uri->scheme.data : "sip", (int)user.len, user.data, local);
+		if (r < 0 || r >= ncontact)
+			return -1; // ENOMEM
+	}
+
+	return 0;
+}
+
+int sip_uac_add_header(struct sip_uac_transaction_t* t, const char* name, const char* value)
+{
+	return sip_message_add_header(t->req, name, value);
+}
+
+int sip_uac_add_header_int(struct sip_uac_transaction_t* t, const char* name, int value)
+{
+	return sip_message_add_header_int(t->req, name, value);
+}
+
+int sip_uac_transaction_ondestroy(struct sip_uac_transaction_t* t, sip_transaction_ondestroy ondestroy, void* param)
+{
+    t->ondestroy = ondestroy;
+    t->ondestroyparam = param;
+    return 0;
+}

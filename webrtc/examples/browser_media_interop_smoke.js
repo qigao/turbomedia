@@ -436,20 +436,25 @@ async function main() {
       'native SDP prompt'
     );
 
-    await cdp.send('Runtime.evaluate', {
+    const offerResult = await cdp.send('Runtime.evaluate', {
       expression: options.browserSend
         ? `createSendOffer(${codecArg})`
         : `createOffer(${codecArg})`,
       awaitPromise: true,
       returnByValue: true,
     });
+    if (offerResult.exceptionDetails) {
+      throw new Error(offerResult.exceptionDetails.exception?.description || 'browser offer failed');
+    }
 
     offer = await waitFor(async () => {
       const result = await cdp.send('Runtime.evaluate', {
-        expression: `(() => document.getElementById('localSdp').value)()`,
+        expression: `({ sdp: document.getElementById('localSdp').value,
+                        log: document.getElementById('debugLog').innerText })`,
         returnByValue: true,
       });
-      const value = result?.result?.value;
+      const { sdp: value, log } = result?.result?.value || {};
+      if (log?.includes('Error creating offer:')) throw new Error(log);
       return value &&
         value.includes('m=audio') &&
         value.includes('m=video') &&

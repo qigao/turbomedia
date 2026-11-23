@@ -2,7 +2,7 @@
 #include "ivr_thread.h"
 #include "tinytest.h"
 
-#include <salts/clock.h>
+#include <core/clock.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -300,9 +300,9 @@ spec("IVR CHTTP H1 WebSocket control transport") {
 
         check_equal(ivr_control_ws_server_stop(server), IVR_OK);
         check_true(wait_value(&probe.client_connected, 0));
-        stop_started_ms = cmeta_monotonic_ms();
+        stop_started_ms = monotonic_ms();
         check_equal(ivr_control_ws_client_stop(client), IVR_OK);
-        stop_elapsed_ms = cmeta_monotonic_ms() - stop_started_ms;
+        stop_elapsed_ms = monotonic_ms() - stop_started_ms;
         check_true(stop_elapsed_ms < 500u);
 
         check_equal(ivr_control_ws_client_destroy(client), IVR_OK);

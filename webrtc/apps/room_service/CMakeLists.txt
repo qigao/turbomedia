@@ -54,11 +54,10 @@ endif()
 set(ROOM_SERVICE_LIBS
     TurboMedia::RtcApps
     TurboMedia::Transport
-    CHttp::Client CHttp::Server
+    CHttp::Client CHttp::App
     turbo_media_auth
     turbo_media_revocation_https
     Salts::Crypto
-    OpenSSL::Crypto
     Salts::Core
     Salts::JsonParser
     Salts::TomlParser
@@ -98,6 +97,7 @@ if(WIN32)
   install(
     FILES $<TARGET_FILE:CHttp::Client>
           $<TARGET_FILE:CHttp::Server>
+          $<TARGET_FILE:CHttp::App>
           $<TARGET_FILE:Salts::CNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
           $<TARGET_FILE:Salts::Mustache>
@@ -164,7 +164,7 @@ target_link_libraries(test_room_service_app
     turbo_media_tenant_quota
     turbo_media_tenant_quota_wire
     Salts::Crypto
-    OpenSSL::Crypto
+    Salts::Crypto
     Salts::Core
     Salts::JsonParser
     Salts::TomlParser

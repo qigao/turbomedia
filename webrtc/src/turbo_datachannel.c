@@ -10,16 +10,12 @@
 
 #include "turbo_datachannel_internal.h"
 #include "turbo_cnet_send_internal.h"
-#include <cmeta_error.h>
+#include <core/error.h>
+#include <memory/buffer.h>
 #include <stdlib.h>
 #include <string.h>
-#include <tstr.h>
-#include <openssl/x509.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
-#include <openssl/evp.h>
-#include <openssl/srtp.h>
-#include "tlog.h"
+#include <core/tstr.h>
+#include "core/tlog.h"
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -39,7 +35,7 @@ ssize_t turbo_media_test_channel_sendv(
     socklen_t info_length, unsigned int info_type, int flags);
 #endif
 
-/* Ephemeral DTLS identity backed by BoringSSL. */
+/* DTLS identity owned by Salts Crypto. */
 #include "dc_certificate.h"
 
 /* SRTP profile key length helper */
@@ -71,12 +67,13 @@ size_t srtp_profile_salt_len(uint16_t profile) {
 }
 
 /* Derive SRTP keys from DTLS handshake */
-int srtp_derive_keys_from_dtls(void *ssl_ptr,
+int srtp_derive_keys_from_dtls(void *stream,
                                srtp_keying_material_t *keys,
                                uint16_t profile) {
-    if (!ssl_ptr || !keys) return -1;
-
-    SSL *ssl = (SSL *)ssl_ptr;
+    if (!stream || !keys) return -1;
+    uint16_t selected;
+    if (crypto_dtls_stream_srtp_profile(stream, &selected) != 0 || profile != selected)
+        return -1;
 
     size_t key_len = srtp_profile_key_len(profile);
     size_t salt_len = srtp_profile_salt_len(profile);
@@ -88,16 +85,12 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
     uint8_t keying_material[128];
     if (total_len > sizeof(keying_material)) return -1;
 
-    /* Export keying material using RFC 5705 */
-    int result = SSL_export_keying_material(
-        ssl,
-        keying_material, total_len,
-        DTLS_SRTP_PROFILE_LABEL, strlen(DTLS_SRTP_PROFILE_LABEL),
-        NULL, 0,
-        0  /* No context */
-    );
-
-    if (result != 1) return -1;
+    const crypto_dtls_export_request request = {
+        .label = DTLS_SRTP_PROFILE_LABEL,
+        .label_size = sizeof(DTLS_SRTP_PROFILE_LABEL) - 1u
+    };
+    if (crypto_dtls_stream_export(stream, &request, keying_material, total_len) != 0)
+        return -1;
 
     /* Parse keying material */
     uint8_t *p = keying_material;
@@ -113,7 +106,7 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
     keys->salt_len = salt_len;
 
     /* Clear sensitive data from stack */
-    memset(keying_material, 0, sizeof(keying_material));
+    dc_secure_clear(keying_material, sizeof(keying_material));
 
     return 0;
 }
@@ -122,19 +115,6 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
  * Internal Helpers
  * ============================================================================ */
  
-static int generate_self_signed_cert(turbo_dc_context_t *ctx) {
-    tstr hash = tstr_dup("sha-256");
-    tstr fingerprint = NULL;
-    if (!hash) return -1;
-    if (turbo_dc_generate_identity(ctx->ssl_ctx, &fingerprint) != 0) {
-        tstr_free(hash);
-        return -1;
-    }
-    ctx->local_fingerprint_hash = hash;
-    ctx->local_fingerprint = fingerprint;
-    return 0;
-}
-
 /* ============================================================================
  * Transport Helpers
  * ============================================================================ */
@@ -173,13 +153,13 @@ int dc_peer_acquire(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->destroying) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         return -1;
     }
     peer->active_operations++;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return 0;
 }
 
@@ -188,15 +168,15 @@ void dc_peer_release(turbo_dc_peer_t *peer) {
         return;
     }
 
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->active_operations > 0) {
         peer->active_operations--;
     }
     if (peer->destroying && peer->active_operations == 0 &&
         peer->transport_data_callbacks == 0) {
-        cmeta_cond_broadcast(&peer->operation_cond);
+        sync_cond_broadcast(&peer->operation_cond);
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 }
 
 static void dc_peer_finish_destroy(turbo_dc_peer_t *peer);
@@ -207,9 +187,9 @@ static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->destroying) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         return -1;
     }
     peer->destroying = 1;
@@ -217,14 +197,14 @@ static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
         /* The caller may hold a lease while waiting for this callback/task.
          * Close admission now, but leave storage intact until owner unwind. */
         peer->deferred_destroy = 1;
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         return 1;
     }
     while (peer->active_operations != 0 ||
            peer->transport_data_callbacks != 0) {
-        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+        sync_cond_wait(&peer->operation_cond, &peer->operation_mutex);
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return 0;
 }
 
@@ -237,25 +217,25 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
     }
 
     ctx = peer->ctx;
-    cmeta_mutex_lock(&ctx->peer_mutex);
+    sync_mutex_lock(&ctx->peer_mutex);
     cursor = &ctx->peers_head;
     while (*cursor) {
         if (*cursor == peer) {
             *cursor = peer->next_in_context;
             peer->next_in_context = NULL;
-            cmeta_cond_broadcast(&ctx->peers_drained);
+            sync_cond_broadcast(&ctx->peers_drained);
             break;
         }
         cursor = &(*cursor)->next_in_context;
     }
-    cmeta_mutex_unlock(&ctx->peer_mutex);
+    sync_mutex_unlock(&ctx->peer_mutex);
 }
 
 static int dc_peer_callbacks_allowed(turbo_dc_peer_t *peer) {
     int allowed;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     allowed = !peer->deferred_destroy;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return allowed;
 }
 
@@ -332,12 +312,12 @@ static int dc_post_sync(turbo_dc_context_t *ctx, dc_transport_task_fn fn,
         return SALTS_OK;
     }
 
-    cmeta_mutex_lock(&ctx->transport_mutex);
+    sync_mutex_lock(&ctx->transport_mutex);
     while (ctx->transport_command_pending && !ctx->transport_stop_requested) {
-        cmeta_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
+        sync_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
     }
     if (ctx->transport_stop_requested) {
-        cmeta_mutex_unlock(&ctx->transport_mutex);
+        sync_mutex_unlock(&ctx->transport_mutex);
         return SALTS_ESHUTDOWN;
     }
     ctx->transport_command = fn;
@@ -345,13 +325,13 @@ static int dc_post_sync(turbo_dc_context_t *ctx, dc_transport_task_fn fn,
     ctx->transport_command_arg2 = arg2;
     ctx->transport_command_done = 0;
     ctx->transport_command_pending = 1;
-    cmeta_cond_broadcast(&ctx->transport_cond);
+    sync_cond_broadcast(&ctx->transport_cond);
     while (!ctx->transport_command_done && !ctx->transport_stop_requested) {
-        cmeta_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
+        sync_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
     }
     ctx->transport_command_pending = 0;
-    cmeta_cond_broadcast(&ctx->transport_cond);
-    cmeta_mutex_unlock(&ctx->transport_mutex);
+    sync_cond_broadcast(&ctx->transport_cond);
+    sync_mutex_unlock(&ctx->transport_mutex);
     return ctx->transport_stop_requested ? SALTS_ESHUTDOWN : SALTS_OK;
 }
 
@@ -479,13 +459,13 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
         turbo_dc_transport_data_cb callback = NULL;
         void *user_data = NULL;
 
-        cmeta_mutex_lock(&peer->operation_mutex);
+        sync_mutex_lock(&peer->operation_mutex);
         if (!peer->destroying && peer->on_transport_data) {
             callback = peer->on_transport_data;
             user_data = peer->transport_data_user_data;
             peer->transport_data_callbacks++;
         }
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
 
         if (callback) {
             turbo_dc_peer_t *previous_callback_peer =
@@ -493,14 +473,14 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
             g_dc_transport_data_callback_peer = peer;
             callback(user_data, bytes, len);
             g_dc_transport_data_callback_peer = previous_callback_peer;
-            cmeta_mutex_lock(&peer->operation_mutex);
+            sync_mutex_lock(&peer->operation_mutex);
             if (peer->transport_data_callbacks > 0) {
                 peer->transport_data_callbacks--;
             }
             if (peer->transport_data_callbacks == 0) {
-                cmeta_cond_broadcast(&peer->operation_cond);
+                sync_cond_broadcast(&peer->operation_cond);
             }
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
         }
     }
 }
@@ -532,7 +512,9 @@ static void dc_stream_receive_cb(void *user, cnet_connection connection,
                                  const cnet_receive_view *view) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)user;
     if (!peer || !view) return;
-    dc_handle_incoming_packet(peer, view->data, view->size);
+    if (peer->dtls.tcp_used || dc_is_dtls_record(view->data, view->size))
+        dtls_handle_tcp(peer, view->data, view->size);
+    else dc_handle_incoming_packet(peer, view->data, view->size);
     (void)cnet_receive(&peer->stream_client, connection, 1u);
 }
 
@@ -541,12 +523,60 @@ static void dc_datagram_receive_cb(void *user, cnet_datagram *datagram,
                                    const cnet_receive_view *view) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)user;
     if (!peer || !remote || !view) return;
-    if (peer->ctx->is_server) {
+    if (peer->is_dtls_server && !dtls_session_stream(peer)) {
         peer->remote_datagram_peer = *remote;
         peer->has_remote_datagram_peer = 1;
     }
-    dc_handle_incoming_packet(peer, view->data, view->size);
+    const cnet_datagram_peer *selected = &peer->remote_datagram_peer;
+    if (remote->family == selected->family && remote->port == selected->port &&
+        remote->scope_id == selected->scope_id &&
+        memcmp(remote->address, selected->address, sizeof(remote->address)) == 0)
+        dc_handle_incoming_packet(peer, view->data, view->size);
     (void)cnet_datagram_receive(datagram, 1u);
+}
+
+static void dc_datagram_dtls_done(void *user, cnet_datagram *datagram,
+    const cnet_datagram_peer *remote, size_t size, int status, uint64_t tag) {
+    (void)user;
+    (void)datagram;
+    (void)remote;
+    (void)size;
+    if (tag) dtls_transport_done((void *)(uintptr_t)tag, status);
+}
+
+static void dc_stream_dtls_done(void *user, const cnet_send_result *result) {
+    dtls_transport_done(user, result->status);
+}
+
+int dc_submit_dtls(turbo_dc_peer_t *peer, const void *data, size_t len,
+                   turbo_dc_transport_send_done_cb done, void *operation) {
+    if (peer->external_transport && peer->external_transport_send) {
+        if (peer->external_transport_send_async)
+            return peer->external_transport_send_async(peer->external_transport, data, len,
+                                                        done, operation);
+        peer->external_transport_send(peer->external_transport, data, len);
+        done(operation, 0);
+        return 0;
+    }
+    if (peer->datagram_initialized && peer->has_remote_datagram_peer)
+        return cnet_datagram_send(&peer->datagram, &peer->remote_datagram_peer,
+                                   data, len, (uint64_t)(uintptr_t)operation);
+    if (!peer->stream_client_initialized || !peer->stream_connection.generation)
+        return SALTS_ENOTCONN;
+    mem_buffer_t *buffer = mem_get_buffer(mem_global(), len);
+    if (!buffer) return SALTS_ENOMEM;
+    memcpy(mem_buffer_data(buffer), data, len);
+    mem_set_used(buffer, len);
+    mem_slice_t slice = mem_slice(buffer, 0, len);
+    const cnet_send_options send = {
+        .segments = &slice, .segment_count = 1, .complete = dc_stream_dtls_done,
+        .user = operation
+    };
+    cnet_operation op;
+    const int status = cnet_send(&peer->stream_client, peer->stream_connection, &send, &op, NULL);
+    mem_slice_release(&slice);
+    mem_buffer_release(buffer);
+    return status;
 }
 
 typedef struct {
@@ -587,7 +617,7 @@ static void direct_send(turbo_dc_peer_t *peer, const void *data, size_t len) {
     if (dc_post_sync(peer->ctx, dc_send_task, &command, NULL) != SALTS_OK ||
         command.status != SALTS_OK) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT,
-                          cmeta_strerror(command.status));
+                          error_code_string(command.status));
     }
 }
 
@@ -704,7 +734,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
             };
             int rc = cnet_client_init(&peer->stream_client, &client_config);
             if (rc != SALTS_OK) {
-                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, cmeta_strerror(rc));
+                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, error_code_string(rc));
                 return;
             }
             peer->stream_client_initialized = 1;
@@ -718,7 +748,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 };
                 rc = cnet_listener_init(&peer->listener, &listener_config);
                 if (rc != SALTS_OK) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, cmeta_strerror(rc));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, error_code_string(rc));
                     return;
                 }
                 peer->listener_initialized = 1;
@@ -738,7 +768,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 rc = cnet_connect(&peer->stream_client, &options,
                                   &peer->stream_connection);
                 if (rc != SALTS_OK) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, cmeta_strerror(rc));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, error_code_string(rc));
                     return;
                 }
                 peer->transport_ops = &g_direct_ops;
@@ -772,10 +802,11 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
             config.max_datagram_bytes = CNET_DATAGRAM_MAX_PAYLOAD_BYTES;
             config.receive_buffer_bytes = CNET_DATAGRAM_MAX_PAYLOAD_BYTES;
             config.observer.on_receive = dc_datagram_receive_cb;
+            config.observer.on_send = dc_datagram_dtls_done;
             config.observer.user = peer;
             rc = cnet_datagram_init(&peer->datagram, &config);
             if (rc != SALTS_OK) {
-                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, cmeta_strerror(rc));
+                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, error_code_string(rc));
                 return;
             }
             peer->datagram_initialized = 1;
@@ -795,7 +826,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 rc = dc_resolve_datagram_peer(peer->remote_host, peer->remote_port,
                                               &peer->remote_datagram_peer);
                 if (rc != SALTS_OK) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, cmeta_strerror(rc));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, error_code_string(rc));
                     return;
                 }
                 peer->has_remote_datagram_peer = 1;
@@ -821,9 +852,9 @@ static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
     size_t events = 0;
     int destroying;
     if (!peer) return;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     destroying = peer->destroying;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     if (destroying) return;
     dtls_poll_retransmit(peer);
     if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
@@ -856,13 +887,13 @@ static void dc_transport_thread_main(void *arg) {
         turbo_dc_peer_t *peer;
 
         dc_reap_deferred_peers(ctx);
-        cmeta_mutex_lock(&ctx->transport_mutex);
+        sync_mutex_lock(&ctx->transport_mutex);
         if (!ctx->transport_stop_requested && !ctx->transport_command_pending) {
-            (void)cmeta_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
+            (void)sync_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
                                        DC_CNET_POLL_INTERVAL_NS);
         }
         if (ctx->transport_stop_requested) {
-            cmeta_mutex_unlock(&ctx->transport_mutex);
+            sync_mutex_unlock(&ctx->transport_mutex);
             break;
         }
         if (ctx->transport_command_pending && !ctx->transport_command_done) {
@@ -870,21 +901,21 @@ static void dc_transport_thread_main(void *arg) {
             arg1 = ctx->transport_command_arg1;
             arg2 = ctx->transport_command_arg2;
         }
-        cmeta_mutex_unlock(&ctx->transport_mutex);
+        sync_mutex_unlock(&ctx->transport_mutex);
 
         if (command) {
             command(arg1, arg2);
-            cmeta_mutex_lock(&ctx->transport_mutex);
+            sync_mutex_lock(&ctx->transport_mutex);
             ctx->transport_command_done = 1;
-            cmeta_cond_broadcast(&ctx->transport_cond);
-            cmeta_mutex_unlock(&ctx->transport_mutex);
+            sync_cond_broadcast(&ctx->transport_cond);
+            sync_mutex_unlock(&ctx->transport_mutex);
             continue;
         }
 
-        cmeta_mutex_lock(&ctx->peer_mutex);
+        sync_mutex_lock(&ctx->peer_mutex);
         for (peer = ctx->peers_head; peer; peer = peer->next_in_context)
             dc_poll_direct_peer(peer);
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
     }
     g_dc_transport_owner = NULL;
 }
@@ -908,6 +939,7 @@ static void external_transport_close(turbo_dc_peer_t *peer) {
 static void external_transport_destroy(turbo_dc_peer_t *peer) {
     peer->external_transport = NULL;
     peer->external_transport_send = NULL;
+    peer->external_transport_send_async = NULL;
 }
 
 static const dc_transport_ops_t g_external_transport_ops = {
@@ -920,6 +952,13 @@ static void ice_agent_transport_send(void *transport,
                                      const void *data,
                                      size_t len) {
     (void)ice_agent_send((salts_ice_agent_t *)transport, data, len);
+}
+
+static int ice_agent_transport_send_dtls(void *transport, const void *data, size_t len,
+    turbo_dc_transport_send_done_cb done, void *operation) {
+    const int status = ice_agent_send(transport, data, len);
+    done(operation, status);
+    return 0;
 }
 
 /* ============================================================================
@@ -970,15 +1009,15 @@ TURBO_MEDIA_C_API void turbo_dc_peer_set_transport_data_handler(
         return;
     }
 
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     peer->on_transport_data = cb;
     peer->transport_data_user_data = user_data;
     if (!cb && g_dc_transport_data_callback_peer != peer) {
         while (peer->transport_data_callbacks != 0) {
-            cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+            sync_cond_wait(&peer->operation_cond, &peer->operation_mutex);
         }
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     dc_peer_release(peer);
 }
 
@@ -1002,97 +1041,55 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     ctx->dtls_mtu = config->dtls_mtu ? config->dtls_mtu : DTLS_MTU_DEFAULT;
     ctx->disable_sctp = config->disable_sctp ? 1 : 0;
 
-    SSL_library_init();
-    SSL_load_error_strings();
-
-    /* WebRTC DTLS role is negotiated independently from SDP offer/answer.
-     * Use the generic DTLS method here so each peer can switch between
-     * connect/accept state later via SSL_set_connect_state()/accept_state(). */
-    const SSL_METHOD *method = DTLS_method();
-    ctx->ssl_ctx = SSL_CTX_new(method);
-    if (!ctx->ssl_ctx) {
-        dc_set_context_error(ctx, TURBO_DC_ERROR_SSL_CONTEXT, NULL);
+    if (ctx->dtls_mtu < CRYPTO_DTLS_MIN_MTU || ctx->dtls_mtu > CRYPTO_DTLS_MAX_MTU ||
+        ((config->cert_pem == NULL) != (config->key_pem == NULL))) {
+        dc_set_context_error(ctx, TURBO_DC_ERROR_SSL_CONTEXT, "invalid DTLS MTU or identity paths");
         free(ctx);
         return NULL;
     }
-
-    if (SSL_CTX_set_tlsext_use_srtp(
-            ctx->ssl_ctx,
-            "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32:"
-            "SRTP_AEAD_AES_128_GCM:SRTP_AEAD_AES_256_GCM") != 0) {
-        dc_set_context_error(ctx, TURBO_DC_ERROR_SSL_CONTEXT, "failed to enable DTLS-SRTP");
-        SSL_CTX_free(ctx->ssl_ctx);
+    ctx->local_fingerprint_hash = tstr_dup("sha-256");
+    if (!ctx->local_fingerprint_hash ||
+        turbo_dc_create_identity(config->cert_pem, config->key_pem, &ctx->dtls_identity,
+                                 &ctx->local_fingerprint) != 0) {
+        dc_set_context_error(ctx, TURBO_DC_ERROR_CERT_LOAD, "Salts DTLS identity initialization failed");
+        tstr_free(ctx->local_fingerprint_hash);
         free(ctx);
         return NULL;
-    }
-
-    /* Modern cipher list for DTLS 1.2:
-     * - Prefer ECDHE for forward secrecy
-     * - AES-GCM for authenticated encryption
-     * - Exclude weak ciphers (NULL, EXPORT, DES, RC4, MD5) */
-    SSL_CTX_set_cipher_list(ctx->ssl_ctx,
-        "ECDHE-ECDSA-AES128-GCM-SHA256:"
-        "ECDHE-RSA-AES128-GCM-SHA256:"
-        "ECDHE-ECDSA-AES256-GCM-SHA384:"
-        "ECDHE-RSA-AES256-GCM-SHA384:"
-        "ECDHE-ECDSA-CHACHA20-POLY1305:"
-        "ECDHE-RSA-CHACHA20-POLY1305:"
-        "DHE-RSA-AES128-GCM-SHA256:"
-        "DHE-RSA-AES256-GCM-SHA384");
-
-    /* Ensure ECDH works */
-    SSL_CTX_set_ecdh_auto(ctx->ssl_ctx, 1);
-
-    /* Disable certificate verification for self-signed certs */
-    SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_NONE, NULL);
-
-    if (config->cert_pem && config->key_pem) {
-        if (SSL_CTX_use_certificate_file(ctx->ssl_ctx, config->cert_pem, SSL_FILETYPE_PEM) != 1 ||
-            SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, config->key_pem, SSL_FILETYPE_PEM) != 1) {
-            dc_set_context_error(ctx, TURBO_DC_ERROR_CERT_LOAD, NULL);
-            SSL_CTX_free(ctx->ssl_ctx);
-            free(ctx);
-            return NULL;
-        }
-    } else {
-        /* Generate self-signed certificate for DTLS */
-        if (generate_self_signed_cert(ctx) != 0) {
-            dc_set_context_error(ctx, TURBO_DC_ERROR_CERT_LOAD, "failed to generate self-signed cert");
-            SSL_CTX_free(ctx->ssl_ctx);
-            free(ctx);
-            return NULL;
-        }
     }
 
     if (sctp_global_init() != 0) {
         dc_set_context_error(ctx, TURBO_DC_ERROR_SCTP_INIT, NULL);
-        SSL_CTX_free(ctx->ssl_ctx);
+        crypto_tls_credential_object_release(ctx->dtls_identity);
+        tstr_free(ctx->local_fingerprint);
+        tstr_free(ctx->local_fingerprint_hash);
         free(ctx);
         return NULL;
     }
 
-    cmeta_mutex_init(&ctx->peer_mutex);
-    cmeta_cond_init(&ctx->peers_drained);
+    sync_mutex_init(&ctx->peer_mutex);
+    sync_cond_init(&ctx->peers_drained);
     ctx->peer_mutex_initialized = 1;
 
     {
         /* This thread owns DTLS/SCTP state for direct and externally-owned
          * transports alike. ICE owns only its agent; packet ingress and DTLS
          * timers publish a bounded pending flag consumed here. */
-        cmeta_mutex_init(&ctx->transport_mutex);
-        cmeta_cond_init(&ctx->transport_cond);
+        sync_mutex_init(&ctx->transport_mutex);
+        sync_cond_init(&ctx->transport_cond);
         ctx->transport_sync_initialized = 1;
-        if (cmeta_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
+        if (sync_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
             dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT,
                                  "failed to start CNet transport owner");
-            cmeta_cond_destroy(&ctx->transport_cond);
-            cmeta_mutex_destroy(&ctx->transport_mutex);
+            sync_cond_destroy(&ctx->transport_cond);
+            sync_mutex_destroy(&ctx->transport_mutex);
             ctx->transport_sync_initialized = 0;
-            cmeta_cond_destroy(&ctx->peers_drained);
-            cmeta_mutex_destroy(&ctx->peer_mutex);
+            sync_cond_destroy(&ctx->peers_drained);
+            sync_mutex_destroy(&ctx->peer_mutex);
             ctx->peer_mutex_initialized = 0;
             sctp_global_cleanup();
-            SSL_CTX_free(ctx->ssl_ctx);
+            crypto_tls_credential_object_release(ctx->dtls_identity);
+            tstr_free(ctx->local_fingerprint);
+            tstr_free(ctx->local_fingerprint_hash);
             free(ctx);
             return NULL;
         }
@@ -1107,11 +1104,11 @@ static void dc_context_close_peer_admission(void *arg1, void *arg2) {
     turbo_dc_context_t *ctx = (turbo_dc_context_t *)arg1;
     turbo_dc_peer_t *peer;
     (void)arg2;
-    cmeta_mutex_lock(&ctx->peer_mutex);
+    sync_mutex_lock(&ctx->peer_mutex);
     /* Owner requests only: physical teardown happens after this task exits. */
     for (peer = ctx->peers_head; peer; peer = peer->next_in_context)
         turbo_dc_peer_destroy(peer);
-    cmeta_mutex_unlock(&ctx->peer_mutex);
+    sync_mutex_unlock(&ctx->peer_mutex);
 }
 
 void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
@@ -1122,38 +1119,38 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
      * gone before the CNet owner, SCTP resources, or context storage is
      * released. */
     if (ctx->peer_mutex_initialized) {
-        cmeta_mutex_lock(&ctx->peer_mutex);
+        sync_mutex_lock(&ctx->peer_mutex);
         ctx->destroying = 1;
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
 
         /* Do not take an unretained Peer snapshot: deferred owner retirement
          * can unlink/free it before a foreign destroy call reaches the Peer. */
         (void)dc_post_sync(ctx, dc_context_close_peer_admission, ctx, NULL);
-        cmeta_mutex_lock(&ctx->peer_mutex);
+        sync_mutex_lock(&ctx->peer_mutex);
         while (ctx->peers_head)
-            cmeta_cond_wait(&ctx->peers_drained, &ctx->peer_mutex);
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+            sync_cond_wait(&ctx->peers_drained, &ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
     }
 
     if (ctx->transport_sync_initialized && ctx->transport_thread_started) {
-        cmeta_mutex_lock(&ctx->transport_mutex);
+        sync_mutex_lock(&ctx->transport_mutex);
         ctx->transport_stop_requested = 1;
-        cmeta_cond_broadcast(&ctx->transport_cond);
-        cmeta_mutex_unlock(&ctx->transport_mutex);
+        sync_cond_broadcast(&ctx->transport_cond);
+        sync_mutex_unlock(&ctx->transport_mutex);
     }
     if (ctx->transport_thread_started) {
-        cmeta_thread_join(&ctx->transport_thread);
-        cmeta_thread_destroy(&ctx->transport_thread);
+        sync_thread_join(&ctx->transport_thread);
+        sync_thread_destroy(&ctx->transport_thread);
         ctx->transport_thread_started = 0;
     }
     if (ctx->transport_sync_initialized) {
-        cmeta_cond_destroy(&ctx->transport_cond);
-        cmeta_mutex_destroy(&ctx->transport_mutex);
+        sync_cond_destroy(&ctx->transport_cond);
+        sync_mutex_destroy(&ctx->transport_mutex);
         ctx->transport_sync_initialized = 0;
     }
 
-    if (ctx->ssl_ctx) {
-        SSL_CTX_free(ctx->ssl_ctx);
+    if (ctx->dtls_identity) {
+        crypto_tls_credential_object_release(ctx->dtls_identity);
     }
 
     sctp_global_cleanup();
@@ -1161,8 +1158,8 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
     tstr_free(ctx->local_fingerprint);
     tstr_free(ctx->local_fingerprint_hash);
     if (ctx->peer_mutex_initialized) {
-        cmeta_cond_destroy(&ctx->peers_drained);
-        cmeta_mutex_destroy(&ctx->peer_mutex);
+        sync_cond_destroy(&ctx->peers_drained);
+        sync_mutex_destroy(&ctx->peer_mutex);
         ctx->peer_mutex_initialized = 0;
     }
     free(ctx);
@@ -1223,16 +1220,16 @@ turbo_dc_peer_t *turbo_dc_peer_create(
         return NULL;
     }
 
-    cmeta_mutex_lock(&ctx->peer_mutex);
+    sync_mutex_lock(&ctx->peer_mutex);
     if (ctx->destroying) {
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
         return NULL;
     }
 
     turbo_dc_peer_t *peer = calloc(1, sizeof(*peer));
     if (!peer) {
         dc_set_context_error(ctx, TURBO_DC_ERROR_ALLOC_PEER, NULL);
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
         return NULL;
     }
 
@@ -1241,8 +1238,8 @@ turbo_dc_peer_t *turbo_dc_peer_create(
     peer->state = TURBO_DC_STATE_NEW;
     peer->is_dtls_server = ctx->is_server;
 
-    cmeta_mutex_init(&peer->operation_mutex);
-    cmeta_cond_init(&peer->operation_cond);
+    sync_mutex_init(&peer->operation_mutex);
+    sync_cond_init(&peer->operation_cond);
     peer->operation_sync_initialized = 1;
     operation_sync_initialized = 1;
 
@@ -1277,7 +1274,7 @@ turbo_dc_peer_t *turbo_dc_peer_create(
 
     peer->next_in_context = ctx->peers_head;
     ctx->peers_head = peer;
-    cmeta_mutex_unlock(&ctx->peer_mutex);
+    sync_mutex_unlock(&ctx->peer_mutex);
     return peer;
 
 peer_create_fail:
@@ -1290,10 +1287,6 @@ peer_create_fail:
         peer->sctp_address_registered = 0;
     }
     dtls_session_cleanup(peer);
-    if (peer->dtls.ssl) {
-        SSL_free(peer->dtls.ssl);
-        peer->dtls.ssl = NULL;
-    }
     if (peer->channels_initialized) {
         hash_map_destroy(&peer->channels);
         peer->channels_initialized = 0;
@@ -1303,11 +1296,11 @@ peer_create_fail:
     }
     tstr_free(peer->remote_host);
     if (operation_sync_initialized) {
-        cmeta_cond_destroy(&peer->operation_cond);
-        cmeta_mutex_destroy(&peer->operation_mutex);
+        sync_cond_destroy(&peer->operation_cond);
+        sync_mutex_destroy(&peer->operation_mutex);
     }
     free(peer);
-    cmeta_mutex_unlock(&ctx->peer_mutex);
+    sync_mutex_unlock(&ctx->peer_mutex);
     return NULL;
 }
 
@@ -1329,7 +1322,7 @@ static void dc_peer_callback_owner_task(void *arg1, void *arg2) {
     dc_peer_callback_command_t *command = (dc_peer_callback_command_t *)arg1;
     (void)arg2;
     if (!command || !command->peer) return;
-    cmeta_mutex_lock(&command->peer->operation_mutex);
+    sync_mutex_lock(&command->peer->operation_mutex);
     switch (command->kind) {
         case DC_PEER_CALLBACK_STATE:
             command->peer->on_state = command->on_state;
@@ -1341,7 +1334,7 @@ static void dc_peer_callback_owner_task(void *arg1, void *arg2) {
             command->peer->on_error = command->on_error;
             break;
     }
-    cmeta_mutex_unlock(&command->peer->operation_mutex);
+    sync_mutex_unlock(&command->peer->operation_mutex);
 }
 
 static void dc_peer_set_callback(turbo_dc_peer_t *peer,
@@ -1430,6 +1423,9 @@ static int dc_peer_set_remote_fingerprint_impl(
     if (!peer || !hash || !fingerprint) return -1;
     if (!dc_ascii_equal_ignore_case(hash, "sha-256")) return -2;
     if (!dc_is_sha256_fingerprint(fingerprint)) return -3;
+    if (peer->dtls.started) {
+        return dc_ascii_equal_ignore_case(peer->remote_fingerprint, fingerprint) ? 0 : -3;
+    }
 
     new_hash = tstr_dup("sha-256");
     new_fingerprint = tstr_dup(fingerprint);
@@ -1499,17 +1495,12 @@ static void dc_peer_set_role_owner_task(void *arg1, void *arg2) {
     if (!command || !command->peer) return;
     peer = command->peer;
     command->status = -1;
-    if (!peer->dtls.ssl) return;
+    if (!peer->dtls.flow || peer->dtls.started) return;
     if (peer->state != TURBO_DC_STATE_NEW) {
         command->status = -2;
         return;
     }
     peer->is_dtls_server = command->is_server ? 1 : 0;
-    if (peer->is_dtls_server) {
-        SSL_set_accept_state(peer->dtls.ssl);
-    } else {
-        SSL_set_connect_state(peer->dtls.ssl);
-    }
     command->status = 0;
 }
 
@@ -1552,16 +1543,18 @@ int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer) {
 
 static int dc_peer_set_external_transport_owner_impl(
     turbo_dc_peer_t *peer, void *transport,
-    turbo_dc_transport_send_cb send_cb) {
+    turbo_dc_transport_send_cb send_cb, turbo_dc_transport_send_async_cb async_cb) {
     int rc;
     void *old_transport;
     turbo_dc_transport_send_cb old_send;
+    turbo_dc_transport_send_async_cb old_async;
     const dc_transport_ops_t *old_ops;
 
     if (!peer) return -1;
     if (!transport) {
         peer->external_transport = NULL;
         peer->external_transport_send = NULL;
+        peer->external_transport_send_async = NULL;
         if (peer->transport_ops == &g_external_transport_ops) {
             peer->transport_ops = NULL;
         }
@@ -1574,15 +1567,18 @@ static int dc_peer_set_external_transport_owner_impl(
 
     old_transport = peer->external_transport;
     old_send = peer->external_transport_send;
+    old_async = peer->external_transport_send_async;
     old_ops = peer->transport_ops;
     peer->external_transport = transport;
     peer->external_transport_send = send_cb;
+    peer->external_transport_send_async = async_cb;
     peer->transport_ops = &g_external_transport_ops;
 
     rc = dtls_session_init_timer(peer);
     if (rc != 0) {
         peer->external_transport = old_transport;
         peer->external_transport_send = old_send;
+        peer->external_transport_send_async = old_async;
         peer->transport_ops = old_ops;
     }
     return rc;
@@ -1592,6 +1588,7 @@ typedef struct dc_external_transport_command_s {
     turbo_dc_peer_t *peer;
     void *transport;
     turbo_dc_transport_send_cb send_cb;
+    turbo_dc_transport_send_async_cb async_cb;
     int result;
 } dc_external_transport_command_t;
 
@@ -1601,18 +1598,25 @@ static void dc_peer_set_external_transport_owner_task(void *arg1, void *arg2) {
     (void)arg2;
     if (!command) return;
     command->result = dc_peer_set_external_transport_owner_impl(
-        command->peer, command->transport, command->send_cb);
+        command->peer, command->transport, command->send_cb, command->async_cb);
 }
 
 int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
                                          void *transport,
                                          turbo_dc_transport_send_cb send_cb) {
+    return turbo_dc_peer_set_external_transport_async(peer, transport, send_cb, NULL);
+}
+
+int turbo_dc_peer_set_external_transport_async(turbo_dc_peer_t *peer,
+    void *transport, turbo_dc_transport_send_cb send_cb,
+    turbo_dc_transport_send_async_cb async_cb) {
     dc_external_transport_command_t command;
     int status;
     if (!peer || dc_peer_acquire(peer) != 0) return -1;
     command.peer = peer;
     command.transport = transport;
     command.send_cb = send_cb;
+    command.async_cb = async_cb;
     command.result = -1;
     status = dc_peer_post_owner_sync(peer,
                                      dc_peer_set_external_transport_owner_task,
@@ -1657,7 +1661,7 @@ static void dc_external_handshake_task(void *arg1, void *arg2) {
     if (!peer) return;
     peer->state = TURBO_DC_STATE_CONNECTING;
     dtls_process_handshake(peer);
-    if (status) *status = 0;
+    if (status && peer->state != TURBO_DC_STATE_FAILED) *status = 0;
 }
 
 static void dc_peer_poll_task(void *arg1, void *arg2) {
@@ -1671,8 +1675,8 @@ int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct salts_ice_agent_s 
         return -1;
     }
 
-    return turbo_dc_peer_set_external_transport(
-        peer, ice_agent, ice_agent_transport_send);
+    return turbo_dc_peer_set_external_transport_async(
+        peer, ice_agent, ice_agent_transport_send, ice_agent_transport_send_dtls);
 }
 
 void turbo_dc_peer_feed_ice_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
@@ -1765,6 +1769,7 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
     if (peer->state == TURBO_DC_STATE_CLOSED) return;
 
     dc_notify_state(peer, TURBO_DC_STATE_DISCONNECTING);
+    dtls_session_stop(peer);
 
     if (peer->sctp.socket) {
         usrsctp_shutdown(peer->sctp.socket, SHUT_RDWR);
@@ -1772,9 +1777,6 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
         peer->sctp.socket = NULL;
     }
 
-    if (peer->dtls.ssl) {
-        SSL_shutdown(peer->dtls.ssl);
-    }
 
     if (peer->transport_ops && peer->transport_ops->close) {
         peer->transport_ops->close(peer);
@@ -1808,10 +1810,6 @@ static void dc_peer_destroy_resources_owner_task(void *arg1, void *arg2) {
     }
 #endif
     dtls_session_cleanup(peer);
-    if (peer->dtls.ssl) {
-        SSL_free(peer->dtls.ssl);
-        peer->dtls.ssl = NULL;
-    }
 
     if (peer->sctp.socket) {
         usrsctp_close(peer->sctp.socket);
@@ -1882,8 +1880,8 @@ static void dc_peer_finish_destroy(turbo_dc_peer_t *peer) {
     }
 
     dc_peer_unlink_from_context(peer);
-    cmeta_cond_destroy(&peer->operation_cond);
-    cmeta_mutex_destroy(&peer->operation_mutex);
+    sync_cond_destroy(&peer->operation_cond);
+    sync_mutex_destroy(&peer->operation_mutex);
     free(peer);
 }
 
@@ -1891,16 +1889,16 @@ static void dc_peer_finish_destroy(turbo_dc_peer_t *peer) {
 static void dc_reap_deferred_peers(turbo_dc_context_t *ctx) {
     for (;;) {
         turbo_dc_peer_t *peer;
-        cmeta_mutex_lock(&ctx->peer_mutex);
+        sync_mutex_lock(&ctx->peer_mutex);
         for (peer = ctx->peers_head; peer; peer = peer->next_in_context) {
             int ready;
-            cmeta_mutex_lock(&peer->operation_mutex);
+            sync_mutex_lock(&peer->operation_mutex);
             ready = peer->deferred_destroy && peer->active_operations == 0 &&
                     peer->transport_data_callbacks == 0;
-            cmeta_mutex_unlock(&peer->operation_mutex);
+            sync_mutex_unlock(&peer->operation_mutex);
             if (ready) break;
         }
-        cmeta_mutex_unlock(&ctx->peer_mutex);
+        sync_mutex_unlock(&ctx->peer_mutex);
         if (!peer) return;
         dc_peer_finish_destroy(peer);
     }
@@ -1921,20 +1919,14 @@ static void dc_peer_get_srtp_keys_owner_task(void *arg1, void *arg2) {
     dc_peer_srtp_keys_command_t *command =
         (dc_peer_srtp_keys_command_t *)arg1;
     turbo_dc_peer_t *peer;
-    const SRTP_PROTECTION_PROFILE *profile;
+    uint16_t profile;
     (void)arg2;
     if (!command || !command->peer || !command->material) return;
     peer = command->peer;
-    if (!peer->dtls.ssl || !SSL_is_init_finished(peer->dtls.ssl)) return;
-
-    profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
-    if (!profile) return;
-    if (srtp_derive_keys_from_dtls(
-            peer->dtls.ssl, (srtp_keying_material_t *)command->material,
-            (uint16_t)profile->id) != 0) {
-        return;
-    }
-    command->profile = (uint16_t)profile->id;
+    crypto_dtls_stream *stream = dtls_session_stream(peer);
+    if (crypto_dtls_stream_srtp_profile(stream, &profile) != 0) return;
+    if (srtp_derive_keys_from_dtls(stream, command->material, profile) == 0)
+        command->profile = profile;
 }
 
 uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
@@ -1977,16 +1969,16 @@ static turbo_dc_channel_t *dc_channel_create_owner_impl(
                           "invalid data channel label or protocol");
         return NULL;
     }
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->destroying || peer_alloc_channel_id(peer, &channel_id) != 0) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, "no free channel IDs");
         return NULL;
     }
     channel = calloc(1, sizeof(*channel));
     if (!channel) {
         peer_free_channel_id(peer, channel_id);
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, NULL);
         return NULL;
     }
@@ -2013,12 +2005,12 @@ static turbo_dc_channel_t *dc_channel_create_owner_impl(
         dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, "channel map is full");
         goto channel_create_fail;
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     return channel;
 
 channel_create_fail:
     peer_free_channel_id(peer, channel_id);
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     tstr_free(channel->label);
     tstr_free(channel->protocol);
     free(channel);
@@ -2139,10 +2131,10 @@ static void dc_channel_callback_owner_task(void *arg1, void *arg2) {
         (dc_channel_callback_command_t *)arg1;
     (void)arg2;
     if (!command || !command->channel) return;
-    cmeta_mutex_lock(&command->channel->peer->operation_mutex);
+    sync_mutex_lock(&command->channel->peer->operation_mutex);
     if (command->channel->closing &&
         command->kind != DC_CHANNEL_CALLBACK_GET_USER_DATA) {
-        cmeta_mutex_unlock(&command->channel->peer->operation_mutex);
+        sync_mutex_unlock(&command->channel->peer->operation_mutex);
         return;
     }
     switch (command->kind) {
@@ -2162,7 +2154,7 @@ static void dc_channel_callback_owner_task(void *arg1, void *arg2) {
             command->result_user_data = command->channel->user_data;
             break;
     }
-    cmeta_mutex_unlock(&command->channel->peer->operation_mutex);
+    sync_mutex_unlock(&command->channel->peer->operation_mutex);
 }
 
 static void dc_channel_update(turbo_dc_channel_t *channel,
@@ -2234,9 +2226,9 @@ static int dc_channel_send_owner_impl(
         return -1;
     }
 
-    cmeta_mutex_lock(&channel->peer->operation_mutex);
+    sync_mutex_lock(&channel->peer->operation_mutex);
     int ready = channel->is_open && !channel->closing;
-    cmeta_mutex_unlock(&channel->peer->operation_mutex);
+    sync_mutex_unlock(&channel->peer->operation_mutex);
     if (!ready) {
         dc_set_peer_error(channel->peer, TURBO_DC_ERROR_CHANNEL_NOT_OPEN, NULL);
         return -1;
@@ -2368,7 +2360,7 @@ static void dc_channel_query_owner_task(void *arg1, void *arg2) {
     dc_channel_query_command_t *query = (dc_channel_query_command_t *)arg1;
     (void)arg2;
     if (!query || !query->channel) return;
-    cmeta_mutex_lock(&query->channel->peer->operation_mutex);
+    sync_mutex_lock(&query->channel->peer->operation_mutex);
     switch (query->kind) {
         case DC_CHANNEL_QUERY_LABEL:
             query->label = query->channel->label;
@@ -2383,7 +2375,7 @@ static void dc_channel_query_owner_task(void *arg1, void *arg2) {
             query->buffered_amount = query->channel->buffered_amount;
             break;
     }
-    cmeta_mutex_unlock(&query->channel->peer->operation_mutex);
+    sync_mutex_unlock(&query->channel->peer->operation_mutex);
 }
 
 static int dc_channel_query(turbo_dc_channel_t *channel,
@@ -2438,9 +2430,9 @@ static void dc_channel_close_owner_impl_mode(turbo_dc_channel_t *channel,
     uint16_t id;
     if (!channel || !channel->peer) return;
     peer = channel->peer;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (channel->closing) {
-        cmeta_mutex_unlock(&peer->operation_mutex);
+        sync_mutex_unlock(&peer->operation_mutex);
         return;
     }
     channel->closing = 1;
@@ -2451,7 +2443,7 @@ static void dc_channel_close_owner_impl_mode(turbo_dc_channel_t *channel,
     if (peer_get_channel(peer, id) == channel) peer_remove_channel(peer, id);
     on_close = channel->on_close;
     user_data = channel->user_data;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 
     /* Native calls and user code may reenter; never hold operation_mutex. */
     if (reset_outgoing && peer->sctp.socket &&
@@ -2482,9 +2474,9 @@ void dc_channel_handle_all_streams_reset(turbo_dc_peer_t *peer,
     size_t i;
 
     if (!peer) return;
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     capacity = peer->channels_initialized ? hash_map_size(&peer->channels) : 0u;
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
     if (capacity == 0u) return;
 
     channels = (turbo_dc_channel_t **)calloc(capacity, sizeof(*channels));
@@ -2496,7 +2488,7 @@ void dc_channel_handle_all_streams_reset(turbo_dc_peer_t *peer,
 
     /* Snapshot every channel before invoking callbacks. A callback may create
      * another channel, but that new generation was not part of this reset. */
-    cmeta_mutex_lock(&peer->operation_mutex);
+    sync_mutex_lock(&peer->operation_mutex);
     if (peer->channels_initialized) {
         for (slot = 0u;
              slot < hash_map_capacity(&peer->channels) && count < capacity;
@@ -2513,7 +2505,7 @@ void dc_channel_handle_all_streams_reset(turbo_dc_peer_t *peer,
             }
         }
     }
-    cmeta_mutex_unlock(&peer->operation_mutex);
+    sync_mutex_unlock(&peer->operation_mutex);
 
     for (i = 0u; i < count; ++i) {
         dc_channel_close_owner_impl_mode(channels[i], reset_outgoing);

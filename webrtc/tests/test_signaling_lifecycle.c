@@ -4,7 +4,7 @@
 #include "turbo_media_auth.h"
 #include "tinytest.h"
 #include "webrtc_signaling.h"
-#include <salts/thread.h>
+#include <threads/threads.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -334,6 +334,48 @@ static chttp_websocket_client_config signaling_test_client_config(void) {
   return config;
 }
 
+static void test_signaling_source_credit_returns_after_close(void) {
+  const webrtc_signaling_config_t config = {
+      .host = "127.0.0.1", .connection_capacity = 4U,
+      .max_connections_per_source = 1, .max_source_states = 4U,
+      .source_state_ttl_ms = SIGNALING_WS_TEST_TIMEOUT_MS};
+  const chttp_websocket_client_config client_config = signaling_test_client_config();
+  webrtc_signaling_server_t *server = webrtc_signaling_create(NULL, &config);
+  chttp_websocket_connect_options options = {
+      .size = sizeof(options), .protocol = CHTTP_HTTP_1_1,
+      .timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS};
+  uint16_t port = 0U;
+  char uri[96];
+
+  check_not_null(server);
+  check_equal(webrtc_signaling_start(server), 0);
+  check_equal(webrtc_signaling_get_port(server, &port), 0);
+  snprintf(uri, sizeof(uri), "ws://127.0.0.1:%u/", (unsigned int)port);
+  options.uri = uri;
+
+  for (int round = 0; round < 2; ++round) {
+    chttp_websocket_client active = {0}, refused = {0};
+    unsigned int status = 0U;
+    check_equal(chttp_websocket_client_init(&active, &client_config), SALTS_OK);
+    check_equal(chttp_websocket_client_init(&refused, &client_config), SALTS_OK);
+    check_equal(chttp_websocket_client_connect(&active, &options, &status), SALTS_OK);
+    check_equal(status, 101U);
+    check_not_equal(chttp_websocket_client_connect(&refused, &options, &status), SALTS_OK);
+    check_equal(status, 429U);
+    check_equal(webrtc_signaling_get_peer_count(server), 1);
+    check_equal(chttp_websocket_client_destroy(&refused, SIGNALING_WS_TEST_TIMEOUT_MS), SALTS_OK);
+    check_equal(chttp_websocket_client_close(&active, 1000U, NULL, 0U,
+                                             SIGNALING_WS_TEST_TIMEOUT_MS), SALTS_OK);
+    check_equal(chttp_websocket_client_destroy(&active, SIGNALING_WS_TEST_TIMEOUT_MS), SALTS_OK);
+    for (int attempt = 0; attempt < 100 && webrtc_signaling_get_peer_count(server) != 0;
+         ++attempt) {
+      sleep_ms(10U);
+    }
+    check_equal(webrtc_signaling_get_peer_count(server), 0);
+  }
+  webrtc_signaling_destroy(server);
+}
+
 void test_signaling_websocket_protocol_round_trip(void) {
   static const char join_message[] =
       "{\"type\":\"join\",\"room\":\"lifecycle-room\"}";
@@ -427,7 +469,7 @@ void test_signaling_websocket_protocol_round_trip(void) {
   for (index = 0; index < 100 &&
                   webrtc_signaling_get_peer_count(server) != 0;
        ++index) {
-    cmeta_sleep_ms(10U);
+    sleep_ms(10U);
   }
   check_equal(webrtc_signaling_get_peer_count(server), 0);
 
@@ -1018,6 +1060,7 @@ spec("test_signaling_lifecycle") {
   it("test_http_api_rejects_invalid_configuration") { test_http_api_rejects_invalid_configuration(); };
   it("test_signaling_native_websocket_listener_stops_and_restarts") { test_signaling_native_websocket_listener_stops_and_restarts(); };
   it("test_signaling_websocket_protocol_round_trip") { test_signaling_websocket_protocol_round_trip(); };
+  it("rejects excess upgrades before 101 and reuses source credit after close") { test_signaling_source_credit_returns_after_close(); };
   it("test_signaling_peer_auth_configuration_fails_fast") { test_signaling_peer_auth_configuration_fails_fast(); };
   it("test_signaling_resource_policy_configuration_fails_fast") { test_signaling_resource_policy_configuration_fails_fast(); };
   it("test_signaling_wss_listener_loads_explicit_identity") { test_signaling_wss_listener_loads_explicit_identity(); };

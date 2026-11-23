@@ -1,7 +1,7 @@
 #include "tinytest.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation.h"
-#include <salts/crypto.h>
+#include <crypto/sha256.h>
 
 #include <stdio.h>
 #include <stdlib.h>
